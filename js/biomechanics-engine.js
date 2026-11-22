@@ -102,6 +102,90 @@ export const GOAL_PROFILES = Object.freeze({
   },
 });
 
+export const TRAINING_SPLITS = Object.freeze({
+  auto: {
+    id: 'auto',
+    label: 'Auto biomécanique (selon fréquence)',
+    shortLabel: 'Auto',
+    summary: 'Choisit automatiquement Full Body (2-3j), Upper/Lower (4j), Hybride (5j) ou PPL ×2 (6j).',
+  },
+  full_body: {
+    id: 'full_body',
+    label: 'Full Body (corps complet / séance)',
+    shortLabel: 'Full Body',
+    summary: 'Haute fréquence musculaire (2–4 j/sem), idéal emploi du temps chargé, force et récupération.',
+  },
+  upper_lower: {
+    id: 'upper_lower',
+    label: 'Upper / Lower (Haut / Bas)',
+    shortLabel: 'Upper/Lower',
+    summary: 'Équilibre optimal volume & récupération (3–5 j/sem), chaque muscle stimulé 2×/semaine.',
+  },
+  ppl: {
+    id: 'ppl',
+    label: 'Push / Pull / Legs (PPL)',
+    shortLabel: 'PPL',
+    summary: 'Regroupement par chaînes motrices (Poussée / Tirage / Jambes), idéal 3 ou 6 j/sem.',
+  },
+  hybrid_ul_ppl: {
+    id: 'hybrid_ul_ppl',
+    label: 'Hybride Upper/Lower + PPL',
+    shortLabel: 'Hybride UL+PPL',
+    summary: 'Combine un bloc Haut/Bas force-hypertrophie et un bloc PPL (4–5 j/sem).',
+  },
+  arnold: {
+    id: 'arnold',
+    label: 'Arnold Split (Pecs-Dos / Épaules-Bras / Jambes)',
+    shortLabel: 'Arnold Split',
+    summary: 'Antagonistes Pecs/Dos & priorité Bras/Épaules, haute congestion (3 ou 6 j/sem).',
+  },
+  bro_split: {
+    id: 'bro_split',
+    label: 'Split classique (1 muscle majeur / jour)',
+    shortLabel: 'Split classique',
+    summary: 'Focus complet par groupe (Pecs, Dos, Jambes, Épaules/Bras) sur 4–5 j/sem.',
+  },
+});
+
+export const TRAINING_METHODS = Object.freeze({
+  double_progression: {
+    id: 'double_progression',
+    label: 'Double progression (séries fixes)',
+    shortLabel: 'Double prog.',
+    summary: 'Charge identique sur toutes les séries : validez le plafond de répétitions avant d’augmenter la charge.',
+  },
+  reverse_pyramid: {
+    id: 'reverse_pyramid',
+    label: 'Pyramidal inversé (RPT)',
+    shortLabel: 'Pyramidal inv. (RPT)',
+    summary: 'Série 1 lourde (Top Set) à fraîcheur maximale, puis -10 % et -15/-20 % avec +2 à +4 répétitions.',
+  },
+  top_set_backoff: {
+    id: 'top_set_backoff',
+    label: 'Top Set + Back-off',
+    shortLabel: 'Top Set + Back-off',
+    summary: '1 série lourde de référence (RIR 1) suivie de séries de volume contrôlé à -12 % de charge.',
+  },
+  classic_pyramid: {
+    id: 'classic_pyramid',
+    label: 'Pyramidal montant classique',
+    shortLabel: 'Pyramidal montant',
+    summary: 'Montée progressive en charge (80 % → 90 % → 95 % → 100 %) avec répétitions décroissantes.',
+  },
+  rest_pause: {
+    id: 'rest_pause',
+    label: 'Rest-Pause / Myo-Reps (densité)',
+    shortLabel: 'Rest-Pause / Myo',
+    summary: 'Polyarticulaires en séries propres + isolations en série d’activation suivie de mini-séries (20 s repos).',
+  },
+  dup: {
+    id: 'dup',
+    label: 'Ondulatoire quotidien (DUP)',
+    shortLabel: 'Ondulatoire (DUP)',
+    summary: 'Alterne automatiquement séances Force (lourd), Hypertrophie (modéré) et Métabolique (léger/pompe).',
+  },
+});
+
 const INJURY_CONTRAINDICATION_MAP = Object.freeze({
   lumbar: ['lumbar_shear', 'lumbar_flexion'],
   shoulder: ['shoulder_impingement', 'anterior_shoulder'],
@@ -298,12 +382,170 @@ export function estimateStartingLoad(exercise, profile) {
   return Math.max(exercise.incrementKg || 2, rounded);
 }
 
-function buildDayExerciseSlot(exercise, profile, { sets, isLagPriority = false, goalCfg, phase = 'calibration' }) {
+export function buildSetScheme(
+  exercise,
+  {
+    sets = 3,
+    repMin = 8,
+    repMax = 12,
+    targetRir = 2,
+    suggestedLoadKg = 20,
+    method = 'double_progression',
+    restSec = 90,
+    dayIndex = 0,
+  } = {}
+) {
+  const count = Math.max(1, Number(sets) || 3);
+  const inc = exercise?.incrementKg || 2.5;
+  const minFloor =
+    exercise?.loadMode === 'bodyweight_plus'
+      ? 0
+      : exercise?.loadMode === 'barbell'
+        ? exercise.barWeightKg || 20
+        : inc;
+  const baseLoad = Number(suggestedLoadKg) || 0;
+  const scaleLoad = (factor) => {
+    if (baseLoad <= 0) return 0;
+    return Math.max(minFloor, roundToIncrement(baseLoad * factor, inc));
+  };
+  const isCompound = exercise?.category === 'compound';
+
+  if (method === 'reverse_pyramid') {
+    const factors = [1.0, 0.9, 0.82, 0.75, 0.72];
+    const repBumps = [0, 2, 4, 6, 6];
+    const topRepMin = isCompound ? Math.max(4, repMin - 1) : repMin;
+    const topRepMax = isCompound ? Math.max(6, repMax - 2) : repMax;
+    return Array.from({ length: count }, (_, idx) => {
+      const f = factors[Math.min(idx, factors.length - 1)];
+      const bump = repBumps[Math.min(idx, repBumps.length - 1)];
+      const tag = idx === 0 ? 'TOP' : `-${Math.round((1 - f) * 100)}%`;
+      return {
+        setIndex: idx + 1,
+        weightKg: scaleLoad(f),
+        reps: topRepMin + bump,
+        repMin: topRepMin + bump,
+        repMax: topRepMax + bump,
+        rir: idx === 0 ? Math.max(1, targetRir) : Math.min(3, targetRir + 1),
+        restSec: idx === 0 ? Math.min(240, restSec + 30) : restSec,
+        tag,
+      };
+    });
+  }
+
+  if (method === 'top_set_backoff') {
+    const topRepMin = isCompound ? Math.max(4, repMin - 2) : Math.max(6, repMin - 2);
+    const topRepMax = isCompound ? Math.max(6, repMax - 2) : Math.max(10, repMax - 2);
+    return Array.from({ length: count }, (_, idx) => {
+      const isTop = idx === 0;
+      return {
+        setIndex: idx + 1,
+        weightKg: isTop ? scaleLoad(1.0) : scaleLoad(0.88),
+        reps: isTop ? topRepMin : repMin + 2,
+        repMin: isTop ? topRepMin : repMin + 1,
+        repMax: isTop ? topRepMax : repMax + 2,
+        rir: isTop ? Math.max(1, targetRir) : Math.min(3, targetRir + 1),
+        restSec: isTop ? Math.min(240, restSec + 30) : Math.max(60, restSec - 15),
+        tag: isTop ? 'TOP' : 'B-OFF',
+      };
+    });
+  }
+
+  if (method === 'classic_pyramid') {
+    const presets = {
+      1: [1.0],
+      2: [0.85, 1.0],
+      3: [0.8, 0.9, 1.0],
+      4: [0.78, 0.88, 0.95, 1.0],
+      5: [0.75, 0.83, 0.9, 0.96, 1.0],
+    };
+    const factors = presets[Math.min(5, count)] || presets[3];
+    return factors.map((f, idx) => {
+      const reverseIdx = factors.length - 1 - idx;
+      const r = repMin + reverseIdx * 2;
+      const pct = Math.round(f * 100);
+      return {
+        setIndex: idx + 1,
+        weightKg: scaleLoad(f),
+        reps: r,
+        repMin: r,
+        repMax: r + 2,
+        rir: idx === factors.length - 1 ? Math.max(1, targetRir) : Math.min(3, targetRir + 1),
+        restSec,
+        tag: pct >= 100 ? 'MAX' : `${pct}%`,
+      };
+    });
+  }
+
+  if (method === 'rest_pause' && !isCompound) {
+    const myoCount = Math.max(3, Math.min(4, count + 1));
+    return Array.from({ length: myoCount }, (_, idx) => {
+      const isAct = idx === 0;
+      return {
+        setIndex: idx + 1,
+        weightKg: scaleLoad(0.95),
+        reps: isAct ? Math.max(12, repMin + 2) : 5,
+        repMin: isAct ? Math.max(12, repMin + 2) : 4,
+        repMax: isAct ? Math.max(15, repMax + 2) : 6,
+        rir: isAct ? 1 : 0,
+        restSec: isAct ? 25 : 20,
+        tag: isAct ? 'ACT' : 'MYO',
+      };
+    });
+  }
+
+  if (method === 'dup') {
+    const modes = [
+      { tag: 'FORCE', loadFactor: 1.075, rMin: isCompound ? 4 : 8, rMax: isCompound ? 6 : 10, restDelta: 30 },
+      { tag: 'HYP', loadFactor: 1.0, rMin: repMin, rMax: repMax, restDelta: 0 },
+      { tag: 'MET', loadFactor: 0.88, rMin: isCompound ? 10 : 14, rMax: isCompound ? 14 : 18, restDelta: -20 },
+    ];
+    const mode = modes[Math.abs(Number(dayIndex) || 0) % modes.length];
+    return Array.from({ length: count }, (_, idx) => ({
+      setIndex: idx + 1,
+      weightKg: scaleLoad(mode.loadFactor),
+      reps: mode.rMin,
+      repMin: mode.rMin,
+      repMax: mode.rMax,
+      rir: targetRir,
+      restSec: Math.max(45, restSec + mode.restDelta),
+      tag: mode.tag,
+    }));
+  }
+
+  return Array.from({ length: count }, (_, idx) => ({
+    setIndex: idx + 1,
+    weightKg: baseLoad,
+    reps: repMin,
+    repMin,
+    repMax,
+    rir: targetRir,
+    restSec,
+    tag: null,
+  }));
+}
+
+function buildDayExerciseSlot(
+  exercise,
+  profile,
+  { sets, isLagPriority = false, goalCfg, phase = 'calibration', method = 'double_progression', dayIndex = 0 }
+) {
   const isCompound = exercise.category === 'compound';
   const [repMin, repMax] = isCompound ? goalCfg.compoundReps : goalCfg.isolationReps;
   const baseRir = phase === 'calibration' ? 2 : phase === 'deload' ? 3 : goalCfg.targetRir;
   const restSec = isCompound ? goalCfg.restCompoundSec : goalCfg.restIsolationSec;
   const suggestedLoadKg = estimateStartingLoad(exercise, profile);
+  const activeMethod = phase === 'deload' ? 'double_progression' : method || 'double_progression';
+  const setScheme = buildSetScheme(exercise, {
+    sets,
+    repMin,
+    repMax,
+    targetRir: baseRir,
+    suggestedLoadKg,
+    method: activeMethod,
+    restSec,
+    dayIndex,
+  });
+  const firstSet = setScheme[0];
 
   return {
     slotId: generateId('slot'),
@@ -312,14 +554,16 @@ function buildDayExerciseSlot(exercise, profile, { sets, isLagPriority = false, 
     primaryMuscles: exercise.primaryMuscles,
     category: exercise.category,
     unilateral: Boolean(exercise.unilateral),
-    sets,
-    repMin,
-    repMax,
+    sets: setScheme.length,
+    repMin: firstSet?.repMin ?? repMin,
+    repMax: firstSet?.repMax ?? repMax,
     targetRir: baseRir,
     finalSetToTechFailure: phase === 'accumulation' && !isCompound,
-    restSec,
+    restSec: firstSet?.restSec ?? restSec,
     suggestedLoadKg,
     incrementKg: exercise.incrementKg,
+    method: activeMethod,
+    setScheme,
     isLagPriority,
     unilateralNote: exercise.unilateral
       ? 'Commencer par le côté faible, plafonner le côté fort au même nombre de répétitions.'
@@ -327,9 +571,20 @@ function buildDayExerciseSlot(exercise, profile, { sets, isLagPriority = false, 
   };
 }
 
-function getSplitBlueprints(sessionsPerWeek) {
+function getSplitBlueprints(sessionsPerWeek, splitPreference = 'auto') {
   const n = Math.max(2, Math.min(6, Number(sessionsPerWeek) || 4));
-  if (n <= 3) {
+  const resolved =
+    splitPreference && splitPreference !== 'auto'
+      ? splitPreference
+      : n <= 3
+        ? 'full_body'
+        : n === 4
+          ? 'upper_lower'
+          : n === 5
+            ? 'hybrid_ul_ppl'
+            : 'ppl';
+
+  if (resolved === 'full_body') {
     const baseDays = [
       {
         id: 'day_fb_a',
@@ -367,11 +622,159 @@ function getSplitBlueprints(sessionsPerWeek) {
           { muscle: 'delts_lat', plane: 'shoulder_abduction', sets: 3 },
         ],
       },
+      {
+        id: 'day_fb_d',
+        name: 'Full Body D — Dos, Bras & Points Faibles',
+        slots: [
+          { muscle: 'traps_rhomboids', plane: 'horizontal_pull', sets: 3 },
+          { muscle: 'pecs_upper', plane: 'incline_push', sets: 3 },
+          { muscle: 'quads', plane: 'knee_isolation', sets: 3 },
+          { muscle: 'hamstrings', plane: 'knee_isolation', sets: 3 },
+          { muscle: 'biceps', plane: 'elbow_flexion', sets: 3 },
+          { muscle: 'triceps', plane: 'elbow_extension', sets: 3 },
+        ],
+      },
     ];
-    return { splitType: 'full_body', splitLabel: `Full Body (${n} j/sem)`, days: baseDays.slice(0, n) };
+    const fbCount = Math.max(2, Math.min(4, n));
+    return { splitType: 'full_body', splitLabel: `Full Body (${fbCount} j/sem)`, days: baseDays.slice(0, fbCount) };
   }
 
-  if (n === 4) {
+  if (resolved === 'arnold') {
+    const arnold6 = [
+      {
+        id: 'day_arn_cd_a',
+        name: 'Pecs & Dos A — Antagonistes Force',
+        slots: [
+          { muscle: 'pecs_upper', plane: 'incline_push', sets: 4 },
+          { muscle: 'lats_width', plane: 'vertical_pull', sets: 4 },
+          { muscle: 'pecs_lower', plane: 'horizontal_push', sets: 3 },
+          { muscle: 'traps_rhomboids', plane: 'horizontal_pull', sets: 3 },
+          { muscle: 'abs', plane: 'anti_extension', sets: 3 },
+        ],
+      },
+      {
+        id: 'day_arn_sa_a',
+        name: 'Épaules & Bras A — Largeur & Congestion',
+        slots: [
+          { muscle: 'delts_ant', plane: 'vertical_push', sets: 3 },
+          { muscle: 'delts_lat', plane: 'shoulder_abduction', sets: 4 },
+          { muscle: 'delts_post', plane: 'rear_delt', sets: 3 },
+          { muscle: 'biceps', plane: 'elbow_flexion', sets: 3 },
+          { muscle: 'triceps', plane: 'elbow_extension', sets: 3 },
+        ],
+      },
+      {
+        id: 'day_arn_lg_a',
+        name: 'Jambes A — Quadriceps & Chaîne Postérieure',
+        slots: [
+          { muscle: 'quads', plane: 'knee_dominant', sets: 4 },
+          { muscle: 'hamstrings', plane: 'hip_hinge', sets: 3 },
+          { muscle: 'quads', plane: 'knee_isolation', sets: 3 },
+          { muscle: 'hamstrings', plane: 'knee_isolation', sets: 3 },
+          { muscle: 'calves', plane: 'ankle_plantarflexion', sets: 4 },
+        ],
+      },
+      {
+        id: 'day_arn_cd_b',
+        name: 'Pecs & Dos B — Hypertrophie & Unilatéral',
+        slots: [
+          { muscle: 'traps_rhomboids', plane: 'horizontal_pull', sets: 4 },
+          { muscle: 'pecs_upper', plane: 'incline_push', sets: 3 },
+          { muscle: 'lats_width', plane: 'vertical_pull', sets: 3, preferUnilateral: true },
+          { muscle: 'pecs_lower', plane: 'horizontal_push', sets: 3 },
+          { muscle: 'abs', plane: 'anti_extension', sets: 3 },
+        ],
+      },
+      {
+        id: 'day_arn_sa_b',
+        name: 'Épaules & Bras B — Volume Unilatéral',
+        slots: [
+          { muscle: 'delts_lat', plane: 'shoulder_abduction', sets: 4 },
+          { muscle: 'delts_post', plane: 'rear_delt', sets: 4 },
+          { muscle: 'biceps', plane: 'elbow_flexion', sets: 4, preferUnilateral: true },
+          { muscle: 'triceps', plane: 'elbow_extension', sets: 4 },
+        ],
+      },
+      {
+        id: 'day_arn_lg_b',
+        name: 'Jambes B — Fessiers & Unilatéral',
+        slots: [
+          { muscle: 'glutes', plane: 'hip_extension', sets: 4 },
+          { muscle: 'quads', plane: 'knee_dominant', sets: 3, preferUnilateral: true },
+          { muscle: 'hamstrings', plane: 'knee_isolation', sets: 3 },
+          { muscle: 'calves', plane: 'ankle_plantarflexion', sets: 4 },
+          { muscle: 'abs', plane: 'anti_extension', sets: 3 },
+        ],
+      },
+    ];
+    const count = n <= 3 ? 3 : n >= 6 ? 6 : n;
+    return { splitType: 'arnold', splitLabel: `Arnold Split (${count} j/sem)`, days: arnold6.slice(0, count) };
+  }
+
+  if (resolved === 'bro_split') {
+    const broDays = [
+      {
+        id: 'day_bro_chest',
+        name: 'Jour 1 — Pectoraux & Gainage',
+        slots: [
+          { muscle: 'pecs_upper', plane: 'incline_push', sets: 4 },
+          { muscle: 'pecs_lower', plane: 'horizontal_push', sets: 4 },
+          { muscle: 'pecs_upper', plane: 'incline_push', sets: 3 },
+          { muscle: 'delts_lat', plane: 'shoulder_abduction', sets: 3 },
+          { muscle: 'abs', plane: 'anti_extension', sets: 3 },
+        ],
+      },
+      {
+        id: 'day_bro_back',
+        name: 'Jour 2 — Dos complet & Arrière Épaules',
+        slots: [
+          { muscle: 'lats_width', plane: 'vertical_pull', sets: 4 },
+          { muscle: 'traps_rhomboids', plane: 'horizontal_pull', sets: 4 },
+          { muscle: 'lats_width', plane: 'vertical_pull', sets: 3, preferUnilateral: true },
+          { muscle: 'delts_post', plane: 'rear_delt', sets: 4 },
+          { muscle: 'biceps', plane: 'elbow_flexion', sets: 2 },
+        ],
+      },
+      {
+        id: 'day_bro_legs',
+        name: 'Jour 3 — Jambes & Mollets',
+        slots: [
+          { muscle: 'quads', plane: 'knee_dominant', sets: 4 },
+          { muscle: 'hamstrings', plane: 'hip_hinge', sets: 4 },
+          { muscle: 'quads', plane: 'knee_isolation', sets: 3 },
+          { muscle: 'hamstrings', plane: 'knee_isolation', sets: 3 },
+          { muscle: 'glutes', plane: 'hip_extension', sets: 3 },
+          { muscle: 'calves', plane: 'ankle_plantarflexion', sets: 4 },
+        ],
+      },
+      {
+        id: 'day_bro_shoulders',
+        name: 'Jour 4 — Épaules & Triceps',
+        slots: [
+          { muscle: 'delts_ant', plane: 'vertical_push', sets: 4 },
+          { muscle: 'delts_lat', plane: 'shoulder_abduction', sets: 4 },
+          { muscle: 'delts_post', plane: 'rear_delt', sets: 3 },
+          { muscle: 'triceps', plane: 'elbow_extension', sets: 4 },
+          { muscle: 'abs', plane: 'anti_extension', sets: 3 },
+        ],
+      },
+      {
+        id: 'day_bro_arms',
+        name: 'Jour 5 — Bras (Biceps / Triceps) & Rappel',
+        slots: [
+          { muscle: 'biceps', plane: 'elbow_flexion', sets: 4 },
+          { muscle: 'triceps', plane: 'elbow_extension', sets: 4 },
+          { muscle: 'biceps', plane: 'elbow_flexion', sets: 3, preferUnilateral: true },
+          { muscle: 'delts_lat', plane: 'shoulder_abduction', sets: 3 },
+          { muscle: 'calves', plane: 'ankle_plantarflexion', sets: 3 },
+        ],
+      },
+    ];
+    const count = Math.max(4, Math.min(5, n));
+    return { splitType: 'bro_split', splitLabel: `Split classique (${count} j/sem)`, days: broDays.slice(0, count) };
+  }
+
+  if (resolved === 'upper_lower') {
     return {
       splitType: 'upper_lower',
       splitLabel: 'Upper / Lower (4 j/sem)',
@@ -427,7 +830,7 @@ function getSplitBlueprints(sessionsPerWeek) {
     };
   }
 
-  if (n === 5) {
+  if (resolved === 'hybrid_ul_ppl') {
     return {
       splitType: 'hybrid_ul_ppl',
       splitLabel: 'Hybride Upper/Lower + PPL (5 j/sem)',
@@ -492,73 +895,75 @@ function getSplitBlueprints(sessionsPerWeek) {
     };
   }
 
+  const pplDays = [
+    {
+      id: 'day_push_a',
+      name: 'Push A — Pectoraux & Deltoïdes latéraux',
+      slots: [
+        { muscle: 'pecs_upper', plane: 'incline_push', sets: 4 },
+        { muscle: 'pecs_lower', plane: 'horizontal_push', sets: 3 },
+        { muscle: 'delts_lat', plane: 'shoulder_abduction', sets: 4 },
+        { muscle: 'triceps', plane: 'elbow_extension', sets: 3 },
+      ],
+    },
+    {
+      id: 'day_pull_a',
+      name: 'Pull A — Largeur Dos & Biceps',
+      slots: [
+        { muscle: 'lats_width', plane: 'vertical_pull', sets: 4 },
+        { muscle: 'traps_rhomboids', plane: 'horizontal_pull', sets: 3 },
+        { muscle: 'delts_post', plane: 'rear_delt', sets: 3 },
+        { muscle: 'biceps', plane: 'elbow_flexion', sets: 3 },
+      ],
+    },
+    {
+      id: 'day_legs_a',
+      name: 'Legs A — Quadriceps',
+      slots: [
+        { muscle: 'quads', plane: 'knee_dominant', sets: 4 },
+        { muscle: 'quads', plane: 'knee_isolation', sets: 3 },
+        { muscle: 'hamstrings', plane: 'knee_isolation', sets: 3 },
+        { muscle: 'calves', plane: 'ankle_plantarflexion', sets: 4 },
+        { muscle: 'abs', plane: 'anti_extension', sets: 3 },
+      ],
+    },
+    {
+      id: 'day_push_b',
+      name: 'Push B — Épaules & Haut Pectoraux',
+      slots: [
+        { muscle: 'delts_ant', plane: 'vertical_push', sets: 3 },
+        { muscle: 'pecs_upper', plane: 'incline_push', sets: 3 },
+        { muscle: 'delts_lat', plane: 'shoulder_abduction', sets: 4 },
+        { muscle: 'triceps', plane: 'elbow_extension', sets: 3 },
+      ],
+    },
+    {
+      id: 'day_pull_b',
+      name: 'Pull B — Épaisseur Dos & Unilatéral',
+      slots: [
+        { muscle: 'traps_rhomboids', plane: 'horizontal_pull', sets: 4 },
+        { muscle: 'lats_width', plane: 'vertical_pull', sets: 3, preferUnilateral: true },
+        { muscle: 'delts_post', plane: 'rear_delt', sets: 4 },
+        { muscle: 'biceps', plane: 'elbow_flexion', sets: 3, preferUnilateral: true },
+      ],
+    },
+    {
+      id: 'day_legs_b',
+      name: 'Legs B — Chaîne Postérieure',
+      slots: [
+        { muscle: 'hamstrings', plane: 'hip_hinge', sets: 4 },
+        { muscle: 'glutes', plane: 'hip_extension', sets: 3 },
+        { muscle: 'quads', plane: 'knee_dominant', sets: 3, preferUnilateral: true },
+        { muscle: 'calves', plane: 'ankle_plantarflexion', sets: 3 },
+        { muscle: 'abs', plane: 'anti_extension', sets: 3 },
+      ],
+    },
+  ];
+  const pplCount = n <= 3 ? 3 : Math.min(6, n);
   return {
     splitType: 'ppl',
-    splitLabel: 'Push / Pull / Legs × 2 (6 j/sem)',
-    days: [
-      {
-        id: 'day_push_a',
-        name: 'Push A — Pectoraux & Deltoïdes latéraux',
-        slots: [
-          { muscle: 'pecs_upper', plane: 'incline_push', sets: 4 },
-          { muscle: 'pecs_lower', plane: 'horizontal_push', sets: 3 },
-          { muscle: 'delts_lat', plane: 'shoulder_abduction', sets: 4 },
-          { muscle: 'triceps', plane: 'elbow_extension', sets: 3 },
-        ],
-      },
-      {
-        id: 'day_pull_a',
-        name: 'Pull A — Largeur Dos & Biceps',
-        slots: [
-          { muscle: 'lats_width', plane: 'vertical_pull', sets: 4 },
-          { muscle: 'traps_rhomboids', plane: 'horizontal_pull', sets: 3 },
-          { muscle: 'delts_post', plane: 'rear_delt', sets: 3 },
-          { muscle: 'biceps', plane: 'elbow_flexion', sets: 3 },
-        ],
-      },
-      {
-        id: 'day_legs_a',
-        name: 'Legs A — Quadriceps',
-        slots: [
-          { muscle: 'quads', plane: 'knee_dominant', sets: 4 },
-          { muscle: 'quads', plane: 'knee_isolation', sets: 3 },
-          { muscle: 'hamstrings', plane: 'knee_isolation', sets: 3 },
-          { muscle: 'calves', plane: 'ankle_plantarflexion', sets: 4 },
-          { muscle: 'abs', plane: 'anti_extension', sets: 3 },
-        ],
-      },
-      {
-        id: 'day_push_b',
-        name: 'Push B — Épaules & Haut Pectoraux',
-        slots: [
-          { muscle: 'delts_ant', plane: 'vertical_push', sets: 3 },
-          { muscle: 'pecs_upper', plane: 'incline_push', sets: 3 },
-          { muscle: 'delts_lat', plane: 'shoulder_abduction', sets: 4 },
-          { muscle: 'triceps', plane: 'elbow_extension', sets: 3 },
-        ],
-      },
-      {
-        id: 'day_pull_b',
-        name: 'Pull B — Épaisseur Dos & Unilatéral',
-        slots: [
-          { muscle: 'traps_rhomboids', plane: 'horizontal_pull', sets: 4 },
-          { muscle: 'lats_width', plane: 'vertical_pull', sets: 3, preferUnilateral: true },
-          { muscle: 'delts_post', plane: 'rear_delt', sets: 4 },
-          { muscle: 'biceps', plane: 'elbow_flexion', sets: 3, preferUnilateral: true },
-        ],
-      },
-      {
-        id: 'day_legs_b',
-        name: 'Legs B — Chaîne Postérieure',
-        slots: [
-          { muscle: 'hamstrings', plane: 'hip_hinge', sets: 4 },
-          { muscle: 'glutes', plane: 'hip_extension', sets: 3 },
-          { muscle: 'quads', plane: 'knee_dominant', sets: 3, preferUnilateral: true },
-          { muscle: 'calves', plane: 'ankle_plantarflexion', sets: 3 },
-          { muscle: 'abs', plane: 'anti_extension', sets: 3 },
-        ],
-      },
-    ],
+    splitLabel: pplCount === 3 ? 'Push / Pull / Legs (3 j/sem)' : `Push / Pull / Legs (${pplCount} j/sem)`,
+    days: pplDays.slice(0, pplCount),
   };
 }
 
@@ -589,12 +994,15 @@ export function generateProgram(profile, { phase = 'calibration', mesocycleNumbe
   const levelFactor =
     profile?.level === 'beginner' ? 0.8 : profile?.level === 'advanced' ? 1.15 : 1.0;
   const durationCap = Number(profile?.sessionDurationMin) <= 45 ? 4 : Number(profile?.sessionDurationMin) <= 60 ? 6 : 7;
-  const blueprint = getSplitBlueprints(profile?.sessionsPerWeek || 4);
+  const splitPref = profile?.splitPreference || 'auto';
+  const methodId = TRAINING_METHODS[profile?.progressionMethod] ? profile.progressionMethod : 'double_progression';
+  const methodMeta = TRAINING_METHODS[methodId];
+  const blueprint = getSplitBlueprints(profile?.sessionsPerWeek || 4, splitPref);
   const lagSet = new Set(profile?.lagPriorities || []);
   const dominantSet = new Set(profile?.dominantGroups || []);
   const hasAsymmetry = Array.isArray(profile?.asymmetries) && profile.asymmetries.length > 0;
 
-  const days = blueprint.days.map((dayBp) => {
+  const days = blueprint.days.map((dayBp, dayIdx) => {
     const usedIds = new Set();
     const exercises = [];
 
@@ -623,6 +1031,8 @@ export function generateProgram(profile, { phase = 'calibration', mesocycleNumbe
           isLagPriority: isLag,
           goalCfg,
           phase,
+          method: methodId,
+          dayIndex: dayIdx,
         })
       );
     }
@@ -642,8 +1052,11 @@ export function generateProgram(profile, { phase = 'calibration', mesocycleNumbe
     profileId: profile?.id || null,
     goal: profile?.goal || 'recomp',
     goalLabel: goalCfg.label,
+    splitPreference: splitPref,
     splitType: blueprint.splitType,
     splitLabel: blueprint.splitLabel,
+    progressionMethod: methodId,
+    methodLabel: methodMeta.shortLabel,
     mesocycleNumber,
     weekNumber: 1,
     phase,
@@ -880,6 +1293,7 @@ export function evaluateExerciseProgression({
   repMin = 8,
   repMax = 12,
   feedback = 'solid', // 'easy' | 'solid' | 'limit' | 'joint_pain'
+  method = 'double_progression',
   profile = null,
 }) {
   const exercise = getExerciseById(exerciseId);
@@ -889,11 +1303,15 @@ export function evaluateExerciseProgression({
     return { action: 'hold', nextLoadKg: 0, message: 'Aucune série de travail validée.' };
   }
 
+  const topSet = workSets[0];
   const avgWeight =
     workSets.reduce((acc, s) => acc + (Number(s.weightKg) || 0), 0) / workSets.length;
   const maxWeight = Math.max(...workSets.map((s) => Number(s.weightKg) || 0));
   const minRepsHit = Math.min(...workSets.map((s) => Number(s.reps) || 0));
   const allAtCeiling = workSets.every((s) => Number(s.reps) >= repMax);
+  const isTopSetMethod = method === 'reverse_pyramid' || method === 'top_set_backoff';
+  const topSetWeight = Number(topSet.weightKg) || maxWeight;
+  const topSetHitCeiling = Number(topSet.reps) >= repMax;
 
   if (feedback === 'joint_pain') {
     const deloaded = Math.max(
@@ -910,7 +1328,18 @@ export function evaluateExerciseProgression({
     };
   }
 
-  if (allAtCeiling && (feedback === 'easy' || feedback === 'solid')) {
+  if (isTopSetMethod && topSetHitCeiling && (feedback === 'easy' || feedback === 'solid')) {
+    const bonusStep = feedback === 'easy' && Number(topSet.reps) >= repMax + 2 ? inc * 2 : inc;
+    const nextLoadKg = roundToIncrement(topSetWeight + bonusStep, inc);
+    return {
+      action: 'increase_load',
+      nextLoadKg,
+      deltaKg: bonusStep,
+      message: `Top Set validé (${topSet.reps} réps @ ${topSetWeight} kg) : Top Set suivant à ${nextLoadKg} kg (+${bonusStep} kg) et séries suivantes recalculées automatiquement.`,
+    };
+  }
+
+  if (!isTopSetMethod && allAtCeiling && (feedback === 'easy' || feedback === 'solid')) {
     const bonusStep = feedback === 'easy' && minRepsHit >= repMax + 2 ? inc * 2 : inc;
     const nextLoadKg = roundToIncrement(maxWeight + bonusStep, inc);
     return {
@@ -931,11 +1360,14 @@ export function evaluateExerciseProgression({
     };
   }
 
+  const holdWeight = isTopSetMethod ? roundToIncrement(topSetWeight, inc) : roundToIncrement(avgWeight || maxWeight, inc);
   return {
     action: 'hold_and_add_reps',
-    nextLoadKg: roundToIncrement(avgWeight || maxWeight, inc),
+    nextLoadKg: holdWeight,
     deltaKg: 0,
-    message: `Maintien à ${roundToIncrement(maxWeight, inc)} kg : visez +1 à +2 répétitions par série jusqu’à valider ${repMax} réps.`,
+    message: isTopSetMethod
+      ? `Maintien du Top Set à ${holdWeight} kg : ajoutez +1 rép sur la série 1 jusqu’à atteindre ${repMax} réps.`
+      : `Maintien à ${roundToIncrement(maxWeight, inc)} kg : visez +1 à +2 répétitions par série jusqu’à valider ${repMax} réps.`,
   };
 }
 
@@ -1213,3 +1645,194 @@ export function applyProgramMutation(program, mutation) {
     ],
   };
 }
+
+/* ==========================================================================
+   MOTEUR D'ADAPTATION DU COACH : RETOURS TERRAIN & CONVERSATION -> PROGRAMME
+   ========================================================================== */
+
+export function buildCoachRuntimeContext(profile, program, workouts = []) {
+  const recent = [...(workouts || [])]
+    .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))
+    .slice(0, 5);
+
+  const painExercises = [];
+  const limitExercises = [];
+  const easyExercises = [];
+  const readinessScores = [];
+
+  for (const wk of recent) {
+    if (typeof wk.readiness?.score === 'number') {
+      readinessScores.push(wk.readiness.score);
+    }
+    for (const ex of wk.exercises || []) {
+      if (ex.feedback === 'joint_pain') painExercises.push(`${ex.name} (${wk.date})`);
+      else if (ex.feedback === 'limit') limitExercises.push(`${ex.name} (${wk.date})`);
+      else if (ex.feedback === 'easy') easyExercises.push(`${ex.name} (${wk.date})`);
+    }
+  }
+
+  const readinessAvg =
+    readinessScores.length > 0
+      ? Math.round(readinessScores.reduce((a, b) => a + b, 0) / readinessScores.length)
+      : null;
+
+  const methodInfo = TRAINING_METHODS[profile?.progressionMethod || program?.progressionMethod || 'double_progression'];
+  const splitInfo = TRAINING_SPLITS[profile?.splitPreference || 'auto'];
+  const memoryItems = (profile?.coachMemory || []).slice(-8).map((m) => m.text);
+
+  return {
+    recentWorkoutsCount: recent.length,
+    readinessAvg,
+    painExercises: [...new Set(painExercises)].slice(0, 5),
+    limitExercises: [...new Set(limitExercises)].slice(0, 5),
+    easyExercises: [...new Set(easyExercises)].slice(0, 5),
+    activeSplitLabel: program?.splitLabel || splitInfo.label,
+    activeMethodId: methodInfo.id,
+    activeMethodLabel: methodInfo.label,
+    memoryItems,
+  };
+}
+
+export function analyzeCoachFeedbackAndProposeAction(message, profile = {}, program = null) {
+  const raw = String(message || '').trim();
+  const norm = raw
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+  const profilePatch = {};
+  const changes = [];
+  let programPhase = program?.phase || 'accumulation';
+  let memoryNote = null;
+
+  // 1. Détection souhait de Split
+  if (/\bfull\s*body\b/.test(norm)) {
+    profilePatch.splitPreference = 'full_body';
+    if ((profile.sessionsPerWeek || 4) > 4) profilePatch.sessionsPerWeek = 3;
+    changes.push('Split → Full Body');
+  } else if (/\b(upper\s*\/?\s*lower|haut\s*\/?\s*bas|half\s*body)\b/.test(norm)) {
+    profilePatch.splitPreference = 'upper_lower';
+    if ((profile.sessionsPerWeek || 4) < 3) profilePatch.sessionsPerWeek = 4;
+    changes.push('Split → Upper / Lower');
+  } else if (/\b(hybride|ul\s*\+\s*ppl|ppl\s*\+\s*ul)\b/.test(norm)) {
+    profilePatch.splitPreference = 'hybrid_ul_ppl';
+    profilePatch.sessionsPerWeek = 5;
+    changes.push('Split → Hybride Upper/Lower + PPL (5j)');
+  } else if (/\b(ppl|push\s*pull\s*legs?)\b/.test(norm)) {
+    profilePatch.splitPreference = 'ppl';
+    if (![3, 5, 6].includes(Number(profile.sessionsPerWeek))) profilePatch.sessionsPerWeek = 6;
+    changes.push('Split → Push / Pull / Legs (PPL)');
+  } else if (/\barnold\b/.test(norm)) {
+    profilePatch.splitPreference = 'arnold';
+    changes.push('Split → Arnold Split');
+  } else if (/\b(bro\s*split|split\s*classique|1\s*muscle\s*par\s*jour|un\s*muscle\s*par\s*jour)\b/.test(norm)) {
+    profilePatch.splitPreference = 'bro_split';
+    if ((profile.sessionsPerWeek || 4) < 4) profilePatch.sessionsPerWeek = 4;
+    changes.push('Split → Split classique');
+  }
+
+  // 2. Détection méthode d'entraînement / progression
+  if (/(pyramidal\s*invers|reverse\s*pyramid|\brpt\b)/.test(norm)) {
+    profilePatch.progressionMethod = 'reverse_pyramid';
+    changes.push('Méthode → Pyramidal inversé (RPT)');
+    memoryNote = { category: 'method', text: 'Préfère le pyramidal inversé (RPT : série 1 lourde puis dégressive).' };
+  } else if (/(top\s*set|back[\s-]*off)/.test(norm)) {
+    profilePatch.progressionMethod = 'top_set_backoff';
+    changes.push('Méthode → Top Set + Back-off');
+    memoryNote = { category: 'method', text: 'Préfère le format Top Set + Back-off (-12%).' };
+  } else if (/(pyramidal\s*(classique|montant|ascendant))/.test(norm)) {
+    profilePatch.progressionMethod = 'classic_pyramid';
+    changes.push('Méthode → Pyramidal montant classique');
+    memoryNote = { category: 'method', text: 'Préfère le pyramidal montant progressif.' };
+  } else if (/(rest[\s-]*pause|myo[\s-]*reps?)/.test(norm)) {
+    profilePatch.progressionMethod = 'rest_pause';
+    changes.push('Méthode → Rest-Pause / Myo-Reps');
+    memoryNote = { category: 'method', text: 'Apprécie Rest-Pause / Myo-Reps pour gagner en densité.' };
+  } else if (/(ondulatoire|\bdup\b)/.test(norm)) {
+    profilePatch.progressionMethod = 'dup';
+    changes.push('Méthode → Ondulatoire quotidien (DUP)');
+    memoryNote = { category: 'method', text: 'Préfère la périodisation ondulatoire (DUP Force/Hyp/Métabolique).' };
+  } else if (/double\s*progression/.test(norm)) {
+    profilePatch.progressionMethod = 'double_progression';
+    changes.push('Méthode → Double progression standard');
+  }
+
+  // 3. Détection fréquence (2 à 6 jours/semaine) ou durée de séance
+  const freqMatch = norm.match(/\b([2-6])\s*(j|jours?|seances?|fois)\b/);
+  if (freqMatch) {
+    profilePatch.sessionsPerWeek = Number(freqMatch[1]);
+    changes.push(`Fréquence → ${freqMatch[1]} j/sem`);
+  }
+  if (/(45\s*min|trop\s*long|manque\s*de\s*temps|seance\s*courte|moins\s*long)/.test(norm)) {
+    profilePatch.sessionDurationMin = 45;
+    changes.push('Durée → 45 min (4 exercices ciblés)');
+    memoryNote = memoryNote || { category: 'schedule', text: 'Souhaite des séances compactes (~45 min max).' };
+  } else if (/(75\s*min|plus\s*de\s*volume|seance\s*longue)/.test(norm)) {
+    profilePatch.sessionDurationMin = 75;
+    changes.push('Durée → 75 min');
+  }
+
+  // 4. Détection douleur articulaire / blessure à protéger
+  const painTrigger = /(mal|douleur|gene|pincement|tendinite|blesse|tire)/.test(norm);
+  if (painTrigger) {
+    const zoneMatches = [
+      { key: 'shoulder', label: 'Épaules', re: /(epaule|coiffe|deltoide)/ },
+      { key: 'lumbar', label: 'Lombaires', re: /(lombaire|bas\s*du\s*dos|dos\s*bas|sciatique)/ },
+      { key: 'knee', label: 'Genoux', re: /(genou|rotule|menisque)/ },
+      { key: 'elbow', label: 'Coudes', re: /(coude|epicondylite|tendon\s*bras)/ },
+      { key: 'wrist', label: 'Poignets', re: /(poignet)/ },
+    ].filter((z) => z.re.test(norm));
+
+    if (zoneMatches.length > 0) {
+      const existing = Array.isArray(profile.injuries) ? [...profile.injuries] : [];
+      for (const z of zoneMatches) {
+        const idx = existing.findIndex((i) => i.zone === z.key);
+        if (idx >= 0) existing[idx] = { ...existing[idx], severity: Math.max(2, Number(existing[idx].severity) || 2) };
+        else existing.push({ zone: z.key, severity: 2, notes: 'Signalé au Coach' });
+        changes.push(`Protection ${z.label} (exclusion mouvements à risque)`);
+      }
+      profilePatch.injuries = existing;
+      memoryNote = {
+        category: 'injury',
+        text: `Sensibilité signalée : ${zoneMatches.map((z) => z.label).join(', ')} (exercices à risque exclus).`,
+      };
+    }
+  }
+
+  // 5. Détection fatigue / demande de Deload
+  if (/(deload|decharge|epuise|creve|surentrain|fatigue\s*nerveuse)/.test(norm)) {
+    programPhase = 'deload';
+    changes.push('Phase → Semaine de Deload (volume -45 %, RIR 3)');
+    memoryNote = memoryNote || { category: 'recovery', text: 'Fatigue cumulée signalée : semaine de Deload proposée.' };
+  }
+
+  // 6. Détection changement d'objectif
+  if (/(seche|perte\s*de\s*(gras|poids)|maigrir)/.test(norm)) {
+    profilePatch.goal = 'fat_loss';
+    changes.push('Objectif → Perte de masse grasse');
+  } else if (/(prise\s*de\s*masse|bulk|prendre\s*du\s*muscle)/.test(norm)) {
+    profilePatch.goal = 'lean_bulk';
+    changes.push('Objectif → Prise de masse sèche');
+  } else if (/(force\s*athletique|gagner\s*en\s*force|plus\s*lourd)/.test(norm)) {
+    profilePatch.goal = 'strength';
+    changes.push('Objectif → Force athlétique');
+  }
+
+  if (changes.length === 0) {
+    return { actionProposal: null, memoryNote };
+  }
+
+  return {
+    memoryNote,
+    actionProposal: {
+      id: generateId('act'),
+      title: 'Adaptation programme prête à appliquer',
+      summary: changes.join(' · '),
+      changes,
+      profilePatch,
+      programPhase,
+      applyLabel: 'Appliquer au programme',
+    },
+  };
+}
+

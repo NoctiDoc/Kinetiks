@@ -8,7 +8,9 @@
 
 import { registerValidExerciseIds } from './ai-router.js';
 
-export const WGER_BASE = 'https://wger.de/static/images/muscles';
+export const WGER_BASE =
+  'https://raw.githubusercontent.com/wger-project/wger/master/wger/core/static/images/muscles';
+export const WGER_FALLBACK_BASE = 'https://wger.de/static/images/muscles';
 export const FREE_EXERCISE_DB_BASE =
   'https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/exercises';
 
@@ -848,7 +850,7 @@ export const EXERCISES_DB = [
     injuryWarnings: {
       lumbar: 'Stoppez sous le genou et passez sur Leg Curl assis si toute tension lombaire apparaît.',
     },
-    freeExerciseDbSlug: 'Romanian_Deadlift_With_Dumbbells',
+    freeExerciseDbSlug: 'Stiff-Legged_Dumbbell_Deadlift',
   },
   {
     id: 'seated_leg_curl',

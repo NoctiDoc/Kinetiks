@@ -286,6 +286,8 @@ export function buildDefaultProfile(partial = {}) {
     level: partial.level || 'intermediate', // 'beginner' | 'intermediate' | 'advanced'
     sessionsPerWeek: Number(partial.sessionsPerWeek) || 4,
     sessionDurationMin: Number(partial.sessionDurationMin) || 60,
+    splitPreference: partial.splitPreference || 'auto', // 'auto' | 'full_body' | 'upper_lower' | 'ppl' | 'hybrid_ul_ppl' | 'arnold' | 'bro_split'
+    progressionMethod: partial.progressionMethod || 'double_progression', // 'double_progression' | 'reverse_pyramid' | 'top_set_backoff' | 'classic_pyramid' | 'rest_pause' | 'dup'
     equipment: Array.isArray(partial.equipment)
       ? partial.equipment
       : ['barbell', 'dumbbells', 'cables', 'machines', 'bench', 'pullup_bar'],
@@ -313,6 +315,7 @@ export function buildDefaultProfile(partial = {}) {
     lagPriorities: Array.isArray(partial.lagPriorities) ? partial.lagPriorities : [],
     dominantGroups: Array.isArray(partial.dominantGroups) ? partial.dominantGroups : [],
     asymmetries: Array.isArray(partial.asymmetries) ? partial.asymmetries : [],
+    coachMemory: Array.isArray(partial.coachMemory) ? partial.coachMemory : [], // [{ id, text, category, createdAt }]
     ntfyTopic: partial.ntfyTopic || '',
     demoProfile: Boolean(partial.demoProfile),
   };
@@ -583,8 +586,18 @@ export async function addCoachMessage(profileId, message) {
     role: message.role || 'user',
     content: message.content || '',
     tierUsed: message.tierUsed ?? null,
+    provider: message.provider || null,
+    fallbackReason: message.fallbackReason || null,
+    actionProposal: message.actionProposal || null,
+    actionApplied: Boolean(message.actionApplied),
     meta: message.meta || {},
   };
+  await putRecord(STORES.COACH_MESSAGES, record);
+  return record;
+}
+
+export async function updateCoachMessage(record) {
+  if (!record?.id) return null;
   await putRecord(STORES.COACH_MESSAGES, record);
   return record;
 }

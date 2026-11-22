@@ -71,7 +71,7 @@ export const TIER2_PRESETS = Object.freeze({
   },
   gemini: {
     id: 'gemini',
-    label: 'Gemini API Native',
+    label: 'Google Gemini (API Native)',
     protocol: 'gemini_native',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     model: 'gemini-2.5-flash',
@@ -79,7 +79,19 @@ export const TIER2_PRESETS = Object.freeze({
     requiresApiKey: true,
     supportsVision: true,
     supportsWhisper: false,
-    corsNote: 'API native Google AI (texte + vision multimodale + JSON structuré natif).',
+    corsNote: 'Clé gratuite sur aistudio.google.com (commence par AIza). Texte + Vision multimodale + JSON natif.',
+  },
+  openai: {
+    id: 'openai',
+    label: 'OpenAI (GPT-4o mini / GPT-4o)',
+    protocol: 'openai',
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+    visionModel: 'gpt-4o-mini',
+    requiresApiKey: true,
+    supportsVision: true,
+    supportsWhisper: false,
+    corsNote: 'CORS natif navigateur. Clé API OpenAI (commence par sk-). Texte + Vision.',
   },
   custom: {
     id: 'custom',
@@ -94,6 +106,28 @@ export const TIER2_PRESETS = Object.freeze({
     corsNote: 'Tout serveur exposant /v1/chat/completions avec en-têtes CORS autorisés.',
   },
 });
+
+/**
+ * Indique si la clé API collée est une clé Vertex AI Express Mode (préfixe AQ.).
+ */
+export function isVertexExpressKey(rawKey) {
+  const key = String(rawKey || '').replace(/[\r\n\t\s]+/g, '');
+  return key.startsWith('AQ.');
+}
+
+/**
+ * Détecte automatiquement le fournisseur probable d'une clé API collée.
+ */
+export function detectPresetFromApiKey(rawKey) {
+  const key = String(rawKey || '').replace(/\s+/g, '');
+  if (!key || key.length < 16) return null;
+  if (key.startsWith('AIza')) return 'gemini';
+  if (key.startsWith('AQ.')) return 'gemini';
+  if (key.startsWith('gsk_')) return 'groq';
+  if (key.startsWith('sk-or-')) return 'openrouter';
+  if (key.startsWith('sk-')) return 'openai';
+  return null;
+}
 
 export const TIER3_MODELS = Object.freeze([
   {
@@ -540,20 +574,58 @@ function runTier0ProgramMutation(context = {}) {
 }
 
 function runTier0CoachReply(prompt = '', context = {}) {
-  const lower = String(prompt).toLowerCase();
+  const raw = String(prompt || '');
+  const lower = raw
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
   const profile = context.profile || {};
+  const summary = context.trainingSummary || {};
+  const action = context.actionProposal || null;
   const name = profile.name || 'Athlète';
 
-  if (lower.includes('douleur') || lower.includes('épaule') || lower.includes('lombaire') || lower.includes('genou')) {
-    return `${name}, en présence d’une douleur articulaire aiguë : réduis immédiatement la charge de 10 à 15 % ou bascule sur un swap biomécanique sans contrainte (ex. presse inclinée / hack squat pour préserver les lombaires, haltères prise neutre ou machine convergente pour les épaules). Ne force jamais sur une douleur mécanique ; conserve un RIR de 2 à 3 le temps de la récupération.`;
+  const actionSuffix = action
+    ? `\n\n→ Adaptation prête ci-dessous : ${action.summary}. Appuie sur « ${action.applyLabel} » pour reconstruire ton programme immédiatement.`
+    : '';
+
+  if (/(pyramidal\s*invers|reverse\s*pyramid|\brpt\b)/.test(lower)) {
+    return `${name}, le pyramidal inversé (RPT) est redoutable pour préserver la force et limiter le volume inutile :\n• Série 1 (TOP) : charge maximale sur ta fraîcheur nerveuse (ex. 5–7 réps à RIR 1).\n• Série 2 (-10 %) : +2 répétitions avec contrôle technique.\n• Série 3 (-15 à -18 %) : +4 répétitions pour le stress métabolique.\nTa progression est pilotée uniquement par le Top Set : dès que la série 1 atteint son plafond, toutes les séries suivantes montent automatiquement.${actionSuffix}`;
   }
-  if (lower.includes('plateau') || lower.includes('poids') || lower.includes('calorie') || lower.includes('tdee')) {
-    return `Pour juger un plateau réel, ne te fie jamais à une pesée isolée : observe la courbe EWMA sur 14 à 21 jours. Si la pente EWMA stagne alors que la journalisation est régulière, ajuste l’apport de ±100 à 150 kcal (principalement via les glucides autour de l’entraînement) tout en maintenant tes protéines à 1,8–2,2 g/kg de masse maigre et un plancher lipidique >= 0,7 g/kg.`;
+
+  if (/(top\s*set|back[\s-]*off|pyramidal|rest[\s-]*pause|myo[\s-]*reps?|ondulatoire|\bdup\b)/.test(lower)) {
+    return `${name}, Kinetix Lab gère nativement 6 méthodes de progression :\n• Double progression (séries fixes)\n• Pyramidal inversé (RPT : Top Set lourd puis -10 % / -18 %)\n• Top Set + Back-off (-12 % volume contrôlé)\n• Pyramidal montant (80 → 90 → 100 %)\n• Rest-Pause / Myo-Reps (densité rapide sur isolations)\n• Ondulatoire DUP (alternance séances Force / Hypertrophie / Métabolique).\nChaque méthode recalcule automatiquement tes charges et cibles de répétitions série par série.${actionSuffix}`;
   }
-  if (lower.includes('deload') || lower.includes('fatigue') || lower.includes('sommeil') || lower.includes('readiness')) {
-    return `Si ton score Readiness chute (sommeil insuffisant ou raideurs persistantes), active le Mode Préservation (-1 série par exercice, +1 RIR). Si tes performances baissent sur 2 séances consécutives malgré une bonne alimentation, planifie une semaine de Deload à 50 % du volume habituel à RIR 3–4 pour dissiper la fatigue centrale.`;
+
+  if (/(full\s*body|upper\s*\/?\s*lower|ppl|push\s*pull|arnold|bro\s*split|split)/.test(lower)) {
+    return `${name}, tu peux changer de split à tout moment selon ta récupération et ton agenda :\n• Full Body (2–4 j) : stimulation fréquente, top si séances limitées ou priorité force.\n• Upper / Lower (4 j) : meilleur compromis volume/récupération (2×/muscle/semaine).\n• PPL (3 ou 6 j) : spécialisation poussée / tirage / jambes.\n• Hybride UL + PPL (5 j), Arnold Split (Pecs-Dos / Épaules-Bras / Jambes) ou Split classique (4–5 j).\nSplit actuel : ${summary.activeSplitLabel || 'adaptatif'} · Méthode : ${summary.activeMethodLabel || 'Double progression'}.${actionSuffix}`;
   }
-  return `[Mode Local Déterministe — Niveau 0]\n${name}, tes repères biomécaniques actifs :\n• Progression : applique la double progression (valide le haut de la fourchette de répétitions à RIR 1–2 sur toutes les séries avant d’ajouter un palier réaliste).\n• Volume : place tes groupes prioritaires [LAG] en début de séance et abaisse les groupes dominants au MEV.\n• Récupération : vise 7–9 h de sommeil, 35 ml/kg d’eau + 500 ml par heure de séance.\nActive le Niveau 1 (Puter.js sans clé) ou Niveau 2 (Ollama / Groq / Gemini) dans les Réglages pour un coaching conversationnel étendu.`;
+
+  if (/(douleur|epaule|lombaire|genou|coude|poignet|mal|pincement|tendinite)/.test(lower)) {
+    const recentPain = summary.painExercises?.length
+      ? `\nDouleurs déjà notées en séance : ${summary.painExercises.join(', ')}.`
+      : '';
+    return `${name}, en présence d’une gêne articulaire : réduis la charge de 10 à 15 % ou utilise le bouton Swap biomécanique pour une variante sans contrainte (ex. presse inclinée / hack squat pour préserver les lombaires, haltères prise neutre ou machine convergente pour les épaules).${recentPain}${actionSuffix}`;
+  }
+
+  if (/(plateau|poids|calorie|tdee|seche|prise\s*de\s*masse)/.test(lower)) {
+    return `${name}, ne juge jamais sur une pesée isolée : suis la courbe EWMA sur 14 à 21 jours. Si elle stagne malgré une journalisation fiable, ajuste de ±100 à 150 kcal (surtout via les glucides péri-entraînement) en gardant les protéines entre 1,8 et 2,2 g/kg et les lipides >= 0,7 g/kg.${actionSuffix}`;
+  }
+
+  if (/(deload|fatigue|sommeil|readiness|creve|epuise)/.test(lower)) {
+    const rdTxt = summary.readinessAvg ? `Ton Readiness moyen récent est de ${summary.readinessAvg}/100.` : '';
+    return `${name}, ${rdTxt} Si la fatigue s’accumule ou si tes performances baissent sur 2 séances d’affilée, passe en Mode Préservation (-1 série, +1 RIR) ou déclenche une semaine de Deload (volume réduit de ~45 %, RIR 3) pour relancer la surcompensation.${actionSuffix}`;
+  }
+
+  const memLine = summary.memoryItems?.length
+    ? `\n• Mémoire active : ${summary.memoryItems.slice(-3).join(' | ')}`
+    : '';
+  const fbLine = summary.painExercises?.length
+    ? `\n• Alerte séances récentes : douleur signalée sur ${summary.painExercises.join(', ')}.`
+    : summary.limitExercises?.length
+      ? `\n• Exercices en zone limite récents : ${summary.limitExercises.join(', ')}.`
+      : '';
+
+  return `[Coach Local Déterministe — Niveau 0]\n${name}, configuration active : ${summary.activeSplitLabel || 'Split adaptatif'} · ${summary.activeMethodLabel || 'Double progression'}.${memLine}${fbLine}\nDis-moi directement si tu veux changer de split (Full Body, Upper/Lower, PPL, Arnold, Split classique), de méthode (Pyramidal inversé RPT, Top Set + Back-off, Myo-Reps, DUP), raccourcir tes séances ou protéger une articulation : je prépare l’adaptation en 1 clic.${actionSuffix}`;
 }
 
 export function runTier0Fallback(taskType, prompt, context = {}) {
@@ -642,7 +714,14 @@ function extractTextFromPuterResponse(res) {
   return JSON.stringify(res);
 }
 
-async function runPollinationsFallback({ prompt, systemPrompt, images, taskType, settings }) {
+function sanitizeHistoryMessages(history = []) {
+  return (Array.isArray(history) ? history : [])
+    .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
+    .slice(-8)
+    .map((m) => ({ role: m.role, content: m.content.trim().slice(0, 1400) }));
+}
+
+async function runPollinationsFallback({ prompt, systemPrompt, history = [], images, taskType, settings }) {
   // Garde-fou confidentialité strict : bloque l'envoi de photos corporelles sur endpoint public
   if (taskType === 'physique_analysis' && images.length > 0 && !settings.allowPublicBodyPhotos) {
     const err = new Error(
@@ -660,6 +739,7 @@ async function runPollinationsFallback({ prompt, systemPrompt, images, taskType,
         ]
       : prompt;
 
+  const prior = sanitizeHistoryMessages(history);
   const res = await fetch('https://text.pollinations.ai/openai', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -667,6 +747,7 @@ async function runPollinationsFallback({ prompt, systemPrompt, images, taskType,
       model: 'openai',
       messages: [
         ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+        ...prior,
         { role: 'user', content: userContent },
       ],
     }),
@@ -681,8 +762,13 @@ async function runPollinationsFallback({ prompt, systemPrompt, images, taskType,
   return { rawText: content, provider: 'pollinations' };
 }
 
-async function runTier1FreeCloud({ prompt, systemPrompt, images, taskType, settings }) {
-  const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
+async function runTier1FreeCloud({ prompt, systemPrompt, history = [], images, taskType, settings }) {
+  const prior = sanitizeHistoryMessages(history);
+  const historyTranscript =
+    prior.length > 0
+      ? `Historique récent de la discussion :\n${prior.map((m) => `${m.role === 'user' ? 'Athlète' : 'Coach'} : ${m.content}`).join('\n')}\n\n`
+      : '';
+  const fullPrompt = `${systemPrompt ? `${systemPrompt}\n\n` : ''}${historyTranscript}Nouvelle demande : ${prompt}`;
 
   if (settings.tier1Provider !== 'pollinations') {
     try {
@@ -697,11 +783,11 @@ async function runTier1FreeCloud({ prompt, systemPrompt, images, taskType, setti
       if (taskType === 'physique_analysis' && images.length > 0 && !settings.allowPublicBodyPhotos) {
         throw puterErr;
       }
-      return runPollinationsFallback({ prompt, systemPrompt, images, taskType, settings });
+      return runPollinationsFallback({ prompt, systemPrompt, history, images, taskType, settings });
     }
   }
 
-  return runPollinationsFallback({ prompt, systemPrompt, images, taskType, settings });
+  return runPollinationsFallback({ prompt, systemPrompt, history, images, taskType, settings });
 }
 
 /* ==========================================================================
@@ -714,15 +800,42 @@ function parseDataUri(dataUri) {
   return { mimeType: match[1], base64: match[2] };
 }
 
-async function runGeminiNative({ prompt, systemPrompt, images, settings, expectJson, timeoutMs = 35000 }) {
-  const apiKey = (settings.apiKey || '').trim();
+function parseProviderErrorMessage(rawBody, fallbackStatus) {
+  if (!rawBody) return `HTTP ${fallbackStatus}`;
+  try {
+    const parsed = JSON.parse(rawBody);
+    const msg =
+      parsed?.error?.message ||
+      parsed?.message ||
+      parsed?.detail ||
+      (typeof parsed?.error === 'string' ? parsed.error : null);
+    if (msg) return String(msg).slice(0, 260);
+  } catch {
+    // Texte brut
+  }
+  return String(rawBody).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 220);
+}
+
+function cleanApiKey(rawKey) {
+  return String(rawKey || '').replace(/[\r\n\t\s]+/g, '');
+}
+
+const VERTEX_EXPRESS_CORS_HINT =
+  'Clé Vertex AI Express (AQ.) détectée : Google Cloud (aiplatform.googleapis.com) bloque les appels directs depuis un navigateur sans serveur proxy (CORS). Comme cette PWA tourne 100 % en local sur téléphone, créez une clé Google AI Studio gratuite (commence par AIza...) sur aistudio.google.com/apikey — elle fonctionne directement sur mobile.';
+
+async function runGeminiNative({ prompt, systemPrompt, history = [], images, settings, expectJson, timeoutMs = 35000 }) {
+  const apiKey = cleanApiKey(settings.apiKey);
   if (!apiKey) {
-    throw new Error('Clé API Gemini requise dans les Réglages (aucune clé en dur dans l’application).');
+    throw new Error('Clé API Gemini manquante. Collez votre clé Google AI Studio (AIza...) dans Profil → Clés IA.');
   }
 
-  const base = (settings.baseUrl || TIER2_PRESETS.gemini.baseUrl).replace(/\/+$/, '');
-  const modelName = (images.length > 0 ? settings.visionModel || settings.model : settings.model) || 'gemini-2.5-flash';
-  const endpoint = `${base}/models/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const isVertexKey = isVertexExpressKey(apiKey);
+  const rawModel = (images.length > 0 ? settings.visionModel || settings.model : settings.model) || 'gemini-2.5-flash';
+  const modelName = rawModel.trim().replace(/^models\//i, '');
+
+  const endpoint = isVertexKey
+    ? `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`
+    : `${(settings.baseUrl || TIER2_PRESETS.gemini.baseUrl).trim().replace(/\/+$/, '')}/models/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
   const parts = [{ text: prompt }];
   for (const img of images) {
@@ -737,9 +850,14 @@ async function runGeminiNative({ prompt, systemPrompt, images, settings, expectJ
     }
   }
 
+  const priorContents = sanitizeHistoryMessages(history).map((m) => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.content }],
+  }));
+
   const body = {
     ...(systemPrompt ? { systemInstruction: { parts: [{ text: systemPrompt }] } } : {}),
-    contents: [{ role: 'user', parts }],
+    contents: [...priorContents, { role: 'user', parts }],
     generationConfig: {
       temperature: expectJson ? 0.2 : 0.5,
       ...(expectJson ? { responseMimeType: 'application/json' } : {}),
@@ -757,36 +875,59 @@ async function runGeminiNative({ prompt, systemPrompt, images, settings, expectJ
     });
     if (!res.ok) {
       const errBody = await res.text();
-      const err = new Error(`Gemini HTTP ${res.status} : ${errBody.slice(0, 220)}`);
+      const detail = parseProviderErrorMessage(errBody, res.status);
+      const err = new Error(
+        isVertexKey
+          ? `Vertex AI Express HTTP ${res.status} (${detail}). ${VERTEX_EXPRESS_CORS_HINT}`
+          : `Gemini HTTP ${res.status} : ${detail}`
+      );
       err.httpStatus = res.status;
+      err.isVertexExpress = isVertexKey;
       throw err;
     }
     const json = await res.json();
-    const text = json?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('\n') || '';
-    if (!text) throw new Error('Réponse Gemini vide.');
-    return { rawText: text, provider: `gemini:${modelName}` };
+    const text = json?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('\n').trim() || '';
+    if (!text) {
+      const blockReason = json?.promptFeedback?.blockReason;
+      throw new Error(blockReason ? `Réponse Gemini bloquée (${blockReason}).` : 'Réponse Gemini vide.');
+    }
+    return { rawText: text, provider: `${isVertexKey ? 'vertex' : 'gemini'}:${modelName}` };
+  } catch (err) {
+    if (isVertexKey && (err instanceof TypeError || String(err?.message || '').includes('Failed to fetch'))) {
+      const corsErr = new Error(VERTEX_EXPRESS_CORS_HINT);
+      corsErr.isVertexExpress = true;
+      throw corsErr;
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function runOpenAICompatible({ prompt, systemPrompt, images, settings, expectJson, timeoutMs = 45000 }) {
-  const baseUrl = (settings.baseUrl || '').trim().replace(/\/+$/, '');
+async function runOpenAICompatible({ prompt, systemPrompt, history = [], images, settings, expectJson, timeoutMs = 45000 }) {
+  let baseUrl = (settings.baseUrl || '').trim().replace(/\/+$/, '');
   if (!baseUrl) {
-    throw new Error('URL de base OpenAI-compatible manquante dans les Réglages.');
+    throw new Error('URL de base manquante dans Profil → Clés IA.');
+  }
+  // Auto-complète /v1 pour Ollama/LM Studio si oublié
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(baseUrl)) {
+    baseUrl = `${baseUrl}/v1`;
   }
 
   const endpoint = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
   const model = (images.length > 0 ? settings.visionModel || settings.model : settings.model || '').trim();
   if (!model) {
-    throw new Error('Nom du modèle manquant dans les Réglages.');
+    throw new Error('Nom du modèle manquant dans Profil → Clés IA.');
   }
 
   const headers = { 'Content-Type': 'application/json' };
-  const apiKey = (settings.apiKey || '').trim();
+  const apiKey = cleanApiKey(settings.apiKey);
   if (apiKey) {
     headers.Authorization = `Bearer ${apiKey}`;
+  } else if (TIER2_PRESETS[settings.tier2Preset]?.requiresApiKey) {
+    throw new Error(`Clé API requise pour ${TIER2_PRESETS[settings.tier2Preset].label}.`);
   }
+
   if (baseUrl.includes('openrouter.ai')) {
     headers['HTTP-Referer'] = typeof window !== 'undefined' ? window.location.origin : 'https://kinetix-lab.local';
     headers['X-Title'] = 'Kinetix Lab';
@@ -800,8 +941,10 @@ async function runOpenAICompatible({ prompt, systemPrompt, images, settings, exp
         ]
       : prompt;
 
+  const prior = sanitizeHistoryMessages(history);
   const messages = [
     ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+    ...prior,
     { role: 'user', content: userContent },
   ];
 
@@ -823,13 +966,17 @@ async function runOpenAICompatible({ prompt, systemPrompt, images, settings, exp
 
     if (!res.ok) {
       const errBody = await res.text();
-      const err = new Error(`HTTP ${res.status} : ${errBody.slice(0, 220)}`);
+      const detail = parseProviderErrorMessage(errBody, res.status);
+      const err = new Error(`HTTP ${res.status} : ${detail}`);
       err.httpStatus = res.status;
       throw err;
     }
 
     const json = await res.json();
-    const rawText = json?.choices?.[0]?.message?.content;
+    const rawContent = json?.choices?.[0]?.message?.content;
+    const rawText = Array.isArray(rawContent)
+      ? rawContent.map((part) => part?.text || '').join('\n').trim()
+      : String(rawContent || '').trim();
     if (!rawText) {
       throw new Error('Réponse du serveur compatible OpenAI vide.');
     }
@@ -916,7 +1063,7 @@ export function detectBrowserLlmCapability() {
   };
 }
 
-async function runTier3WebLLM({ prompt, systemPrompt, settings, onProgress }) {
+async function runTier3WebLLM({ prompt, systemPrompt, history = [], settings, onProgress }) {
   const cap = detectBrowserLlmCapability();
   if (cap.isIOS && !settings.tier3AcceptedRamWarning) {
     throw new Error(
@@ -943,9 +1090,11 @@ async function runTier3WebLLM({ prompt, systemPrompt, settings, onProgress }) {
     loadedWebLlmModelId = targetModel;
   }
 
+  const prior = sanitizeHistoryMessages(history);
   const reply = await webLlmEngineInstance.chat.completions.create({
     messages: [
       ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+      ...prior,
       { role: 'user', content: prompt },
     ],
     temperature: 0.25,
@@ -993,23 +1142,23 @@ export async function testAIConnection(rawSettings) {
   }
 
   try {
-    const probePrompt = 'Réponds uniquement par le JSON strict : {"status":"ok"}';
+    const probePrompt = 'Réponds uniquement OK.';
     const res =
       settings.activeTier === AI_TIERS.TIER_1_FREE_CLOUD
         ? await runTier1FreeCloud({
             prompt: probePrompt,
-            systemPrompt: 'Réponds en JSON compact.',
+            systemPrompt: 'Réponds très brièvement.',
             images: [],
             taskType: 'healthcheck',
             settings,
           })
         : await runTier2BYO({
             prompt: probePrompt,
-            systemPrompt: 'Réponds en JSON compact.',
+            systemPrompt: 'Réponds très brièvement.',
             images: [],
             settings,
-            expectJson: true,
-            timeoutMs: 15000,
+            expectJson: false,
+            timeoutMs: 18000,
           });
 
     const latencyMs = Math.round(performance.now() - started);
@@ -1025,6 +1174,7 @@ export async function testAIConnection(rawSettings) {
         vModel.includes('vision') ||
         vModel.includes('gemini') ||
         vModel.includes('gpt-4o') ||
+        vModel.includes('gpt-4.1') ||
         vModel.includes('scout') ||
         vModel.includes('maverick') ||
         vModel.includes('claude') ||
@@ -1053,7 +1203,8 @@ export async function testAIConnection(rawSettings) {
       latencyMs,
       visionSupported,
       provider: res.provider,
-      diagnostic: `Connexion validée (${latencyMs} ms) via ${res.provider}. Vision : ${visionSupported ? 'détectée' : 'texte seul'}.`,
+      replyPreview: String(res.rawText || '').slice(0, 60),
+      diagnostic: `Connexion validée en ${latencyMs} ms via ${res.provider}. Vision : ${visionSupported ? 'activée' : 'texte seul'}.`,
     };
   } catch (err) {
     const latencyMs = Math.round(performance.now() - started);
@@ -1062,21 +1213,23 @@ export async function testAIConnection(rawSettings) {
     const isHttpTarget = String(settings.baseUrl || '').startsWith('http://');
     let diagnostic = msg;
 
-    if (err.httpStatus === 401 || err.httpStatus === 403) {
-      diagnostic = `Erreur d’authentification (HTTP ${err.httpStatus}) : vérifiez votre clé API dans les Réglages.`;
+    if (err.isVertexExpress) {
+      diagnostic = msg;
+    } else if (err.httpStatus === 401 || err.httpStatus === 403) {
+      diagnostic = `Clé API refusée (HTTP ${err.httpStatus}) : vérifiez que la clé correspond bien au fournisseur "${settings.tier2Preset}" (${msg}).`;
     } else if (err.httpStatus === 404) {
-      diagnostic = `Endpoint ou modèle introuvable (HTTP 404) : vérifiez l’URL (${settings.baseUrl}) et le nom exact du modèle (${settings.model}).`;
+      diagnostic = `Modèle ou URL introuvable (HTTP 404) : vérifiez l’URL (${settings.baseUrl}) et le modèle (${settings.model}).`;
     } else if (err.httpStatus === 429) {
-      diagnostic = 'Quota dépassé / limite de débit (HTTP 429). Réessayez dans quelques instants ou basculez sur le Niveau 0/1.';
+      diagnostic = 'Quota dépassé / limite de requêtes (HTTP 429). Patientez quelques instants ou changez de modèle.';
     } else if (err.name === 'AbortError') {
-      diagnostic = 'Délai dépassé : le serveur ne répond pas dans les 15 secondes.';
+      diagnostic = 'Délai dépassé (18 s) : le serveur ne répond pas.';
     } else if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || err instanceof TypeError) {
       if (isHttpsPage && isHttpTarget) {
         diagnostic =
-          'Blocage Mixed Content / CORS : page HTTPS vers serveur HTTP local. Exposez Ollama/LM Studio via HTTPS (Tailscale Funnel ou Cloudflare Tunnel) avec OLLAMA_ORIGINS="*".';
+          'Blocage HTTPS → HTTP (Mixed Content) : sur mobile HTTPS, exposez Ollama/LM Studio via Tailscale Funnel ou Cloudflare Tunnel avec OLLAMA_ORIGINS="*".';
       } else {
         diagnostic =
-          'Erreur réseau ou CORS (Failed to fetch) : vérifiez que le serveur tourne et autorise CORS (ex. OLLAMA_ORIGINS="*" ollama serve).';
+          'Erreur réseau ou CORS (Failed to fetch) : vérifiez la connexion Internet ou l’autorisation CORS du serveur.';
       }
     }
 
@@ -1099,6 +1252,7 @@ export async function routeAIRequest({
   taskType = 'coach_chat',
   prompt = '',
   systemPrompt = '',
+  history = [],
   images = [],
   context = {},
   settings: rawSettings = null,
@@ -1144,11 +1298,11 @@ export async function routeAIRequest({
   let rawResult = null;
   try {
     if (settings.activeTier === AI_TIERS.TIER_1_FREE_CLOUD) {
-      rawResult = await runTier1FreeCloud({ prompt, systemPrompt, images, taskType, settings });
+      rawResult = await runTier1FreeCloud({ prompt, systemPrompt, history, images, taskType, settings });
     } else if (settings.activeTier === AI_TIERS.TIER_2_BYO) {
-      rawResult = await runTier2BYO({ prompt, systemPrompt, images, settings, expectJson });
+      rawResult = await runTier2BYO({ prompt, systemPrompt, history, images, settings, expectJson });
     } else if (settings.activeTier === AI_TIERS.TIER_3_WEBLLM) {
-      rawResult = await runTier3WebLLM({ prompt, systemPrompt, settings, onProgress });
+      rawResult = await runTier3WebLLM({ prompt, systemPrompt, history, settings, onProgress });
     } else {
       return buildFallback('Niveau IA inconnu.');
     }

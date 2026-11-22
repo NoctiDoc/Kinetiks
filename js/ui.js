@@ -46,6 +46,7 @@ import {
   deletePhysiquePhoto,
   listCoachMessages,
   addCoachMessage,
+  updateCoachMessage,
   clearCoachMessages,
   listShoppingList,
   saveShoppingItem,
@@ -62,6 +63,8 @@ import {
   TIER2_PRESETS,
   TIER3_MODELS,
   normalizeAISettings,
+  detectPresetFromApiKey,
+  isVertexExpressKey,
   testAIConnection,
   detectBrowserLlmCapability,
   routeAIRequest,
@@ -76,7 +79,10 @@ import {
 
 import {
   GOAL_PROFILES,
+  TRAINING_SPLITS,
+  TRAINING_METHODS,
   VOLUME_LANDMARKS,
+  buildSetScheme,
   generateProgram,
   evaluateReadiness,
   applyPreservationMode,
@@ -88,6 +94,8 @@ import {
   detectDeloadNeed,
   computeProgramMutation,
   applyProgramMutation,
+  buildCoachRuntimeContext,
+  analyzeCoachFeedbackAndProposeAction,
 } from './biomechanics-engine.js';
 
 import {
@@ -160,6 +168,7 @@ const state = {
   selectedDayIdx: 0,
   activeSession: null,
   readinessDraft: { sleep: 4, soreness: 4, energy: 4 },
+  readinessExpanded: false,
   openDrawers: {}, // { [slotId]: 'anatomy' | 'execution' | 'plates' | null }
 
   // État nutrition
@@ -170,6 +179,7 @@ const state = {
   barcodeScanner: null,
 
   // État Labo
+  laboSubTab: 'biometrics', // 'biometrics' | 'photos'
   laboAngle: 'front',
   cameraController: null,
   lastPhysiqueAnalysis: null,
@@ -178,6 +188,9 @@ const state = {
 
   // État Coach/Profil
   profilSubTab: 'coach', // 'coach' | 'profile' | 'ai' | 'p2p' | 'backup'
+  showApiKey: false,
+  lastProbeResult: null,
+  coachBusy: false,
   lastShareResult: null,
 };
 
@@ -620,6 +633,25 @@ function renderOnboarding(container) {
           </div>
         </div>
 
+        <div class="grid-2">
+          <div class="field">
+            <label class="field-label" for="ob-split">Split d’entraînement</label>
+            <select id="ob-split" class="select">
+              ${Object.values(TRAINING_SPLITS)
+                .map((sp) => `<option value="${sp.id}">${esc(sp.label)}</option>`)
+                .join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="ob-method">Méthode de progression</label>
+            <select id="ob-method" class="select">
+              ${Object.values(TRAINING_METHODS)
+                .map((m) => `<option value="${m.id}">${esc(m.label)}</option>`)
+                .join('')}
+            </select>
+          </div>
+        </div>
+
         <div class="field">
           <span class="field-label">Matériel disponible</span>
           <div class="row-wrap">
@@ -691,6 +723,8 @@ function renderOnboarding(container) {
       level: document.getElementById('ob-level').value,
       sessionsPerWeek: Number(document.getElementById('ob-freq').value),
       sessionDurationMin: Number(document.getElementById('ob-dur').value),
+      splitPreference: document.getElementById('ob-split')?.value || 'auto',
+      progressionMethod: document.getElementById('ob-method')?.value || 'double_progression',
       equipment: equipment.length > 0 ? equipment : ['bodyweight'],
       injuries: injZone ? [{ zone: injZone, severity: injSev }] : [],
     });
@@ -722,43 +756,49 @@ function renderCockpit(container) {
 
   const pct = (val, target) => Math.min(100, Math.round((val / Math.max(1, target)) * 100));
 
+  const nextDayName = state.program?.days?.[state.selectedDayIdx]?.name || 'Séance du jour';
+
   container.innerHTML = `
     <section class="stack">
-      <div class="row-between">
-        <div>
-          <h1>Cockpit · ${esc(state.profile.name)}</h1>
-          <div class="meta-inline">
-            <span>${esc(GOAL_PROFILES[state.profile.goal]?.label || state.profile.goal)}</span>
-            <span class="meta-sep">·</span>
-            <span>${esc(state.program?.splitLabel || '')}</span>
-            <span class="meta-sep">·</span>
-            <span class="mono">Phase ${esc(state.program?.phase || 'calibration')}</span>
+      <div class="hero-card">
+        <div class="row-between">
+          <div class="stack-sm" style="gap: 3px;">
+            <span class="state-tag is-accent">COCKPIT · PHASE ${esc((state.program?.phase || 'calibration').toUpperCase())}</span>
+            <h1>${esc(state.profile.name)}</h1>
+            <div class="meta-inline">
+              <span>${esc(GOAL_PROFILES[state.profile.goal]?.label || state.profile.goal)}</span>
+              <span class="meta-sep">·</span>
+              <span>${esc(state.program?.splitLabel || '')}</span>
+            </div>
           </div>
+          <span class="mono metric-sm text-secondary">${esc(getTodayISO())}</span>
         </div>
-        <button type="button" class="btn btn-primary" data-goto="seance">Démarrer séance</button>
+        <button type="button" class="btn btn-primary btn-block" data-goto="seance">
+          Démarrer · ${esc(nextDayName)}
+        </button>
       </div>
 
       <!-- Strip 4 KPI Télémétrie -->
       <div class="kpi-strip">
         <div class="kpi-cell">
-          <span class="kpi-label">Poids brut / EWMA</span>
+          <span class="kpi-label">Poids EWMA</span>
           <span class="kpi-value">${ewma.latestEwmaKg ?? state.profile.weightKg} kg</span>
-          <span class="kpi-delta">Brut ${ewma.latestRawKg ?? state.profile.weightKg} kg · ${ewma.weeklyDeltaKg >= 0 ? '+' : ''}${ewma.weeklyDeltaKg} kg/sem</span>
+          <span class="kpi-delta">Brut ${ewma.latestRawKg ?? state.profile.weightKg} · ${ewma.weeklyDeltaKg >= 0 ? '+' : ''}${ewma.weeklyDeltaKg}/sem</span>
         </div>
         <div class="kpi-cell">
           <span class="kpi-label">TDEE ${adaptive.adaptiveActive ? 'adaptatif' : 'estimé'}</span>
           <span class="kpi-value">${adaptive.estimatedTdeeKcal}</span>
-          <span class="kpi-delta">kcal/j · Cible ${macros.kcal} kcal</span>
+          <span class="kpi-delta">Cible ${macros.kcal} kcal/j</span>
         </div>
         <div class="kpi-cell">
           <span class="kpi-label">Régularité 7 j</span>
-          <span class="kpi-value">${recent7d} / ${state.profile.sessionsPerWeek}</span>
-          <span class="kpi-delta">${state.workouts.length} séances enregistrées</span>
+          <span class="kpi-value">${recent7d}/${state.profile.sessionsPerWeek}</span>
+          <span class="kpi-delta">${state.workouts.length} séances totales</span>
         </div>
         <div class="kpi-cell">
-          <span class="kpi-label">Masse maigre / BMR</span>
+          <span class="kpi-label">Masse maigre</span>
           <span class="kpi-value">${macros.leanMassKg} kg</span>
-          <span class="kpi-delta">BMR ${macros.bmrKcal} kcal (${esc(macros.formula)})</span>
+          <span class="kpi-delta">BMR ${macros.bmrKcal} kcal</span>
         </div>
       </div>
 
@@ -766,11 +806,11 @@ function renderCockpit(container) {
         lagList.length > 0
           ? `
         <div class="notice notice-danger">
-          <div class="stack-sm">
-            <span class="state-tag is-lag">[LAG — PRIORITÉS MÉSOCYCLE ACTIF]</span>
-            <span>Groupes placés en début de séance avec surcharge de volume : <strong>${esc(lagList.join(' · '))}</strong></span>
+          <div class="stack-sm" style="gap: 3px;">
+            <span class="state-tag is-lag">[LAG — PRIORITÉS MÉSOCYCLE]</span>
+            <span>Surcharge active : <strong>${esc(lagList.join(' · '))}</strong></span>
           </div>
-          <button type="button" class="btn btn-sm" data-goto="labo">Labo Photos</button>
+          <button type="button" class="btn btn-sm" data-goto="labo">Labo</button>
         </div>`
           : ''
       }
@@ -779,21 +819,21 @@ function renderCockpit(container) {
         deloadStatus.deloadRecommended
           ? `
         <div class="notice notice-danger">
-          <div class="stack-sm">
+          <div class="stack-sm" style="gap: 3px;">
             <span class="state-tag is-danger">[ALERTE DELOAD AUTO]</span>
             <span>${esc(deloadStatus.reason)}</span>
           </div>
-          <button type="button" class="btn btn-sm btn-danger" id="btn-activate-deload">Passer en Deload</button>
+          <button type="button" class="btn btn-sm btn-danger" id="btn-activate-deload">Activer Deload</button>
         </div>`
           : ''
       }
 
-      <!-- 4 Jauges quotidiennes -->
+      <!-- 4 Jauges quotidiennes + Brief -->
       <div class="grid-2">
         <section class="panel">
           <div class="panel-header">
             <h2>Objectifs du jour</h2>
-            <span class="mono metric-sm text-secondary">${esc(getTodayISO())}</span>
+            <span class="mono metric-sm text-accent">${Math.max(0, macros.kcal - consumed.kcal)} kcal rest.</span>
           </div>
 
           <div class="gauge-block">
@@ -806,7 +846,7 @@ function renderCockpit(container) {
 
           <div class="gauge-block">
             <div class="gauge-head">
-              <span class="label-tech">Protéines (masse maigre)</span>
+              <span class="label-tech">Protéines</span>
               <span class="mono metric-sm">${consumed.proteinG} / ${macros.proteinG} g</span>
             </div>
             <div class="gauge-track"><div class="gauge-fill ${consumed.proteinG >= macros.proteinG * 0.9 ? 'is-ok' : ''}" style="transform: scaleX(${pct(consumed.proteinG, macros.proteinG) / 100})"></div></div>
@@ -818,7 +858,7 @@ function renderCockpit(container) {
               <span class="mono metric-sm">${state.hydration.totalMl || 0} / ${macros.waterTargetMl} ml</span>
             </div>
             <div class="gauge-track"><div class="gauge-fill" style="transform: scaleX(${pct(state.hydration.totalMl || 0, macros.waterTargetMl) / 100})"></div></div>
-            <div class="row-wrap" style="margin-top: 4px;">
+            <div class="grid-4" style="grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 4px;">
               <button type="button" class="btn btn-sm mono" data-add-water="250">+250 ml</button>
               <button type="button" class="btn btn-sm mono" data-add-water="500">+500 ml</button>
             </div>
@@ -826,44 +866,42 @@ function renderCockpit(container) {
 
           <div class="gauge-block">
             <div class="gauge-head">
-              <span class="label-tech">Activité NEAT (Pas)</span>
-              <span class="mono metric-sm">${todaySteps} / ${stepTarget} pas</span>
+              <span class="label-tech">Pas (NEAT)</span>
+              <span class="mono metric-sm">${todaySteps} / ${stepTarget}</span>
             </div>
             <div class="gauge-track"><div class="gauge-fill" style="transform: scaleX(${pct(todaySteps, stepTarget) / 100})"></div></div>
-            <div class="row" style="margin-top: 4px;">
-              <input id="quick-steps-input" class="input mono" type="number" min="0" max="60000" step="500" placeholder="Saisir pas du jour" value="${todaySteps || ''}" style="max-width: 190px;" />
+            <div class="input-action-row" style="margin-top: 4px;">
+              <input id="quick-steps-input" class="input mono" type="number" min="0" max="60000" step="500" placeholder="Pas du jour" value="${todaySteps || ''}" />
               <button type="button" class="btn btn-sm" id="btn-save-steps">Valider</button>
             </div>
           </div>
         </section>
 
-        <!-- Brief du Coach & 3 Actions Rapides -->
         <section class="panel">
           <div class="panel-header">
-            <h2>Brief du Coach</h2>
-            <span class="state-tag is-muted">NIVEAU IA ${state.aiSettings.activeTier}</span>
+            <h2>Brief & Raccourcis</h2>
+            <span class="state-tag is-muted">IA NIV. ${state.aiSettings.activeTier}</span>
           </div>
 
-          <p class="text-secondary" style="font-size: 0.9rem;">
+          <p class="text-secondary" style="font-size: 0.86rem; line-height: 1.5;">
             ${esc(
               adaptive.adjustmentProposal
                 ? adaptive.adjustmentProposal.reason
-                : `Trajectoire EWMA : ${ewma.weeklyDeltaKg >= 0 ? '+' : ''}${ewma.weeklyDeltaKg} kg/sem. Reste à consommer aujourd’hui : ${Math.max(0, macros.kcal - consumed.kcal)} kcal et ${Math.max(0, Math.round(macros.proteinG - consumed.proteinG))} g de protéines. Prochaine séance prête : ${state.program?.days?.[state.selectedDayIdx]?.name || 'Séance du jour'}.`
+                : `Tendance EWMA : ${ewma.weeklyDeltaKg >= 0 ? '+' : ''}${ewma.weeklyDeltaKg} kg/sem. Reste aujourd’hui : ${Math.max(0, macros.kcal - consumed.kcal)} kcal et ${Math.max(0, Math.round(macros.proteinG - consumed.proteinG))} g de protéines.`
             )}
           </p>
 
           <hr class="divider" />
 
           <div class="stack-sm">
-            <span class="label-tech">Actions rapides</span>
-            <button type="button" class="btn btn-primary btn-block" data-goto="seance">
-              Ouvrir la séance du jour (${esc(state.program?.days?.[state.selectedDayIdx]?.name || 'Split')})
-            </button>
             <button type="button" class="btn btn-block" data-goto="nutrition">
-              Photo d’assiette / Scanner Code-Barres / Ciqual
+              Ajouter un repas (Ciqual / Photo / Scan)
             </button>
             <button type="button" class="btn btn-block" data-goto="labo">
-              Importer pesée balance (OCR) / Labo Photos 3 angles
+              Pesée OCR & Labo Photos 3 angles
+            </button>
+            <button type="button" class="btn btn-block" data-goto="profil">
+              Coach IA & Réglages Clés API
             </button>
           </div>
         </section>
@@ -928,33 +966,54 @@ function ensureActiveSessionForSelectedDay() {
   }
 
   const seenCompoundChain = new Set();
+  const activeMethod = state.program?.progressionMethod || state.profile?.progressionMethod || 'double_progression';
   const exercises = day.exercises.map((slot) => {
     const meta = getExerciseById(slot.exerciseId);
     const primaryChain = MUSCLE_GROUPS[meta?.primaryMuscles?.[0]]?.chain || 'other';
     const isFirstCompound = meta?.category === 'compound' && !seenCompoundChain.has(primaryChain);
     if (isFirstCompound) seenCompoundChain.add(primaryChain);
 
-    const warmupSets = generateWarmupRamp(slot.suggestedLoadKg, meta, isFirstCompound).map((w) => ({
+    const scheme =
+      Array.isArray(slot.setScheme) && slot.setScheme.length > 0
+        ? slot.setScheme
+        : buildSetScheme(meta, {
+            sets: slot.sets,
+            repMin: slot.repMin,
+            repMax: slot.repMax,
+            targetRir: slot.targetRir,
+            suggestedLoadKg: slot.suggestedLoadKg,
+            method: slot.method || activeMethod,
+            restSec: slot.restSec,
+            dayIndex: state.selectedDayIdx,
+          });
+
+    const firstWorkWeight = scheme[0]?.weightKg ?? slot.suggestedLoadKg;
+    const warmupSets = generateWarmupRamp(firstWorkWeight, meta, isFirstCompound).map((w) => ({
       id: generateId('set'),
       weightKg: w.weightKg,
       reps: w.reps,
       rir: 4,
       isWarmup: true,
       warmupLabel: w.label,
+      tag: 'ÉCH',
       done: false,
     }));
 
-    const workSets = Array.from({ length: slot.sets }, () => ({
+    const workSets = scheme.map((s) => ({
       id: generateId('set'),
-      weightKg: slot.suggestedLoadKg,
-      reps: slot.repMin,
-      rir: slot.targetRir,
+      weightKg: s.weightKg,
+      reps: s.reps,
+      rir: s.rir,
+      restSec: s.restSec || slot.restSec,
+      tag: s.tag || null,
       isWarmup: false,
       done: false,
     }));
 
     return {
       ...slot,
+      method: slot.method || activeMethod,
+      setScheme: scheme,
       feedback: null,
       progressionHint: null,
       setsData: [...warmupSets, ...workSets],
@@ -980,34 +1039,34 @@ function renderExerciseDrawerHTML(slot, exMeta, drawerType) {
     const renderView = (baseUrl, primaries, secondaries, caption) => `
       <div class="stack-sm" style="align-items: center;">
         <div class="anatomy-figure">
-          <img src="${esc(baseUrl)}" alt="${esc(caption)}" referrerpolicy="no-referrer" style="filter: invert(0.85) opacity(0.32);" onerror="this.style.opacity='0'" />
+          <img src="${esc(baseUrl)}" alt="${esc(caption)}" loading="lazy" style="filter: invert(0.92) brightness(1.15) opacity(0.38);" />
           ${secondaries
             .map(
               (s) =>
-                `<img src="${esc(s.url)}" alt="${esc(s.name)}" referrerpolicy="no-referrer" style="filter: sepia(1) saturate(3) hue-rotate(5deg) opacity(0.42);" onerror="this.style.display='none'" />`
+                `<img src="${esc(s.url)}" alt="${esc(s.name)}" loading="lazy" style="filter: sepia(1) saturate(4) hue-rotate(8deg) opacity(0.55);" onerror="this.style.display='none'" />`
             )
             .join('')}
           ${primaries
             .map(
               (p) =>
-                `<img src="${esc(p.url)}" alt="${esc(p.name)}" referrerpolicy="no-referrer" style="filter: sepia(1) saturate(8) hue-rotate(4deg);" onerror="this.style.display='none'" />`
+                `<img src="${esc(p.url)}" alt="${esc(p.name)}" loading="lazy" style="filter: sepia(1) saturate(9) hue-rotate(2deg) brightness(1.08);" onerror="this.style.display='none'" />`
             )
             .join('')}
         </div>
-        <span class="metric-sm text-secondary">${esc(caption)}</span>
+        <span class="metric-xs text-secondary">${esc(caption)}</span>
       </div>`;
 
     return `
       <div class="stack-sm">
         <div class="anatomy-stage">
-          ${renderView(layers.frontBase, layers.frontPrimary, layers.frontSecondary, 'Antérieure')}
-          ${renderView(layers.backBase, layers.backPrimary, layers.backSecondary, 'Postérieure')}
+          ${renderView(layers.frontBase, layers.frontPrimary, layers.frontSecondary, 'Vue antérieure')}
+          ${renderView(layers.backBase, layers.backPrimary, layers.backSecondary, 'Vue postérieure')}
         </div>
         <div class="meta-inline">
           <span class="text-accent">Primaires : ${esc(exMeta.primaryMuscles.map((m) => MUSCLE_GROUPS[m]?.label || m).join(', '))}</span>
           ${
             exMeta.secondaryMuscles.length
-              ? `<span class="meta-sep">·</span><span>Stabilisateurs : ${esc(exMeta.secondaryMuscles.map((m) => MUSCLE_GROUPS[m]?.label || m).join(', '))}</span>`
+              ? `<span class="meta-sep">·</span><span>Secondaires : ${esc(exMeta.secondaryMuscles.map((m) => MUSCLE_GROUPS[m]?.label || m).join(', '))}</span>`
               : ''
           }
         </div>
@@ -1015,30 +1074,21 @@ function renderExerciseDrawerHTML(slot, exMeta, drawerType) {
   }
 
   if (drawerType === 'execution') {
-    const media = getExerciseMediaUrls(exMeta);
     const userInjuryZones = (state.profile?.injuries || []).map((i) => i.zone);
     const matchingWarnings = userInjuryZones
       .map((z) => (exMeta.injuryWarnings?.[z] ? `${z.toUpperCase()} : ${exMeta.injuryWarnings[z]}` : null))
       .filter(Boolean);
 
     return `
-      <div class="stack-sm">
-        <div class="execution-frames">
-          <div class="execution-frame">
-            <img src="${esc(media.start || '')}" alt="${esc(exMeta.name)} — départ" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='<div style=padding:16px;font-size:12px;color:#687182>Position départ (hors-ligne)</div>'" />
-          </div>
-          <div class="execution-frame">
-            <img src="${esc(media.end || '')}" alt="${esc(exMeta.name)} — contraction" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='<div style=padding:16px;font-size:12px;color:#687182>Position contraction (hors-ligne)</div>'" />
-          </div>
-        </div>
+      <div class="panel-elevated stack-sm">
         <div class="meta-inline mono">
-          <span>Tempo ${esc(exMeta.tempo)}</span>
+          <span class="text-accent">Tempo ${esc(exMeta.tempo)}</span>
           <span class="meta-sep">·</span>
           <span>Courbe ${esc(exMeta.resistanceCurve)}</span>
           <span class="meta-sep">·</span>
           <span>Palier ±${exMeta.incrementKg} kg</span>
         </div>
-        <p class="panel-subtitle"><strong>Réglage :</strong> ${esc(exMeta.setupCues)}</p>
+        <p class="panel-subtitle"><strong>Placement :</strong> ${esc(exMeta.setupCues)}</p>
         <p class="panel-subtitle"><strong>Respiration :</strong> ${esc(exMeta.breathing)}</p>
         ${
           matchingWarnings.length > 0
@@ -1053,9 +1103,9 @@ function renderExerciseDrawerHTML(slot, exMeta, drawerType) {
     const calc = calculatePerSideLoad(firstWork?.weightKg ?? slot.suggestedLoadKg, exMeta);
     return `
       <div class="panel-elevated stack-sm">
-        <span class="label-tech">Répartition par côté / disques</span>
+        <span class="label-tech">Charge & disques par côté</span>
         <span class="mono metric-sm text-accent">${esc(calc.label)}</span>
-        <span class="panel-subtitle">Incrément matériel recommandé : ±${exMeta.incrementKg} kg</span>
+        <span class="panel-subtitle">Palier matériel recommandé : ±${exMeta.incrementKg} kg</span>
       </div>`;
   }
 
@@ -1075,19 +1125,22 @@ function renderSeance(container) {
 
   container.innerHTML = `
     <section class="stack">
-      <!-- Sélecteur de jours du split -->
+      <!-- En-tête séance compact -->
       <div class="row-between">
-        <div>
-          <h1>Séance active</h1>
+        <div class="stack-sm" style="gap: 2px;">
+          <h1>${esc(session.dayName)}</h1>
           <div class="meta-inline">
             <span>${esc(state.program.splitLabel)}</span>
             <span class="meta-sep">·</span>
-            <span class="mono">Semaine ${state.program.weekNumber || 1} · ${esc(state.program.phase)}</span>
+            <span class="text-accent">${esc(state.program.methodLabel || TRAINING_METHODS[state.profile?.progressionMethod || 'double_progression']?.shortLabel || 'Double prog.')}</span>
+            <span class="meta-sep">·</span>
+            <span class="mono">S${state.program.weekNumber || 1} · ${esc(state.program.phase)}</span>
           </div>
         </div>
         <button type="button" class="btn btn-sm" id="btn-toggle-wakelock">Écran actif</button>
       </div>
 
+      <!-- Sélecteur jours split -->
       <div class="segmented" role="tablist">
         ${days
           .map(
@@ -1099,67 +1152,78 @@ function renderSeance(container) {
           .join('')}
       </div>
 
-      <!-- Check-in Readiness 3 secondes -->
-      <section class="panel">
-        <div class="panel-header">
-          <div>
-            <h2>Check-in Readiness (3 s)</h2>
-            <p class="panel-subtitle">${esc(readiness.summary)}</p>
+      <!-- Check-in Readiness compact (dépliable pour afficher les exercices immédiatement) -->
+      <section class="panel" style="gap: 10px;">
+        <div class="row-between">
+          <div class="stack-sm" style="gap: 2px;">
+            <span class="label-tech">Readiness du jour</span>
+            <span class="panel-subtitle">${esc(readiness.summary)}</span>
           </div>
-          <span class="metric-lg ${readiness.recommendPreservation ? 'text-danger' : 'text-accent'}">${readiness.score}/100</span>
+          <div class="row" style="gap: 8px; flex-shrink: 0;">
+            <span class="metric-lg ${readiness.recommendPreservation ? 'text-danger' : 'text-accent'}">${readiness.score}/100</span>
+            <button type="button" class="btn btn-xs" id="btn-toggle-readiness">
+              ${state.readinessExpanded ? 'Masquer' : 'Ajuster'}
+            </button>
+          </div>
         </div>
 
-        <div class="grid-3">
-          <div class="field">
-            <label class="field-label" for="rd-sleep"><span>Sommeil</span><span class="mono">${state.readinessDraft.sleep}/5</span></label>
-            <input id="rd-sleep" class="range-tech" type="range" min="1" max="5" value="${state.readinessDraft.sleep}" />
-          </div>
-          <div class="field">
-            <label class="field-label" for="rd-soreness"><span>Confort articulaire</span><span class="mono">${state.readinessDraft.soreness}/5</span></label>
-            <input id="rd-soreness" class="range-tech" type="range" min="1" max="5" value="${state.readinessDraft.soreness}" />
-          </div>
-          <div class="field">
-            <label class="field-label" for="rd-energy"><span>Énergie</span><span class="mono">${state.readinessDraft.energy}/5</span></label>
-            <input id="rd-energy" class="range-tech" type="range" min="1" max="5" value="${state.readinessDraft.energy}" />
-          </div>
-        </div>
+        ${
+          state.readinessExpanded
+            ? `
+          <div class="grid-3">
+            <div class="field">
+              <label class="field-label" for="rd-sleep"><span>Sommeil</span><span class="mono">${state.readinessDraft.sleep}/5</span></label>
+              <input id="rd-sleep" class="range-tech" type="range" min="1" max="5" value="${state.readinessDraft.sleep}" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="rd-soreness"><span>Confort articulaire</span><span class="mono">${state.readinessDraft.soreness}/5</span></label>
+              <input id="rd-soreness" class="range-tech" type="range" min="1" max="5" value="${state.readinessDraft.soreness}" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="rd-energy"><span>Énergie</span><span class="mono">${state.readinessDraft.energy}/5</span></label>
+              <input id="rd-energy" class="range-tech" type="range" min="1" max="5" value="${state.readinessDraft.energy}" />
+            </div>
+          </div>`
+            : ''
+        }
 
         ${
           readiness.recommendPreservation && !session.preservationMode
             ? `
           <div class="notice notice-danger">
-            <span>Score Readiness bas : activez le Mode Préservation (-1 série/exercice, +1 RIR de sécurité).</span>
-            <button type="button" class="btn btn-sm btn-danger" id="btn-apply-preservation">Mode Préservation</button>
+            <span>Readiness bas : activez le Mode Préservation (-1 série, +1 RIR).</span>
+            <button type="button" class="btn btn-sm btn-danger" id="btn-apply-preservation">Activer</button>
           </div>`
             : session.preservationMode
-              ? `<div class="notice notice-accent"><span>Mode Préservation actif (-1 série, +1 RIR de marge articulaire).</span></div>`
+              ? `<div class="notice notice-accent"><span>Mode Préservation actif (-1 série, +1 RIR de sécurité).</span></div>`
               : ''
         }
       </section>
 
-      <!-- Échauffement correctif ciblé (5 min) -->
+      <!-- Échauffement correctif ciblé -->
       <details class="panel">
-        <summary style="cursor: pointer; font-weight: 600;">
-          Échauffement correctif ciblé (5 min · ${(state.program.warmupDrills || []).length} ateliers)
+        <summary style="cursor: pointer; font-weight: 600; font-size: 0.88rem;">
+          Échauffement correctif (${(state.program.warmupDrills || []).length} ateliers · 5 min)
         </summary>
-        <div class="stack-sm" style="margin-top: 10px;">
+        <div class="stack-sm" style="margin-top: 8px;">
           ${(state.program.warmupDrills || [])
             .map(
               (w) => `
             <div class="row-between" style="padding: 6px 0; border-bottom: 1px solid var(--border-hairline);">
-              <span>${esc(w.name)}</span>
-              <span class="mono metric-sm text-secondary">${w.sets}×${esc(w.reps)} · ${esc(w.focus)}</span>
+              <span style="font-size: 0.84rem;">${esc(w.name)}</span>
+              <span class="mono metric-xs text-secondary" style="flex-shrink: 0;">${w.sets}×${esc(w.reps)}</span>
             </div>`
             )
             .join('')}
         </div>
       </details>
 
-      <!-- Cartes Exercices -->
+      <!-- Cartes Exercices avec photos d'exécution visibles directement -->
       <div class="stack" id="workout-exercises-list">
         ${session.exercises
           .map((slot, exIdx) => {
             const exMeta = getExerciseById(slot.exerciseId);
+            const media = getExerciseMediaUrls(exMeta);
             const openDrawer = state.openDrawers[slot.slotId] || null;
             const plateSummary = exMeta
               ? calculatePerSideLoad(slot.setsData.find((s) => !s.isWarmup)?.weightKg ?? slot.suggestedLoadKg, exMeta).label
@@ -1167,82 +1231,102 @@ function renderSeance(container) {
 
             return `
             <article class="panel" data-ex-idx="${exIdx}">
-              <div class="panel-header">
-                <div class="stack-sm" style="gap: 4px;">
-                  <div class="row-wrap">
-                    <h3>${esc(slot.name)}</h3>
-                    ${slot.isLagPriority ? `<span class="state-tag is-lag">[PRIORITÉ LAG]</span>` : ''}
-                    ${slot.unilateral ? `<span class="state-tag is-accent">[UNILATÉRAL]</span>` : ''}
-                  </div>
-                  <div class="meta-inline mono">
-                    <span>Cible ${slot.sets}×${slot.repMin}-${slot.repMax}</span>
-                    <span class="meta-sep">·</span>
-                    <span>RIR ${slot.targetRir}</span>
-                    <span class="meta-sep">·</span>
-                    <span>Repos ${slot.restSec}s</span>
-                    <span class="meta-sep">·</span>
-                    <span>${esc(plateSummary)}</span>
-                  </div>
-                  ${slot.unilateralNote ? `<span class="panel-subtitle text-accent">${esc(slot.unilateralNote)}</span>` : ''}
+              <div class="stack-sm" style="gap: 4px;">
+                <div class="row-between">
+                  <h3>${exIdx + 1}. ${esc(slot.name)}</h3>
+                  ${slot.isLagPriority ? `<span class="state-tag is-lag">[LAG]</span>` : ''}
+                  ${!slot.isLagPriority && slot.unilateral ? `<span class="state-tag is-accent">[UNILAT.]</span>` : ''}
                 </div>
+                <div class="meta-inline mono">
+                  <span class="text-accent">${slot.sets}×${slot.repMin}-${slot.repMax}</span>
+                  <span class="meta-sep">·</span>
+                  <span>RIR ${slot.targetRir}</span>
+                  <span class="meta-sep">·</span>
+                  <span>Repos ${slot.restSec}s</span>
+                  <span class="meta-sep">·</span>
+                  <span>${esc(plateSummary)}</span>
+                </div>
+                ${slot.unilateralNote ? `<span class="panel-subtitle text-accent">${esc(slot.unilateralNote)}</span>` : ''}
               </div>
 
-              <!-- Onglets Fiche + Swap + Micro -->
-              <div class="row-wrap">
+              <!-- Aperçu photo réel départ / contraction (toujours visible) -->
+              ${
+                media.start && media.end
+                  ? `
+                <div class="exercise-media-strip">
+                  <div class="exercise-thumb" data-drawer="${esc(slot.slotId)}" data-drawer-type="execution" title="Voir consignes d'exécution">
+                    <img src="${esc(media.start)}" alt="${esc(slot.name)} — départ" loading="lazy" />
+                    <span class="exercise-thumb-tag">1 · DÉPART</span>
+                  </div>
+                  <div class="exercise-thumb" data-drawer="${esc(slot.slotId)}" data-drawer-type="anatomy" title="Voir carte anatomique">
+                    <img src="${esc(media.end)}" alt="${esc(slot.name)} — contraction" loading="lazy" />
+                    <span class="exercise-thumb-tag">2 · CONTRACTION</span>
+                  </div>
+                </div>`
+                  : ''
+              }
+
+              <!-- Barre d'outils 4 colonnes sans débordement -->
+              <div class="exercise-tools-grid">
                 <button type="button" class="btn btn-sm ${openDrawer === 'anatomy' ? 'btn-primary' : ''}" data-drawer="${esc(slot.slotId)}" data-drawer-type="anatomy">Anatomie</button>
-                <button type="button" class="btn btn-sm ${openDrawer === 'execution' ? 'btn-primary' : ''}" data-drawer="${esc(slot.slotId)}" data-drawer-type="execution">Exécution</button>
-                <button type="button" class="btn btn-sm ${openDrawer === 'plates' ? 'btn-primary' : ''}" data-drawer="${esc(slot.slotId)}" data-drawer-type="plates">Disques</button>
-                <button type="button" class="btn btn-sm" data-swap-ex="${exIdx}">Remplacer (Swap)</button>
-                <button type="button" class="btn btn-sm" data-voice-ex="${exIdx}">Micro</button>
-                <button type="button" class="btn btn-sm mono" data-start-rest="${slot.restSec}" data-rest-label="${esc(slot.name)}">Chrono ${slot.restSec}s</button>
+                <button type="button" class="btn btn-sm ${openDrawer === 'execution' ? 'btn-primary' : ''}" data-drawer="${esc(slot.slotId)}" data-drawer-type="execution">Consignes</button>
+                <button type="button" class="btn btn-sm" data-swap-ex="${exIdx}">Swap</button>
+                <button type="button" class="btn btn-sm mono" data-start-rest="${slot.restSec}" data-rest-label="${esc(slot.name)}">${slot.restSec}s</button>
               </div>
 
               ${renderExerciseDrawerHTML(slot, exMeta, openDrawer)}
 
-              <!-- Tableau des séries (ergonomie mains moites >= 44px) -->
-              <div class="stack-sm">
-                <div class="set-row" style="padding: 2px 0; border-bottom: 1px solid var(--border-strong);">
-                  <span class="label-tech">#</span>
-                  <span class="label-tech" style="text-align:center;">Charge (kg)</span>
+              <!-- Tableau des séries (optimisé 360px -> desktop) -->
+              <div class="stack-sm" style="gap: 2px;">
+                <div class="set-row" style="padding: 2px 0 4px; border-bottom: 1px solid var(--border-strong);">
+                  <span class="label-tech" style="text-align:center;">#</span>
+                  <span class="label-tech" style="text-align:center;">Kg</span>
                   <span class="label-tech" style="text-align:center;">Réps</span>
                   <span class="label-tech" style="text-align:center;">RIR</span>
                   <span class="label-tech" style="text-align:center;">OK</span>
                 </div>
                 ${slot.setsData
-                  .map(
-                    (s, sIdx) => `
+                  .map((s, sIdx) => {
+                    const workNum = sIdx + 1 - slot.setsData.filter((x) => x.isWarmup).length;
+                    return `
                   <div class="set-row ${s.done ? 'is-done' : ''} ${s.isWarmup ? 'is-warmup' : ''}">
-                    <button type="button" class="btn btn-ghost btn-sm mono" style="padding:0;min-width:32px;" title="Supprimer cette série" data-del-set="${exIdx}:${sIdx}">
-                      ${s.isWarmup ? 'É' : sIdx + 1 - slot.setsData.filter((x) => x.isWarmup).length}
+                    <button type="button" class="set-num-cell" title="Supprimer cette série" data-del-set="${exIdx}:${sIdx}">
+                      <span>${s.isWarmup ? 'É' : workNum}</span>
+                      ${s.tag && !s.isWarmup ? `<span class="set-tag">${esc(s.tag)}</span>` : ''}
                     </button>
-                    <input class="set-input" type="number" step="${exMeta?.incrementKg || 2.5}" min="0" value="${s.weightKg}" data-set-field="${exIdx}:${sIdx}:weightKg" aria-label="Charge kg" />
-                    <input class="set-input" type="number" step="1" min="0" value="${s.reps}" data-set-field="${exIdx}:${sIdx}:reps" aria-label="Répétitions" />
-                    <input class="set-input" type="number" step="1" min="0" max="5" value="${s.rir}" data-set-field="${exIdx}:${sIdx}:rir" aria-label="RIR" />
+                    <input class="set-input" type="number" inputmode="decimal" step="${exMeta?.incrementKg || 2.5}" min="0" value="${s.weightKg}" data-set-field="${exIdx}:${sIdx}:weightKg" aria-label="Charge kg" />
+                    <input class="set-input" type="number" inputmode="numeric" step="1" min="0" value="${s.reps}" data-set-field="${exIdx}:${sIdx}:reps" aria-label="Répétitions" />
+                    <input class="set-input" type="number" inputmode="numeric" step="1" min="0" max="5" value="${s.rir}" data-set-field="${exIdx}:${sIdx}:rir" aria-label="RIR" />
                     <button type="button" class="set-check-btn ${s.done ? 'is-checked' : ''}" data-toggle-set="${exIdx}:${sIdx}" aria-label="Valider série">
                       ${s.done ? '✓' : '○'}
                     </button>
-                  </div>`
-                  )
+                  </div>`;
+                  })
                   .join('')}
               </div>
 
-              <div class="row-between">
-                <button type="button" class="btn btn-sm" data-dup-set="${exIdx}">+ Dupliquer série précédente</button>
-                <div class="row" style="gap: 4px;">
-                  ${[
-                    ['easy', 'Facile'],
-                    ['solid', 'Solide'],
-                    ['limit', 'Limite'],
-                    ['joint_pain', 'Douleur'],
-                  ]
-                    .map(
-                      ([fb, lbl]) => `
-                    <button type="button" class="btn btn-sm ${slot.feedback === fb ? (fb === 'joint_pain' ? 'btn-danger' : 'btn-primary') : ''}" data-feedback="${exIdx}:${fb}">
-                      ${lbl}
-                    </button>`
-                    )
-                    .join('')}
-                </div>
+              <!-- Actions rapides série + Micro + Disques -->
+              <div class="grid-4" style="grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr); gap: 6px;">
+                <button type="button" class="btn btn-sm" data-dup-set="${exIdx}">+ Série</button>
+                <button type="button" class="btn btn-sm ${openDrawer === 'plates' ? 'btn-primary' : ''}" data-drawer="${esc(slot.slotId)}" data-drawer-type="plates">Disques</button>
+                <button type="button" class="btn btn-sm" data-voice-ex="${exIdx}">Micro</button>
+              </div>
+
+              <!-- Ressenti biomécanique 4 colonnes égales -->
+              <div class="feedback-grid">
+                ${[
+                  ['easy', 'Facile'],
+                  ['solid', 'Solide'],
+                  ['limit', 'Limite'],
+                  ['joint_pain', 'Douleur'],
+                ]
+                  .map(
+                    ([fb, lbl]) => `
+                  <button type="button" class="btn btn-sm ${slot.feedback === fb ? (fb === 'joint_pain' ? 'btn-danger' : 'btn-primary') : ''}" data-feedback="${exIdx}:${fb}">
+                    ${lbl}
+                  </button>`
+                  )
+                  .join('')}
               </div>
 
               ${
@@ -1251,7 +1335,7 @@ function renderSeance(container) {
                       <span>${esc(slot.progressionHint.message)}</span>
                       ${
                         slot.progressionHint.suggestedSwap
-                          ? `<button type="button" class="btn btn-sm" data-swap-ex="${exIdx}">Voir alternative</button>`
+                          ? `<button type="button" class="btn btn-sm" data-swap-ex="${exIdx}">Remplacer</button>`
                           : ''
                       }
                     </div>`
@@ -1264,14 +1348,14 @@ function renderSeance(container) {
 
       <!-- Module Cardio adapté -->
       <section class="panel">
-        <div class="panel-header">
-          <div>
+        <div class="row-between">
+          <div class="stack-sm" style="gap: 2px;">
             <h2>Cardio calibré</h2>
             <p class="panel-subtitle">${esc(state.program.cardio?.reason || '')}</p>
           </div>
-          <span class="mono metric-sm text-accent">${state.program.cardio?.sessionsPerWeek || 2}× ${state.program.cardio?.durationMin || 20} min</span>
+          <span class="mono metric-sm text-accent" style="flex-shrink: 0;">${state.program.cardio?.sessionsPerWeek || 2}×${state.program.cardio?.durationMin || 20}m</span>
         </div>
-        <p class="text-secondary" style="font-size: 0.88rem;">${esc(state.program.cardio?.modality || '')}</p>
+        <p class="text-secondary" style="font-size: 0.84rem;">${esc(state.program.cardio?.modality || '')}</p>
       </section>
 
       <button type="button" class="btn btn-primary btn-block" id="btn-finish-workout">
@@ -1289,9 +1373,14 @@ function renderSeance(container) {
     });
   });
 
+  document.getElementById('btn-toggle-readiness')?.addEventListener('click', () => {
+    state.readinessExpanded = !state.readinessExpanded;
+    renderApp();
+  });
+
   document.getElementById('btn-toggle-wakelock')?.addEventListener('click', async () => {
     const ok = await wakeLock.acquire();
-    showToast(ok ? 'Screen Wake Lock activé pour la séance.' : 'Wake Lock non supporté : chrono horodaté reste fiable.');
+    showToast(ok ? 'Écran maintenu actif pour la séance.' : 'Chrono horodaté actif même écran verrouillé.');
   });
 
   ['sleep', 'soreness', 'energy'].forEach((k) => {
@@ -1360,7 +1449,7 @@ function renderSeance(container) {
 
       if (setObj.done && !setObj.isWarmup) {
         wakeLock.acquire();
-        restTimer.start(ex.restSec || 90, ex.name);
+        restTimer.start(setObj.restSec || ex.restSec || 90, ex.name);
       }
 
       renderApp();
@@ -1424,7 +1513,7 @@ function renderSeance(container) {
     });
   });
 
-  // Feedback fin d'exercice & double progression
+  // Feedback fin d'exercice & progression adaptée à la méthode active
   container.querySelectorAll('[data-feedback]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const [exIdxStr, fb] = btn.dataset.feedback.split(':');
@@ -1437,6 +1526,7 @@ function renderSeance(container) {
         repMin: ex.repMin,
         repMax: ex.repMax,
         feedback: fb,
+        method: ex.method || state.program?.progressionMethod || state.profile?.progressionMethod || 'double_progression',
         profile: state.profile,
       });
       renderApp();
@@ -1454,16 +1544,18 @@ function renderSeance(container) {
       const listHtml =
         swaps.length > 0
           ? swaps
-              .map(
-                (sw, i) => `
-              <div class="panel-elevated row-between">
-                <div class="stack-sm" style="gap:3px;">
-                  <strong>${esc(sw.exercise.name)}</strong>
-                  <span class="meta-inline mono">${esc(sw.reason)} · Charge convertie : ${sw.convertedLoadKg} kg (${esc(sw.perSideDisplay)})</span>
+              .map((sw, i) => {
+                const m = getExerciseMediaUrls(sw.exercise);
+                return `
+              <div class="swap-card">
+                <img class="swap-thumb" src="${esc(m.start || '')}" alt="${esc(sw.exercise.name)}" loading="lazy" />
+                <div class="stack-sm" style="gap: 2px;">
+                  <strong style="font-size: 0.86rem;">${esc(sw.exercise.name)}</strong>
+                  <span class="meta-inline mono">${sw.convertedLoadKg} kg · ${esc(sw.reason)}</span>
                 </div>
                 <button type="button" class="btn btn-sm btn-primary" data-pick-swap="${i}">Choisir</button>
-              </div>`
-              )
+              </div>`;
+              })
               .join('')
           : `<p class="text-secondary">Aucun équivalent mécanique compatible avec votre matériel actuel.</p>`;
 
@@ -1535,15 +1627,46 @@ function renderSeance(container) {
       })),
     });
 
-    // Met à jour automatiquement les charges recommandées de la séance suivante
+    // Met à jour automatiquement les charges & schémas de séries (RPT / Top Set / etc.) pour la séance suivante
     const progDay = state.program.days[state.selectedDayIdx];
+    const learnedNotes = [];
     if (progDay) {
       session.exercises.forEach((ex, i) => {
+        if (ex.feedback === 'joint_pain') {
+          learnedNotes.push({
+            id: generateId('mem'),
+            category: 'session_pain',
+            text: `Douleur signalée sur ${ex.name} (${saved.date})`,
+            createdAt: Date.now(),
+          });
+        }
         if (ex.progressionHint?.nextLoadKg > 0 && progDay.exercises[i]) {
-          progDay.exercises[i].suggestedLoadKg = ex.progressionHint.nextLoadKg;
+          const targetSlot = progDay.exercises[i];
+          targetSlot.suggestedLoadKg = ex.progressionHint.nextLoadKg;
+          const meta = getExerciseById(targetSlot.exerciseId);
+          targetSlot.setScheme = buildSetScheme(meta, {
+            sets: targetSlot.sets,
+            repMin: targetSlot.repMin,
+            repMax: targetSlot.repMax,
+            targetRir: targetSlot.targetRir,
+            suggestedLoadKg: targetSlot.suggestedLoadKg,
+            method: targetSlot.method || state.program.progressionMethod || 'double_progression',
+            restSec: targetSlot.restSec,
+            dayIndex: state.selectedDayIdx,
+          });
         }
       });
       state.program = await saveProgram(state.profile.id, state.program);
+    }
+
+    // Mémorise automatiquement les douleurs terrain pour que le Coach s'y adapte
+    if (learnedNotes.length > 0) {
+      const existingMem = Array.isArray(state.profile.coachMemory) ? state.profile.coachMemory : [];
+      const merged = [...existingMem];
+      for (const note of learnedNotes) {
+        if (!merged.some((m) => m.text === note.text)) merged.push(note);
+      }
+      state.profile = await updateProfile(state.profile.id, { coachMemory: merged.slice(-12) });
     }
 
     restTimer.stop();
@@ -1612,11 +1735,11 @@ function renderNutrition(container) {
           : ''
       }
 
-      <!-- 4 Modes d'ajout sans friction -->
-      <div class="segmented" role="tablist">
+      <!-- 4 Modes d'ajout sans friction (2x2 mobile, zéro débordement) -->
+      <div class="segmented-grid-2" role="tablist">
         <button type="button" class="segmented-btn ${state.nutritionSubTab === 'ciqual' ? 'is-active' : ''}" data-nut-tab="ciqual">Ciqual & Favoris</button>
         <button type="button" class="segmented-btn ${state.nutritionSubTab === 'photo' ? 'is-active' : ''}" data-nut-tab="photo">Photo Assiette</button>
-        <button type="button" class="segmented-btn ${state.nutritionSubTab === 'barcode' ? 'is-active' : ''}" data-nut-tab="barcode">Code-Barres / OFF</button>
+        <button type="button" class="segmented-btn ${state.nutritionSubTab === 'barcode' ? 'is-active' : ''}" data-nut-tab="barcode">Code-Barres</button>
         <button type="button" class="segmented-btn ${state.nutritionSubTab === 'plan' ? 'is-active' : ''}" data-nut-tab="plan">Plan & Courses</button>
       </div>
 
@@ -1701,9 +1824,9 @@ function renderNutritionSubTab(slot, macros) {
           <div class="panel-header">
             <h2>Base Ciqual (ANSES) — 100 % Hors-ligne</h2>
           </div>
-          <div class="row">
-            <input id="ciqual-search" class="input" type="search" placeholder="Rechercher poulet, riz, skyr, avocat..." value="${esc(state.ciqualQuery)}" />
-            <input id="ciqual-grams" class="input mono" type="number" min="5" max="1500" step="10" value="150" style="max-width: 105px;" aria-label="Grammes" />
+          <div class="input-action-row">
+            <input id="ciqual-search" class="input" type="search" placeholder="Poulet, riz, skyr, avocat..." value="${esc(state.ciqualQuery)}" />
+            <input id="ciqual-grams" class="input mono" type="number" inputmode="numeric" min="5" max="1500" step="10" value="150" style="width: 82px;" aria-label="Grammes" />
           </div>
           <div class="stack-sm">
             ${foods
@@ -1857,10 +1980,18 @@ function renderNutritionSubTab(slot, macros) {
           ${
             res
               ? `
+            ${
+              res.usedFallback && res.fallbackReason
+                ? `<div class="notice notice-danger">
+                    <span><strong>Repli Niveau 0 :</strong> ${esc(res.fallbackReason)}</span>
+                    <button type="button" class="btn btn-xs" id="btn-meal-open-ai">Régler IA</button>
+                  </div>`
+                : ''
+            }
             <div class="panel-elevated stack-sm">
               <div class="row-between">
                 <strong>${esc(res.data.meal_label || 'Assiette analysée')}</strong>
-                <span class="mono text-accent">Score alignement ${res.data.alignment_score ?? '--'}/100</span>
+                <span class="mono text-accent">${res.data.alignment_score ?? '--'}/100</span>
               </div>
               <div class="mono metric-sm">
                 Total : ${res.data.totals.kcal} kcal · P ${res.data.totals.protein_g}g · G ${res.data.totals.carbs_g}g · L ${res.data.totals.fat_g}g
@@ -1871,13 +2002,18 @@ function renderNutritionSubTab(slot, macros) {
                   .join('')}
               </div>
               <p class="panel-subtitle">${esc(res.data.advice || '')}</p>
-              <button type="button" class="btn btn-primary" id="btn-commit-meal-photo">Ajouter au journal du jour</button>
+              <button type="button" class="btn btn-primary btn-block" id="btn-commit-meal-photo">Ajouter au journal du jour</button>
             </div>`
               : ''
           }
         </div>
       </section>
     `;
+
+    document.getElementById('btn-meal-open-ai')?.addEventListener('click', () => {
+      state.profilSubTab = 'ai';
+      navigateTo('profil');
+    });
 
     document.getElementById('meal-photo-input')?.addEventListener('change', async (e) => {
       const file = e.target.files?.[0];
@@ -1928,13 +2064,13 @@ function renderNutritionSubTab(slot, macros) {
         <div id="barcode-reader-box" style="width: 100%; max-width: 420px;"></div>
 
         <div class="grid-2">
-          <div class="row">
-            <input id="manual-barcode-input" class="input mono" type="text" placeholder="Code EAN (ex. 3017620422003)" />
-            <button type="button" class="btn" id="btn-lookup-barcode">Chercher</button>
+          <div class="input-action-row">
+            <input id="manual-barcode-input" class="input mono" type="text" inputmode="numeric" placeholder="Code EAN (ex. 3017620422003)" />
+            <button type="button" class="btn btn-sm" id="btn-lookup-barcode">Chercher</button>
           </div>
-          <div class="row">
-            <input id="off-text-input" class="input" type="search" placeholder="Recherche texte Open Food Facts..." />
-            <button type="button" class="btn" id="btn-search-off">Rechercher</button>
+          <div class="input-action-row">
+            <input id="off-text-input" class="input" type="search" placeholder="Recherche Open Food Facts..." />
+            <button type="button" class="btn btn-sm" id="btn-search-off">OK</button>
           </div>
         </div>
 
@@ -2269,67 +2405,78 @@ async function renderLabo(container) {
   const day1Photo = anglePhotos[0] || null;
   const day1Url = day1Photo?.blob instanceof Blob ? URL.createObjectURL(day1Photo.blob) : null;
 
+  const isBioTab = state.laboSubTab !== 'photos';
+
   container.innerHTML = `
     <section class="stack">
-      <h1>Labo Physique & Évolution</h1>
+      <div class="row-between">
+        <h1>Labo & Évolution</h1>
+        <span class="mono metric-xs text-secondary">${state.photos.length} photos · ${state.biometrics.length} pesées</span>
+      </div>
 
+      <div class="segmented" role="tablist">
+        <button type="button" class="segmented-btn ${isBioTab ? 'is-active' : ''}" data-labo-tab="biometrics">Biométrie & Courbes</button>
+        <button type="button" class="segmented-btn ${!isBioTab ? 'is-active' : ''}" data-labo-tab="photos">Photos & Mutation</button>
+      </div>
+
+      ${
+        isBioTab
+          ? `
       <!-- Biométrie multi-sources : OCR Balance + Mètre ruban US Navy -->
       <section class="panel">
         <div class="panel-header">
           <div>
-            <h2>Biométrie : Balance (OCR) & Ruban (US Navy / WHtR)</h2>
-            <p class="panel-subtitle">Compatible captures OKOK, Withings, Xiaomi, Renpho, Garmin ou saisie manuelle.</p>
+            <h2>Balance (OCR) & Mensurations</h2>
+            <p class="panel-subtitle">Captures OKOK, Withings, Xiaomi, Renpho, Garmin ou saisie manuelle.</p>
           </div>
           <label class="btn btn-sm btn-primary" style="cursor: pointer;">
-            Import OCR Balance
+            OCR Balance
             <input id="scale-ocr-input" type="file" accept="image/*" hidden />
           </label>
         </div>
 
         <form id="biometrics-form" class="stack">
           <div class="grid-4">
-            <div class="field"><label class="field-label">Poids (kg)</label><input id="bio-weight" class="input mono" type="number" step="0.1" value="${latestBio?.weightKg ?? state.profile.weightKg}" required /></div>
-            <div class="field"><label class="field-label">% Masse grasse</label><input id="bio-bf" class="input mono" type="number" step="0.1" value="${latestBio?.bodyFatPct ?? ''}" placeholder="Optionnel" /></div>
-            <div class="field"><label class="field-label">Masse musc. (kg)</label><input id="bio-muscle" class="input mono" type="number" step="0.1" value="${latestBio?.muscleMassKg ?? ''}" placeholder="Optionnel" /></div>
-            <div class="field"><label class="field-label">Graisse viscérale</label><input id="bio-visc" class="input mono" type="number" step="1" value="${latestBio?.visceralFat ?? ''}" placeholder="Optionnel" /></div>
+            <div class="field"><label class="field-label">Poids (kg)</label><input id="bio-weight" class="input mono" type="number" inputmode="decimal" step="0.1" value="${latestBio?.weightKg ?? state.profile.weightKg}" required /></div>
+            <div class="field"><label class="field-label">% Grasse</label><input id="bio-bf" class="input mono" type="number" inputmode="decimal" step="0.1" value="${latestBio?.bodyFatPct ?? ''}" placeholder="Optionnel" /></div>
+            <div class="field"><label class="field-label">Muscle (kg)</label><input id="bio-muscle" class="input mono" type="number" inputmode="decimal" step="0.1" value="${latestBio?.muscleMassKg ?? ''}" placeholder="Optionnel" /></div>
+            <div class="field"><label class="field-label">Viscérale</label><input id="bio-visc" class="input mono" type="number" inputmode="numeric" step="1" value="${latestBio?.visceralFat ?? ''}" placeholder="Optionnel" /></div>
           </div>
 
           <div class="grid-4">
-            <div class="field"><label class="field-label">Tour de cou (cm)</label><input id="bio-neck" class="input mono" type="number" step="0.5" value="${latestBio?.neckCm ?? ''}" placeholder="US Navy" /></div>
-            <div class="field"><label class="field-label">Tour de taille (cm)</label><input id="bio-waist" class="input mono" type="number" step="0.5" value="${latestBio?.waistCm ?? ''}" placeholder="US Navy + WHtR" /></div>
-            <div class="field"><label class="field-label">Hanches (cm — femmes)</label><input id="bio-hips" class="input mono" type="number" step="0.5" value="${latestBio?.hipsCm ?? ''}" placeholder="Optionnel" /></div>
-            <div class="field"><label class="field-label">BMR balance / Eau %</label><input id="bio-bmr" class="input mono" type="number" step="10" value="${latestBio?.measuredBmr ?? ''}" placeholder="kcal" /></div>
+            <div class="field"><label class="field-label">Cou (cm)</label><input id="bio-neck" class="input mono" type="number" inputmode="decimal" step="0.5" value="${latestBio?.neckCm ?? ''}" placeholder="US Navy" /></div>
+            <div class="field"><label class="field-label">Taille (cm)</label><input id="bio-waist" class="input mono" type="number" inputmode="decimal" step="0.5" value="${latestBio?.waistCm ?? ''}" placeholder="WHtR" /></div>
+            <div class="field"><label class="field-label">Hanches (cm)</label><input id="bio-hips" class="input mono" type="number" inputmode="decimal" step="0.5" value="${latestBio?.hipsCm ?? ''}" placeholder="Femmes" /></div>
+            <div class="field"><label class="field-label">BMR (kcal)</label><input id="bio-bmr" class="input mono" type="number" inputmode="numeric" step="10" value="${latestBio?.measuredBmr ?? ''}" placeholder="Optionnel" /></div>
           </div>
 
-          <div class="row-between">
-            <span class="mono metric-sm text-secondary" id="live-navy-preview">
-              ${
-                latestBio?.navyBodyFatPct
-                  ? `US Navy : ${latestBio.navyBodyFatPct} % · WHtR : ${latestBio.whtr ?? '--'}`
-                  : 'Saisissez cou + taille pour calculer le %MG US Navy et le ratio WHtR.'
-              }
-            </span>
-            <button type="submit" class="btn btn-primary">Enregistrer mesure</button>
-          </div>
+          <span class="mono metric-xs text-secondary" id="live-navy-preview">
+            ${
+              latestBio?.navyBodyFatPct
+                ? `US Navy : ${latestBio.navyBodyFatPct} % · WHtR : ${latestBio.whtr ?? '--'}`
+                : 'Saisissez cou + taille pour calculer le %MG US Navy et le ratio WHtR.'
+            }
+          </span>
+          <button type="submit" class="btn btn-primary btn-block">Enregistrer la mesure</button>
         </form>
       </section>
 
       <!-- 4 Graphiques Chart.js -->
       <div class="grid-2">
-        <section class="panel"><h3>Poids brut & Poids lissé EWMA</h3><div style="height: 220px;"><canvas id="chart-weight"></canvas></div></section>
-        <section class="panel"><h3>Composition corporelle (%MG Balance vs US Navy)</h3><div style="height: 220px;"><canvas id="chart-comp"></canvas></div></section>
-        <section class="panel"><h3>Progression Force (1RM estimé)</h3><div style="height: 220px;"><canvas id="chart-1rm"></canvas></div></section>
-        <section class="panel"><h3>Volume hebdomadaire par muscle (Rouge = LAG)</h3><div style="height: 220px;"><canvas id="chart-volume"></canvas></div></section>
-      </div>
-
+        <section class="panel"><h3>Poids brut & EWMA</h3><div style="height: 210px;"><canvas id="chart-weight"></canvas></div></section>
+        <section class="panel"><h3>% Masse grasse (Balance vs US Navy)</h3><div style="height: 210px;"><canvas id="chart-comp"></canvas></div></section>
+        <section class="panel"><h3>Force estimée (1RM)</h3><div style="height: 210px;"><canvas id="chart-1rm"></canvas></div></section>
+        <section class="panel"><h3>Volume hebdo par muscle (Rouge = LAG)</h3><div style="height: 210px;"><canvas id="chart-volume"></canvas></div></section>
+      </div>`
+          : `
       <!-- Labo Photos 3 angles + Ghost Overlay + Comparateur + Double Analyse -->
       <section class="panel">
         <div class="panel-header">
           <div>
-            <h2>Labo Photos 3 angles & Mutation Programme</h2>
-            <p class="panel-subtitle">Check-in conseillé tous les 15–30 j · Compression ~180 Ko locale · MediaPipe 33 landmarks client-side.</p>
+            <h2>Labo Photos 3 angles</h2>
+            <p class="panel-subtitle">Stockage 100 % local compressé (~180 Ko) · MediaPipe 33 landmarks.</p>
           </div>
-          <button type="button" class="btn btn-primary" id="btn-run-physique-analysis">Analyser Physique</button>
+          <button type="button" class="btn btn-sm btn-primary" id="btn-run-physique-analysis">Analyser</button>
         </div>
 
         <div class="segmented" role="tablist">
@@ -2346,8 +2493,8 @@ async function renderLabo(container) {
               <video id="physique-video" autoplay muted playsinline></video>
               ${day1Url ? `<img class="ghost-overlay-img" id="ghost-overlay-img" src="${day1Url}" alt="Calque fantôme Jour 1" />` : ''}
             </div>
-            <div class="row-wrap">
-              <button type="button" class="btn btn-sm btn-primary" id="btn-open-cam">Caméra + Ghost J1</button>
+            <div class="grid-4" style="grid-template-columns: repeat(2, minmax(0, 1fr));">
+              <button type="button" class="btn btn-sm btn-primary" id="btn-open-cam">Caméra + Ghost</button>
               <button type="button" class="btn btn-sm" id="btn-capture-photo">Capturer (3s)</button>
               <button type="button" class="btn btn-sm" id="btn-flip-cam">Basculer cam</button>
               <label class="btn btn-sm" style="cursor: pointer;">
@@ -2360,11 +2507,11 @@ async function renderLabo(container) {
 
           <!-- Comparateur Avant / Après -->
           <div class="stack">
-            <span class="label-tech">Comparateur Avant / Après (${anglePhotos.length} photos "${esc(state.laboAngle)}")</span>
+            <span class="label-tech">Comparateur Avant / Après (${anglePhotos.length} photos)</span>
             <div id="before-after-slot">
               ${
                 anglePhotos.length < 2
-                  ? `<p class="panel-subtitle">Ajoutez au moins 2 photos sur l’angle "${esc(state.laboAngle)}" à deux dates différentes pour activer le curseur Avant / Après.</p>`
+                  ? `<p class="panel-subtitle">Ajoutez 2 photos sur l’angle "${esc(state.laboAngle)}" à deux dates différentes pour activer le curseur Avant / Après.</p>`
                   : ''
               }
             </div>
@@ -2374,9 +2521,9 @@ async function renderLabo(container) {
                     ${anglePhotos
                       .map(
                         (ph) => `
-                      <span class="mono metric-sm panel-elevated" style="padding: 4px 8px;">
+                      <span class="mono metric-xs panel-elevated" style="padding: 4px 8px; display: inline-flex; align-items: center; gap: 6px;">
                         ${esc(ph.date)} (${Math.round((ph.sizeBytes || 0) / 1024)} Ko)
-                        <button type="button" class="btn btn-ghost btn-sm" style="min-height:24px;padding:0 4px;" data-del-photo="${esc(ph.id)}">×</button>
+                        <button type="button" class="btn btn-ghost btn-xs" style="min-height:24px;padding:0 4px;" data-del-photo="${esc(ph.id)}">×</button>
                       </span>`
                       )
                       .join('')}
@@ -2390,15 +2537,27 @@ async function renderLabo(container) {
         <div id="physique-analysis-slot" class="stack">
           ${renderPhysiqueAnalysisHTML()}
         </div>
-      </section>
+      </section>`
+      }
     </section>
   `;
 
-  // Montage Chart.js
-  mountLaboCharts();
+  container.querySelectorAll('[data-labo-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.cameraController?.stop();
+      destroyActiveCharts();
+      state.laboSubTab = btn.dataset.laboTab;
+      renderApp();
+    });
+  });
+
+  // Montage Chart.js uniquement sur l'onglet Biométrie
+  if (isBioTab) {
+    mountLaboCharts();
+  }
 
   // Montage Comparateur Avant / Après si >= 2 photos sur l'angle courant
-  if (anglePhotos.length >= 2) {
+  if (!isBioTab && anglePhotos.length >= 2) {
     const first = anglePhotos[0];
     const last = anglePhotos[anglePhotos.length - 1];
     const u1 = first.blob instanceof Blob ? URL.createObjectURL(first.blob) : '';
@@ -2425,7 +2584,7 @@ async function renderLabo(container) {
       if (d.bmr_kcal) document.getElementById('bio-bmr').value = d.bmr_kcal;
       showToast(
         res.usedFallback
-          ? 'OCR hors-ligne : vérifiez les champs manuellement.'
+          ? `OCR repli local : ${res.fallbackReason || 'vérifiez les champs manuellement.'}`
           : `Capture balance extraite (${d.weight_kg} kg). Cliquez sur Enregistrer.`
       );
     } catch (err) {
@@ -2724,13 +2883,13 @@ function renderPhysiqueAnalysisHTML() {
 function renderProfil(container) {
   container.innerHTML = `
     <section class="stack">
-      <h1>Coach, Profil & Réglages</h1>
+      <h1>Coach & Réglages</h1>
 
       <div class="segmented" role="tablist">
         <button type="button" class="segmented-btn ${state.profilSubTab === 'coach' ? 'is-active' : ''}" data-prof-tab="coach">Coach</button>
         <button type="button" class="segmented-btn ${state.profilSubTab === 'profile' ? 'is-active' : ''}" data-prof-tab="profile">Profil</button>
-        <button type="button" class="segmented-btn ${state.profilSubTab === 'ai' ? 'is-active' : ''}" data-prof-tab="ai">Routeur IA</button>
-        <button type="button" class="segmented-btn ${state.profilSubTab === 'p2p' ? 'is-active' : ''}" data-prof-tab="p2p">P2P & Santé</button>
+        <button type="button" class="segmented-btn ${state.profilSubTab === 'ai' ? 'is-active' : ''}" data-prof-tab="ai">Clés IA</button>
+        <button type="button" class="segmented-btn ${state.profilSubTab === 'p2p' ? 'is-active' : ''}" data-prof-tab="p2p">P2P</button>
         <button type="button" class="segmented-btn ${state.profilSubTab === 'backup' ? 'is-active' : ''}" data-prof-tab="backup">Backup</button>
       </div>
 
@@ -2752,41 +2911,129 @@ function renderProfilSubTab(slot) {
   if (!slot) return;
 
   if (state.profilSubTab === 'coach') {
+    const activeLabel =
+      state.aiSettings.activeTier === 2
+        ? `Niv. 2 · ${state.aiSettings.tier2Preset || 'BYO'}`
+        : state.aiSettings.activeTier === 1
+          ? 'Niv. 1 · Gratuit'
+          : state.aiSettings.activeTier === 3
+            ? 'Niv. 3 · WebLLM'
+            : 'Niv. 0 · Local';
+    const runtimeCtx = buildCoachRuntimeContext(state.profile, state.program, state.workouts);
+    const memoryList = Array.isArray(state.profile.coachMemory) ? state.profile.coachMemory : [];
+
     slot.innerHTML = `
       <section class="panel">
         <div class="panel-header">
           <div>
-            <h2>Coach Biomécanique & Nutritionniste</h2>
-            <p class="panel-subtitle">Contextualisé sur votre profil, EWMA, split et priorités [LAG] · Routeur Niveau ${state.aiSettings.activeTier}</p>
+            <h2>Coach Adaptatif & Biomécanique</h2>
+            <p class="panel-subtitle">
+              <strong class="text-accent">${esc(activeLabel)}</strong> · ${esc(runtimeCtx.activeSplitLabel)} · ${esc(TRAINING_METHODS[runtimeCtx.activeMethodId]?.shortLabel || 'Double prog.')}
+            </p>
           </div>
-          <button type="button" class="btn btn-sm" id="btn-clear-chat">Effacer</button>
+          <div class="row" style="gap: 6px;">
+            <button type="button" class="btn btn-xs" id="btn-coach-open-ai">IA</button>
+            <button type="button" class="btn btn-xs" id="btn-clear-chat">Effacer</button>
+          </div>
         </div>
 
-        <div class="stack-sm" id="coach-thread" style="max-height: 420px; overflow-y: auto; padding-right: 4px;">
+        <!-- Mémoire persistante du Coach (retours terrain + préférences apprises) -->
+        <details class="panel-elevated" style="padding: 9px 11px;">
+          <summary style="cursor: pointer; font-size: 0.8rem; font-weight: 600;">
+            Mémoire du Coach (${memoryList.length} repère${memoryList.length > 1 ? 's' : ''}${runtimeCtx.painExercises.length ? ` · ${runtimeCtx.painExercises.length} alerte douleur` : ''})
+          </summary>
+          <div class="stack-sm" style="margin-top: 8px;">
+            ${
+              memoryList.length === 0
+                ? `<p class="panel-subtitle">Aucune note mémorisée. Discutez de vos préférences (Full Body, pyramidal inversé, douleurs, durée…) : le Coach les retient et propose d’adapter votre programme en 1 clic.</p>`
+                : memoryList
+                    .map(
+                      (mem) => `
+                    <div class="memory-item">
+                      <span>${esc(mem.text)}</span>
+                      <button type="button" class="btn btn-xs btn-ghost" data-del-memory="${esc(mem.id)}" title="Oublier">×</button>
+                    </div>`
+                    )
+                    .join('')
+            }
+            <div class="input-action-row" style="margin-top: 4px;">
+              <input id="coach-memory-input" class="input" type="text" placeholder="Ex. Je préfère les haltères au squat barre..." />
+              <button type="button" class="btn btn-sm" id="btn-add-memory">+ Retenir</button>
+            </div>
+          </div>
+        </details>
+
+        <div class="stack-sm" id="coach-thread" style="max-height: 390px; overflow-y: auto; padding-right: 2px;">
           ${
             state.coachMessages.length === 0
-              ? `<p class="panel-subtitle">Posez une question sur une douleur articulaire, un plateau EWMA, un swap d’exercice ou votre périodisation.</p>`
+              ? `<p class="panel-subtitle">Demandez un changement de split (Full Body, Upper/Lower, PPL, Arnold, Split classique), une méthode (Pyramidal inversé RPT, Top Set + Back-off, Myo-Reps, DUP), ou signalez une douleur : le Coach s’appuie sur vos dernières séances et adapte votre programme en 1 clic.</p>`
               : state.coachMessages
                   .map(
                     (m) => `
-                  <div class="${m.role === 'user' ? 'panel-elevated' : 'panel'}" style="padding: 10px 12px;">
-                    <div class="row-between" style="margin-bottom: 4px;">
+                  <div class="chat-bubble ${m.role === 'user' ? 'is-user' : ''}">
+                    <div class="row-between">
                       <span class="label-tech ${m.role === 'user' ? 'text-accent' : ''}">${m.role === 'user' ? esc(state.profile.name) : 'Coach Kinetix'}</span>
-                      ${m.tierUsed !== null && m.tierUsed !== undefined ? `<span class="mono metric-sm text-muted">Niv. ${m.tierUsed}</span>` : ''}
+                      ${m.tierUsed !== null && m.tierUsed !== undefined ? `<span class="mono metric-xs text-muted">Niv. ${m.tierUsed}${m.provider ? ` · ${esc(m.provider)}` : ''}</span>` : ''}
                     </div>
-                    <p style="white-space: pre-wrap; font-size: 0.88rem;">${esc(m.content)}</p>
+                    <p>${esc(m.content)}</p>
+                    ${
+                      m.actionProposal
+                        ? `<div class="coach-action-card ${m.actionApplied ? 'is-applied' : ''}">
+                            <div class="row-between">
+                              <span class="label-tech ${m.actionApplied ? 'text-ok' : 'text-accent'}">${m.actionApplied ? 'ADAPTATION APPLIQUÉE' : esc(m.actionProposal.title)}</span>
+                            </div>
+                            <span style="font-size: 0.8rem;">${esc(m.actionProposal.summary)}</span>
+                            ${
+                              m.actionApplied
+                                ? `<span class="mono metric-xs text-ok">Programme et séances mis à jour.</span>`
+                                : `<button type="button" class="btn btn-sm btn-primary" data-apply-coach-action="${esc(m.id)}">${esc(m.actionProposal.applyLabel || 'Appliquer au programme')}</button>`
+                            }
+                          </div>`
+                        : ''
+                    }
+                    ${
+                      m.fallbackReason
+                        ? `<div class="notice notice-danger" style="padding: 7px 9px; font-size: 0.76rem;">
+                            <span><strong>Repli Niveau 0 :</strong> ${esc(m.fallbackReason)}</span>
+                            <button type="button" class="btn btn-xs" data-open-ai-settings>Vérifier clé</button>
+                          </div>`
+                        : ''
+                    }
                   </div>`
                   )
                   .join('')
           }
+          ${state.coachBusy ? `<div class="chat-bubble"><span class="mono metric-xs text-accent">Coach en cours d'analyse (${esc(activeLabel)})...</span></div>` : ''}
         </div>
 
-        <form id="coach-chat-form" class="row">
-          <input id="coach-input" class="input" type="text" required placeholder="Ex. Douleur épaule au développé, ou plateau poids depuis 14j..." />
-          <button type="submit" class="btn btn-primary">Envoyer</button>
+        <div class="row-wrap">
+          <button type="button" class="btn btn-xs" data-quick-prompt="Passe mon programme en pyramidal inversé (RPT) et explique comment progresser">Pyramidal inversé</button>
+          <button type="button" class="btn btn-xs" data-quick-prompt="Passe-moi en Full Body 3 jours par semaine">Passer en Full Body</button>
+          <button type="button" class="btn btn-xs" data-quick-prompt="J'ai mal à l'épaule au développé, adapte mon programme pour la protéger">Douleur épaule</button>
+          <button type="button" class="btn btn-xs" data-quick-prompt="Mes séances sont trop longues, passe-moi sur 45 min avec du Rest-Pause / Myo-Reps">Séances 45 min</button>
+        </div>
+
+        <form id="coach-chat-form" class="input-action-row">
+          <input id="coach-input" class="input" type="text" required placeholder="Ex. Passe en PPL + Top Set / Back-off..." ${state.coachBusy ? 'disabled' : ''} />
+          <button type="submit" class="btn btn-primary" ${state.coachBusy ? 'disabled' : ''}>Envoyer</button>
         </form>
       </section>
     `;
+
+    const thread = document.getElementById('coach-thread');
+    if (thread) thread.scrollTop = thread.scrollHeight;
+
+    document.getElementById('btn-coach-open-ai')?.addEventListener('click', () => {
+      state.profilSubTab = 'ai';
+      renderApp();
+    });
+
+    slot.querySelectorAll('[data-open-ai-settings]').forEach((b) => {
+      b.addEventListener('click', () => {
+        state.profilSubTab = 'ai';
+        renderApp();
+      });
+    });
 
     document.getElementById('btn-clear-chat')?.addEventListener('click', async () => {
       await clearCoachMessages(state.profile.id);
@@ -2794,39 +3041,161 @@ function renderProfilSubTab(slot) {
       renderProfilSubTab(slot);
     });
 
-    document.getElementById('coach-chat-form')?.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const input = document.getElementById('coach-input');
-      const text = input.value.trim();
-      if (!text) return;
-      input.value = '';
+    document.getElementById('btn-add-memory')?.addEventListener('click', async () => {
+      const inp = document.getElementById('coach-memory-input');
+      const noteText = inp?.value.trim();
+      if (!noteText) return;
+      const nextMem = [
+        ...(state.profile.coachMemory || []),
+        { id: generateId('mem'), category: 'user', text: noteText, createdAt: Date.now() },
+      ].slice(-12);
+      state.profile = await updateProfile(state.profile.id, { coachMemory: nextMem });
+      renderProfilSubTab(slot);
+      showToast('Repère mémorisé par le Coach.');
+    });
+
+    slot.querySelectorAll('[data-del-memory]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const memId = btn.dataset.delMemory;
+        const nextMem = (state.profile.coachMemory || []).filter((m) => m.id !== memId);
+        state.profile = await updateProfile(state.profile.id, { coachMemory: nextMem });
+        renderProfilSubTab(slot);
+      });
+    });
+
+    // Application 1-tap d'une adaptation proposée par le Coach (avec Toast Annuler 5s)
+    slot.querySelectorAll('[data-apply-coach-action]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const msgId = btn.dataset.applyCoachAction;
+        const msg = state.coachMessages.find((m) => m.id === msgId);
+        if (!msg?.actionProposal || msg.actionApplied) return;
+
+        const prevProfileSnapshot = structuredClone(state.profile);
+        const prevProgramSnapshot = structuredClone(state.program);
+        const { profilePatch = {}, programPhase } = msg.actionProposal;
+
+        state.profile = await updateProfile(state.profile.id, profilePatch);
+        const rebuilt = generateProgram(state.profile, {
+          phase: programPhase || state.program?.phase || 'accumulation',
+          mesocycleNumber: state.program?.mesocycleNumber || 1,
+        });
+        state.program = await saveProgram(state.profile.id, rebuilt);
+        state.activeSession = null;
+        state.selectedDayIdx = 0;
+
+        msg.actionApplied = true;
+        await updateCoachMessage(msg);
+        state.coachMessages = await listCoachMessages(state.profile.id);
+        renderApp();
+
+        showToast(`Programme adapté : ${rebuilt.splitLabel} · ${rebuilt.methodLabel}`, {
+          undoAction: async () => {
+            state.profile = await updateProfile(state.profile.id, {
+              splitPreference: prevProfileSnapshot.splitPreference,
+              progressionMethod: prevProfileSnapshot.progressionMethod,
+              sessionsPerWeek: prevProfileSnapshot.sessionsPerWeek,
+              sessionDurationMin: prevProfileSnapshot.sessionDurationMin,
+              goal: prevProfileSnapshot.goal,
+              injuries: prevProfileSnapshot.injuries,
+            });
+            state.program = await saveProgram(state.profile.id, prevProgramSnapshot);
+            state.activeSession = null;
+            msg.actionApplied = false;
+            await updateCoachMessage(msg);
+            state.coachMessages = await listCoachMessages(state.profile.id);
+            renderApp();
+          },
+        });
+      });
+    });
+
+    const submitCoachQuestion = async (text) => {
+      if (!text || state.coachBusy) return;
+      state.coachBusy = true;
+
+      const priorHistory = state.coachMessages.slice(-8).map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+
+      // Analyse déterministe immédiate des retours & souhaits (splits, méthodes, douleurs, durée, deload)
+      const { actionProposal, memoryNote } = analyzeCoachFeedbackAndProposeAction(text, state.profile, state.program);
+      if (memoryNote) {
+        const existingMem = Array.isArray(state.profile.coachMemory) ? state.profile.coachMemory : [];
+        if (!existingMem.some((m) => m.text === memoryNote.text)) {
+          const nextMem = [
+            ...existingMem,
+            { id: generateId('mem'), ...memoryNote, createdAt: Date.now() },
+          ].slice(-12);
+          state.profile = await updateProfile(state.profile.id, { coachMemory: nextMem });
+        }
+      }
 
       await addCoachMessage(state.profile.id, { role: 'user', content: text });
       state.coachMessages = await listCoachMessages(state.profile.id);
       renderProfilSubTab(slot);
 
       const { ewma, adaptive, macros } = getDerivedTelemetry();
-      const systemPrompt = `Tu es un préparateur physique biomécanique et nutritionniste sportif. Réponds en français clair, concis et pragmatique.
+      const trainingSummary = buildCoachRuntimeContext(state.profile, state.program, state.workouts);
+      const systemPrompt = `Tu es un préparateur physique certifié en biomécanique et nutritionniste sportif. Réponds en français clair, concret et pragmatique.
 Contexte athlète : ${state.profile.name}, ${state.profile.sex}, ${state.profile.age} ans, ${state.profile.heightCm} cm, ${state.profile.weightKg} kg (EWMA ${ewma.latestEwmaKg ?? state.profile.weightKg} kg, tendance ${ewma.weeklyDeltaKg} kg/sem).
-Objectif : ${state.profile.goal}, split : ${state.program?.splitLabel}, TDEE : ${adaptive.estimatedTdeeKcal} kcal, cible : ${macros.kcal} kcal (P ${macros.proteinG}g / G ${macros.carbsG}g / L ${macros.fatG}g).
-Priorités LAG : ${(state.profile.lagPriorities || []).join(', ') || 'aucune'}. Douleurs : ${(state.profile.injuries || []).map((i) => `${i.zone}(sev ${i.severity})`).join(', ') || 'aucune'}.`;
+Objectif : ${state.profile.goal} · Split actif : ${trainingSummary.activeSplitLabel} · Méthode active : ${trainingSummary.activeMethodLabel}.
+TDEE estimé : ${adaptive.estimatedTdeeKcal} kcal · Cible : ${macros.kcal} kcal (P ${macros.proteinG}g / G ${macros.carbsG}g / L ${macros.fatG}g).
+Priorités LAG : ${(state.profile.lagPriorities || []).join(', ') || 'aucune'} · Douleurs profil : ${(state.profile.injuries || []).map((i) => `${i.zone}(sev ${i.severity})`).join(', ') || 'aucune'}.
+Retours des 5 dernières séances (${trainingSummary.recentWorkoutsCount} enregistrées, Readiness moyen ${trainingSummary.readinessAvg ?? 'N/A'}/100) :
+- Douleurs en séance : ${trainingSummary.painExercises.join(', ') || 'aucune'}
+- Exercices en zone limite : ${trainingSummary.limitExercises.join(', ') || 'aucun'}
+- Exercices faciles : ${trainingSummary.easyExercises.join(', ') || 'aucun'}
+Mémoire persistante de l'athlète : ${trainingSummary.memoryItems.join(' | ') || 'aucune note'}.
+Splits supportés dans l'appli : Full Body, Upper/Lower, PPL, Hybride UL+PPL, Arnold Split, Split classique.
+Méthodes supportées dans l'appli : Double progression, Pyramidal inversé (RPT), Top Set + Back-off, Pyramidal montant, Rest-Pause / Myo-Reps, Ondulatoire DUP.${
+        actionProposal
+          ? `\nNote : Un bouton 1-clic va s'afficher sous ta réponse pour appliquer automatiquement : ${actionProposal.summary}. Mentionne brièvement l'intérêt biomécanique de cet ajustement.`
+          : ''
+      }`;
 
-      const res = await routeAIRequest({
-        taskType: 'coach_chat',
-        prompt: text,
-        systemPrompt,
-        context: { profile: state.profile },
-        settings: state.aiSettings,
-        expectJson: false,
-      });
+      try {
+        const res = await routeAIRequest({
+          taskType: 'coach_chat',
+          prompt: text,
+          systemPrompt,
+          history: priorHistory,
+          context: {
+            profile: state.profile,
+            program: state.program,
+            trainingSummary,
+            actionProposal,
+          },
+          settings: state.aiSettings,
+          expectJson: false,
+        });
 
-      await addCoachMessage(state.profile.id, {
-        role: 'assistant',
-        content: typeof res.data === 'string' ? res.data : JSON.stringify(res.data),
-        tierUsed: res.tierUsed,
-      });
-      state.coachMessages = await listCoachMessages(state.profile.id);
-      renderProfilSubTab(slot);
+        await addCoachMessage(state.profile.id, {
+          role: 'assistant',
+          content: typeof res.data === 'string' ? res.data : JSON.stringify(res.data),
+          tierUsed: res.tierUsed,
+          provider: res.provider || null,
+          fallbackReason: res.usedFallback ? res.fallbackReason : null,
+          actionProposal: actionProposal || null,
+          actionApplied: false,
+        });
+      } finally {
+        state.coachBusy = false;
+        state.coachMessages = await listCoachMessages(state.profile.id);
+        renderProfilSubTab(slot);
+      }
+    };
+
+    slot.querySelectorAll('[data-quick-prompt]').forEach((btn) => {
+      btn.addEventListener('click', () => submitCoachQuestion(btn.dataset.quickPrompt));
+    });
+
+    document.getElementById('coach-chat-form')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = document.getElementById('coach-input');
+      const text = input.value.trim();
+      input.value = '';
+      await submitCoachQuestion(text);
     });
     return;
   }
@@ -2855,6 +3224,24 @@ Priorités LAG : ${(state.profile.lagPriorities || []).join(', ') || 'aucune'}. 
               <div class="field"><label class="field-label">Poids (kg)</label><input id="pe-weight" class="input mono" type="number" step="0.1" value="${p.weightKg}" /></div>
               <div class="field"><label class="field-label">Taille (cm)</label><input id="pe-height" class="input mono" type="number" value="${p.heightCm}" /></div>
               <div class="field"><label class="field-label">Séances / sem</label><input id="pe-freq" class="input mono" type="number" min="2" max="6" value="${p.sessionsPerWeek}" /></div>
+            </div>
+            <div class="grid-2">
+              <div class="field">
+                <label class="field-label" for="pe-split">Split d’entraînement</label>
+                <select id="pe-split" class="select">
+                  ${Object.values(TRAINING_SPLITS)
+                    .map((sp) => `<option value="${sp.id}" ${(p.splitPreference || 'auto') === sp.id ? 'selected' : ''}>${esc(sp.label)}</option>`)
+                    .join('')}
+                </select>
+              </div>
+              <div class="field">
+                <label class="field-label" for="pe-method">Méthode de progression</label>
+                <select id="pe-method" class="select">
+                  ${Object.values(TRAINING_METHODS)
+                    .map((m) => `<option value="${m.id}" ${(p.progressionMethod || 'double_progression') === m.id ? 'selected' : ''}>${esc(m.label)}</option>`)
+                    .join('')}
+                </select>
+              </div>
             </div>
             <div class="grid-3">
               <div class="field"><label class="field-label">Fémurs / Buste</label>
@@ -2932,6 +3319,8 @@ Priorités LAG : ${(state.profile.lagPriorities || []).join(', ') || 'aucune'}. 
         weightKg: Number(document.getElementById('pe-weight').value),
         heightCm: Number(document.getElementById('pe-height').value),
         sessionsPerWeek: Number(document.getElementById('pe-freq').value),
+        splitPreference: document.getElementById('pe-split')?.value || 'auto',
+        progressionMethod: document.getElementById('pe-method')?.value || 'double_progression',
         morphology: {
           femurTorsoRatio: document.getElementById('pe-femur').value,
           armSpanRatio: document.getElementById('pe-arms').value,
@@ -2948,8 +3337,9 @@ Priorités LAG : ${(state.profile.lagPriorities || []).join(', ') || 'aucune'}. 
       const rebuilt = generateProgram(state.profile, { phase: state.program?.phase || 'accumulation' });
       state.program = await saveProgram(state.profile.id, rebuilt);
       state.activeSession = null;
+      state.selectedDayIdx = 0;
       renderApp();
-      showToast(`Profil mis à jour : macros et split ${rebuilt.splitLabel} recalculés.`);
+      showToast(`Profil mis à jour : ${rebuilt.splitLabel} · ${rebuilt.methodLabel}.`);
     });
 
     document.getElementById('btn-add-profile')?.addEventListener('click', () => {
@@ -2983,33 +3373,52 @@ Priorités LAG : ${(state.profile.lagPriorities || []).join(', ') || 'aucune'}. 
     const s = state.aiSettings;
     const preset = TIER2_PRESETS[s.tier2Preset] || TIER2_PRESETS.custom;
     const webCap = detectBrowserLlmCapability();
+    const probe = state.lastProbeResult;
 
     slot.innerHTML = `
       <section class="panel">
         <div class="panel-header">
           <div>
-            <h2>Routeur IA 4 Niveaux (Zéro Clé en Dur)</h2>
-            <p class="panel-subtitle">Clés et endpoints stockés exclusivement dans votre IndexedDB local.</p>
+            <h2>Routeur IA & Clés API</h2>
+            <p class="panel-subtitle" id="ai-autosave-status">Sauvegarde automatique locale (IndexedDB) · Aucune clé en dur.</p>
           </div>
-          <span class="state-tag is-accent">NIVEAU ${s.activeTier} ACTIF</span>
+          <span class="state-tag is-accent">NIV. ${s.activeTier}</span>
         </div>
 
-        <div class="segmented">
-          <button type="button" class="segmented-btn ${s.activeTier === 0 ? 'is-active' : ''}" data-set-tier="0">0 · Local Offline</button>
-          <button type="button" class="segmented-btn ${s.activeTier === 1 ? 'is-active' : ''}" data-set-tier="1">1 · Puter Gratuit</button>
-          <button type="button" class="segmented-btn ${s.activeTier === 2 ? 'is-active' : ''}" data-set-tier="2">2 · BYO / Ollama</button>
+        <div class="segmented-grid-2">
+          <button type="button" class="segmented-btn ${s.activeTier === 0 ? 'is-active' : ''}" data-set-tier="0">0 · Local</button>
+          <button type="button" class="segmented-btn ${s.activeTier === 1 ? 'is-active' : ''}" data-set-tier="1">1 · Gratuit</button>
+          <button type="button" class="segmented-btn ${s.activeTier === 2 ? 'is-active' : ''}" data-set-tier="2">2 · Clé API / Local</button>
           <button type="button" class="segmented-btn ${s.activeTier === 3 ? 'is-active' : ''}" data-set-tier="3">3 · WebLLM</button>
         </div>
+
+        ${
+          s.activeTier === 0
+            ? `
+          <div class="panel-elevated stack-sm">
+            <strong>Niveau 0 — 100 % Hors-Ligne (MediaPipe + Biomécanique)</strong>
+            <span class="panel-subtitle">Zéro réseau, zéro clé API. Calculs biomécaniques, progression, Ciqual et landmarks MediaPipe en local.</span>
+          </div>`
+            : ''
+        }
 
         ${
           s.activeTier === 1
             ? `
           <div class="panel-elevated stack-sm">
-            <strong>Niveau 1 — Cloud Gratuit Sans Clé (Puter.js + secours Pollinations)</strong>
+            <strong>Niveau 1 — Cloud Gratuit Sans Clé</strong>
+            <div class="field">
+              <label class="field-label" for="ai-t1-provider">Fournisseur gratuit</label>
+              <select id="ai-t1-provider" class="select">
+                <option value="puter" ${s.tier1Provider !== 'pollinations' ? 'selected' : ''}>Puter.js (défaut, avec repli Pollinations)</option>
+                <option value="pollinations" ${s.tier1Provider === 'pollinations' ? 'selected' : ''}>Pollinations.ai direct (sans connexion Puter)</option>
+              </select>
+            </div>
             <label class="row" style="cursor: pointer;">
               <input type="checkbox" id="ai-allow-public-body" ${s.allowPublicBodyPhotos ? 'checked' : ''} />
-              <span class="panel-subtitle">Autoriser l’envoi de photos corporelles sur le secours public Pollinations (bloqué par défaut par confidentialité)</span>
+              <span class="panel-subtitle">Autoriser l’envoi de photos corporelles sur Pollinations (bloqué par défaut)</span>
             </label>
+            <span class="panel-subtitle">Astuce : si vous avez une clé Gemini, Groq, OpenRouter ou OpenAI, passez sur <strong>2 · Clé API</strong>.</span>
           </div>`
             : ''
         }
@@ -3019,22 +3428,40 @@ Priorités LAG : ${(state.profile.lagPriorities || []).join(', ') || 'aucune'}. 
             ? `
           <div class="stack">
             <div class="field">
-              <label class="field-label">Préréglage 1-clic</label>
+              <label class="field-label" for="ai-preset-sel">Fournisseur (préréglage 1-clic)</label>
               <select id="ai-preset-sel" class="select">
                 ${Object.values(TIER2_PRESETS)
                   .map((pr) => `<option value="${pr.id}" ${s.tier2Preset === pr.id ? 'selected' : ''}>${esc(pr.label)}</option>`)
                   .join('')}
               </select>
             </div>
-            <div class="field"><label class="field-label">URL de base (/v1)</label><input id="ai-url" class="input mono" value="${esc(s.baseUrl)}" /></div>
-            <div class="grid-2">
-              <div class="field"><label class="field-label">Modèle texte</label><input id="ai-mod" class="input mono" value="${esc(s.model)}" /></div>
-              <div class="field"><label class="field-label">Modèle vision</label><input id="ai-vmod" class="input mono" value="${esc(s.visionModel)}" /></div>
+
+            <div class="field">
+              <label class="field-label" for="ai-key">
+                <span>Clé API (auto-détectée au collage)</span>
+                <span class="mono metric-xs ${s.apiKey ? 'text-ok' : 'text-muted'}">${s.apiKey ? 'Clé enregistrée' : preset.requiresApiKey ? 'Requise' : 'Optionnelle'}</span>
+              </label>
+              <div class="input-action-row">
+                <input id="ai-key" class="input mono" type="${state.showApiKey ? 'text' : 'password'}" autocomplete="off" spellcheck="false" placeholder="Collez AIza... / gsk_... / sk-or-... / sk-..." value="${esc(s.apiKey)}" />
+                <button type="button" class="btn btn-sm" id="btn-toggle-apikey">${state.showApiKey ? 'Masquer' : 'Voir'}</button>
+              </div>
+              ${
+                isVertexExpressKey(s.apiKey)
+                  ? `<div class="notice notice-danger" style="margin-top: 4px;">
+                      <span><strong>Clé Vertex AI Express (AQ.) détectée :</strong> Google Cloud bloque souvent les appels directs depuis un navigateur mobile (CORS) sans serveur backend. Pour une appli 100 % locale, générez une clé gratuite <strong>Google AI Studio (AIza...)</strong> sur <strong>aistudio.google.com/apikey</strong> ou utilisez <strong>Groq (gsk_...)</strong>.</span>
+                    </div>`
+                  : ''
+              }
             </div>
-            <div class="field"><label class="field-label">Clé API (laisser vide pour Ollama / LM Studio)</label><input id="ai-key" class="input mono" type="password" autocomplete="off" value="${esc(s.apiKey)}" /></div>
+
+            <div class="field"><label class="field-label" for="ai-url">URL de base</label><input id="ai-url" class="input mono" value="${esc(s.baseUrl)}" /></div>
+            <div class="grid-2">
+              <div class="field"><label class="field-label" for="ai-mod">Modèle texte</label><input id="ai-mod" class="input mono" value="${esc(s.model)}" /></div>
+              <div class="field"><label class="field-label" for="ai-vmod">Modèle vision</label><input id="ai-vmod" class="input mono" value="${esc(s.visionModel)}" /></div>
+            </div>
             ${
               s.tier2Preset === 'groq'
-                ? `<label class="row" style="cursor:pointer;"><input type="checkbox" id="ai-whisper" ${s.groqWhisperEnabled ? 'checked' : ''} /><span>Activer Groq Whisper (whisper-large-v3) pour la dictée vocale en salle</span></label>`
+                ? `<label class="row" style="cursor:pointer;"><input type="checkbox" id="ai-whisper" ${s.groqWhisperEnabled ? 'checked' : ''} /><span class="panel-subtitle">Activer Groq Whisper pour la dictée vocale en salle</span></label>`
                 : ''
             }
             <div class="notice notice-accent"><span>${esc(preset.corsNote)}</span></div>
@@ -3059,43 +3486,70 @@ Priorités LAG : ${(state.profile.lagPriorities || []).join(', ') || 'aucune'}. 
             }
             <label class="row" style="cursor:pointer;">
               <input type="checkbox" id="ai-t3-accept" ${s.tier3AcceptedRamWarning ? 'checked' : ''} />
-              <span>Je comprends l’impact mémoire (0,9–1,5 Go) avant tout téléchargement des poids.</span>
+              <span class="panel-subtitle">Je comprends l’impact mémoire (0,9–1,5 Go) avant téléchargement.</span>
             </label>
           </div>`
             : ''
         }
 
-        <div class="row-wrap">
-          <button type="button" class="btn btn-primary" id="btn-save-ai">Enregistrer réglages</button>
-          <button type="button" class="btn" id="btn-probe-ai">Tester la connexion</button>
+        <div class="grid-2">
+          <button type="button" class="btn btn-primary btn-block" id="btn-probe-ai">Tester la connexion maintenant</button>
+          <button type="button" class="btn btn-block" id="btn-save-ai">Forcer l'enregistrement</button>
         </div>
-        <pre class="code-box" id="ai-probe-result">Cliquez sur "Tester la connexion" pour mesurer la latence réelle et la prise en charge Vision.</pre>
+
+        <div id="ai-probe-result">
+          ${
+            probe
+              ? `<div class="probe-card ${probe.ok ? 'is-ok' : 'is-err'}">
+                  <div class="row-between">
+                    <span class="state-tag ${probe.ok ? 'is-ok' : 'is-danger'}">${probe.ok ? 'CONNEXION VALIDÉE' : 'ÉCHEC CONNEXION'}</span>
+                    <span class="mono metric-xs">${probe.latencyMs ?? 0} ms · Vision ${probe.visionSupported ? 'OK' : 'Non'}</span>
+                  </div>
+                  <span class="mono metric-xs text-secondary">Moteur : ${esc(probe.provider || '')}</span>
+                  <span style="font-size: 0.82rem;">${esc(probe.diagnostic || '')}</span>
+                </div>`
+              : `<div class="probe-card"><span class="panel-subtitle">Appuyez sur "Tester la connexion maintenant" pour vérifier votre clé et mesurer la latence réelle.</span></div>`
+          }
+        </div>
       </section>
     `;
 
-    const persistCurrentAI = async () => {
+    const persistCurrentAI = async ({ silent = false } = {}) => {
       if (s.activeTier === 1) {
+        s.tier1Provider = document.getElementById('ai-t1-provider')?.value || 'puter';
         s.allowPublicBodyPhotos = Boolean(document.getElementById('ai-allow-public-body')?.checked);
       } else if (s.activeTier === 2) {
-        s.baseUrl = document.getElementById('ai-url')?.value.trim() || '';
-        s.model = document.getElementById('ai-mod')?.value.trim() || '';
-        s.visionModel = document.getElementById('ai-vmod')?.value.trim() || '';
-        s.apiKey = document.getElementById('ai-key')?.value.trim() || '';
+        s.baseUrl = (document.getElementById('ai-url')?.value || '').trim();
+        s.model = (document.getElementById('ai-mod')?.value || '').trim();
+        s.visionModel = (document.getElementById('ai-vmod')?.value || '').trim();
+        s.apiKey = (document.getElementById('ai-key')?.value || '').replace(/[\r\n\t\s]+/g, '');
         s.groqWhisperEnabled = Boolean(document.getElementById('ai-whisper')?.checked);
       } else if (s.activeTier === 3) {
         s.tier3ModelId = document.getElementById('ai-t3-model')?.value || TIER3_MODELS[0].id;
         s.tier3AcceptedRamWarning = Boolean(document.getElementById('ai-t3-accept')?.checked);
       }
       state.aiSettings = await saveAISettings(state.profile.id, s);
+      const statusEl = document.getElementById('ai-autosave-status');
+      if (statusEl && silent) {
+        statusEl.textContent = 'Enregistré automatiquement dans IndexedDB.';
+      }
     };
 
     slot.querySelectorAll('[data-set-tier]').forEach((btn) => {
       btn.addEventListener('click', async () => {
+        await persistCurrentAI({ silent: true });
         s.activeTier = Number(btn.dataset.setTier);
+        state.lastProbeResult = null;
         state.aiSettings = await saveAISettings(state.profile.id, s);
         renderProfilSubTab(slot);
       });
     });
+
+    document.getElementById('ai-t1-provider')?.addEventListener('change', () => persistCurrentAI({ silent: true }));
+    document.getElementById('ai-allow-public-body')?.addEventListener('change', () => persistCurrentAI({ silent: true }));
+    document.getElementById('ai-whisper')?.addEventListener('change', () => persistCurrentAI({ silent: true }));
+    document.getElementById('ai-t3-model')?.addEventListener('change', () => persistCurrentAI({ silent: true }));
+    document.getElementById('ai-t3-accept')?.addEventListener('change', () => persistCurrentAI({ silent: true }));
 
     document.getElementById('ai-preset-sel')?.addEventListener('change', async (e) => {
       const pr = TIER2_PRESETS[e.target.value];
@@ -3104,21 +3558,63 @@ Priorités LAG : ${(state.profile.lagPriorities || []).join(', ') || 'aucune'}. 
       s.baseUrl = pr.baseUrl;
       s.model = pr.model;
       s.visionModel = pr.visionModel;
+      state.lastProbeResult = null;
       state.aiSettings = await saveAISettings(state.profile.id, s);
       renderProfilSubTab(slot);
     });
 
+    // Auto-sauvegarde + auto-détection du fournisseur dès le collage d'une clé API
+    const keyInput = document.getElementById('ai-key');
+    keyInput?.addEventListener('input', async () => {
+      const wasVertex = isVertexExpressKey(s.apiKey);
+      const cleaned = keyInput.value.replace(/[\r\n\t\s]+/g, '');
+      const nowVertex = isVertexExpressKey(cleaned);
+      const detected = detectPresetFromApiKey(cleaned);
+      s.apiKey = cleaned;
+      if (detected && detected !== s.tier2Preset) {
+        const pr = TIER2_PRESETS[detected];
+        s.tier2Preset = pr.id;
+        s.protocol = pr.protocol;
+        s.baseUrl = pr.baseUrl;
+        s.model = pr.model;
+        s.visionModel = pr.visionModel;
+        state.aiSettings = await saveAISettings(state.profile.id, s);
+        renderProfilSubTab(slot);
+        showToast(
+          nowVertex
+            ? 'Clé Vertex AI Express (AQ.) détectée — consultez l’avertissement CORS ci-dessous.'
+            : `Clé ${pr.label} détectée — fournisseur et modèle configurés.`
+        );
+        return;
+      }
+      await persistCurrentAI({ silent: true });
+      if (wasVertex !== nowVertex) {
+        renderProfilSubTab(slot);
+      }
+    });
+
+    ['ai-url', 'ai-mod', 'ai-vmod'].forEach((id) => {
+      document.getElementById(id)?.addEventListener('input', () => persistCurrentAI({ silent: true }));
+    });
+
+    document.getElementById('btn-toggle-apikey')?.addEventListener('click', async () => {
+      await persistCurrentAI({ silent: true });
+      state.showApiKey = !state.showApiKey;
+      renderProfilSubTab(slot);
+    });
+
     document.getElementById('btn-save-ai')?.addEventListener('click', async () => {
-      await persistCurrentAI();
-      showToast('Paramètres Routeur IA enregistrés dans IndexedDB.');
+      await persistCurrentAI({ silent: false });
+      showToast('Paramètres IA enregistrés dans IndexedDB.');
     });
 
     document.getElementById('btn-probe-ai')?.addEventListener('click', async () => {
-      await persistCurrentAI();
+      await persistCurrentAI({ silent: true });
       const box = document.getElementById('ai-probe-result');
-      box.textContent = 'Test de connexion en cours...';
+      box.innerHTML = `<div class="probe-card"><span class="mono metric-xs text-accent">Test de connexion en cours...</span></div>`;
       const res = await testAIConnection(state.aiSettings);
-      box.textContent = JSON.stringify(res, null, 2);
+      state.lastProbeResult = res;
+      renderProfilSubTab(slot);
     });
     return;
   }
@@ -3141,9 +3637,9 @@ Priorités LAG : ${(state.profile.lagPriorities || []).join(', ') || 'aucune'}. 
           <hr class="divider" />
           <div class="field">
             <label class="field-label">Importer un lien P2P reçu</label>
-            <div class="row">
+            <div class="input-action-row">
               <input id="p2p-import-input" class="input mono" placeholder="Coller URL #share=..." />
-              <button type="button" class="btn" id="btn-p2p-import">Importer</button>
+              <button type="button" class="btn btn-sm" id="btn-p2p-import">Importer</button>
             </div>
           </div>
         </section>
@@ -3161,9 +3657,9 @@ Priorités LAG : ${(state.profile.lagPriorities || []).join(', ') || 'aucune'}. 
           <hr class="divider" />
           <div class="field">
             <label class="field-label">Canal privé ntfy.sh (rappels push gratuits, 0 clé)</label>
-            <div class="row">
+            <div class="input-action-row">
               <input id="ntfy-topic-input" class="input mono" placeholder="ex. kinetix-prive-8492" value="${esc(state.profile.ntfyTopic || '')}" />
-              <button type="button" class="btn btn-primary" id="btn-test-ntfy">Tester Push</button>
+              <button type="button" class="btn btn-sm btn-primary" id="btn-test-ntfy">Tester</button>
             </div>
           </div>
         </section>
@@ -3441,6 +3937,64 @@ function updateSystemBanners() {
   wrap.hidden = off.hidden && ios.hidden && bkp.hidden;
 }
 
+function isStandaloneMode() {
+  return (
+    window.matchMedia?.('(display-mode: standalone)')?.matches === true ||
+    window.navigator?.standalone === true
+  );
+}
+
+function openInstallPWAModal() {
+  const ua = navigator.userAgent || '';
+  const isIOS = /iPhone|iPad|iPod/i.test(ua) || (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1);
+  const isAndroid = /Android/i.test(ua);
+
+  const stepsHtml = isIOS
+    ? `
+      <div class="install-step">
+        <span class="install-step-num">1</span>
+        <div><strong>Ouvrez dans Safari</strong><p class="panel-subtitle">L'installation sur écran d'accueil iOS fonctionne depuis Safari.</p></div>
+      </div>
+      <div class="install-step">
+        <span class="install-step-num">2</span>
+        <div><strong>Appuyez sur Partager</strong><p class="panel-subtitle">Icône carré avec flèche vers le haut en bas de l'écran Safari.</p></div>
+      </div>
+      <div class="install-step">
+        <span class="install-step-num">3</span>
+        <div><strong>Sur l'écran d'accueil → Ajouter</strong><p class="panel-subtitle">Protège aussi vos données locales contre la purge WebKit 7 jours.</p></div>
+      </div>`
+    : isAndroid
+      ? `
+      <div class="install-step">
+        <span class="install-step-num">1</span>
+        <div><strong>Ouvrez le menu du navigateur (⋮)</strong><p class="panel-subtitle">En haut à droite de Chrome, Edge, Brave ou Samsung Internet.</p></div>
+      </div>
+      <div class="install-step">
+        <span class="install-step-num">2</span>
+        <div><strong>Appuyez sur « Installer l’application »</strong><p class="panel-subtitle">Ou « Ajouter à l’écran d’accueil » selon votre navigateur.</p></div>
+      </div>
+      <div class="install-step">
+        <span class="install-step-num">3</span>
+        <div><strong>Lancez Kinetix Lab en plein écran</strong><p class="panel-subtitle">Fonctionne ensuite 100 % hors-ligne même sans réseau en salle.</p></div>
+      </div>`
+      : `
+      <div class="install-step">
+        <span class="install-step-num">1</span>
+        <div><strong>Icône d’installation dans la barre d’adresse</strong><p class="panel-subtitle">Sur Chrome / Edge, cliquez sur l’icône d’installation à droite de l’URL.</p></div>
+      </div>
+      <div class="install-step">
+        <span class="install-step-num">2</span>
+        <div><strong>Ou via le menu du navigateur (⋮)</strong><p class="panel-subtitle">Choisissez « Installer Kinetix Lab » pour un lancement autonome hors-ligne.</p></div>
+      </div>`;
+
+  openModal(
+    'Installer Kinetix Lab',
+    `<p class="panel-subtitle">Installez l’application sur votre écran d’accueil pour l’utiliser en plein écran et 100 % hors-ligne.</p>
+     <div class="stack-sm">${stepsHtml}</div>
+     <div class="notice notice-ok"><span>Toutes vos données (profils, séances, nutrition, clés API) restent stockées localement sur votre téléphone.</span></div>`
+  );
+}
+
 async function boot() {
   await openDB();
   state.storageInfo = await initStoragePersistence();
@@ -3449,19 +4003,40 @@ async function boot() {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   }
 
-  // PWA Install Prompt
+  // PWA Install Button : toujours visible hors mode standalone + prompt natif ou guide mobile
+  const installBtn = document.getElementById('btn-install-pwa');
+  if (installBtn) {
+    installBtn.hidden = isStandaloneMode();
+  }
+
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     state.deferredInstallPrompt = e;
-    const btn = document.getElementById('btn-install-pwa');
-    if (btn) btn.hidden = false;
+    if (installBtn && !isStandaloneMode()) installBtn.hidden = false;
   });
 
-  document.getElementById('btn-install-pwa')?.addEventListener('click', async () => {
-    if (!state.deferredInstallPrompt) return;
-    await state.deferredInstallPrompt.prompt();
+  window.addEventListener('appinstalled', () => {
     state.deferredInstallPrompt = null;
-    document.getElementById('btn-install-pwa').hidden = true;
+    if (installBtn) installBtn.hidden = true;
+    showToast('Kinetix Lab installé sur votre appareil.');
+  });
+
+  installBtn?.addEventListener('click', async () => {
+    if (state.deferredInstallPrompt) {
+      try {
+        await state.deferredInstallPrompt.prompt();
+        const choice = await state.deferredInstallPrompt.userChoice;
+        state.deferredInstallPrompt = null;
+        if (choice?.outcome === 'accepted') {
+          installBtn.hidden = true;
+          showToast('Installation lancée.');
+        }
+        return;
+      } catch {
+        state.deferredInstallPrompt = null;
+      }
+    }
+    openInstallPWAModal();
   });
 
   document.getElementById('btn-profile-quick')?.addEventListener('click', () => navigateTo('profil'));

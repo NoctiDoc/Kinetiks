@@ -8,8 +8,8 @@
  * - Network-Only strict pour tous les endpoints IA, GitHub API et ntfy.sh
  */
 
-const SHELL_CACHE = 'kinetix-shell-v1.0.0';
-const MEDIA_CACHE = 'kinetix-exercise-media-v1';
+const SHELL_CACHE = 'kinetix-shell-v1.3.0';
+const MEDIA_CACHE = 'kinetix-exercise-media-v2';
 const FONTS_CACHE = 'kinetix-fonts-v1';
 const CDN_CACHE = 'kinetix-cdn-v1';
 
@@ -42,9 +42,11 @@ const OPTIONAL_MODULE_ASSETS = [
 const NETWORK_ONLY_HOSTS = [
   'localhost',
   '127.0.0.1',
+  'api.openai.com',
   'api.groq.com',
   'openrouter.ai',
   'generativelanguage.googleapis.com',
+  'aiplatform.googleapis.com',
   'api.github.com',
   'ntfy.sh',
   'text.pollinations.ai',
@@ -157,7 +159,7 @@ self.addEventListener('fetch', (event) => {
         const cached = await cache.match(request);
         if (cached) return cached;
         try {
-          const networkResponse = await fetch(request, { mode: 'cors' });
+          const networkResponse = await fetch(request);
           if (networkResponse && (networkResponse.ok || networkResponse.type === 'opaque')) {
             cache.put(request, networkResponse.clone());
             trimCache(MEDIA_CACHE, MAX_MEDIA_ENTRIES);

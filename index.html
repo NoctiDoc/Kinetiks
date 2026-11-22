@@ -2,7 +2,7 @@
 <html lang="fr">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover" />
     <title>Kinetix Lab — Biomécanique, Entraînement & Nutrition</title>
     <meta
       name="description"
@@ -26,7 +26,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="./styles.css" />
@@ -37,22 +37,25 @@
       <div class="app-topbar-inner">
         <a href="#cockpit" class="brand-mark" id="brand-home-link">
           <span class="brand-mark-square" aria-hidden="true">K</span>
-          <span>Kinetix Lab</span>
+          <span class="brand-mark-text">Kinetix Lab</span>
         </a>
 
         <nav class="desktop-nav" aria-label="Navigation principale">
           <button type="button" class="desktop-nav-btn is-active" data-nav="cockpit">Cockpit</button>
           <button type="button" class="desktop-nav-btn" data-nav="seance">Séance</button>
           <button type="button" class="desktop-nav-btn" data-nav="nutrition">Nutrition</button>
-          <button type="button" class="desktop-nav-btn" data-nav="labo">Labo & Évolution</button>
+          <button type="button" class="desktop-nav-btn" data-nav="labo">Labo</button>
           <button type="button" class="desktop-nav-btn" data-nav="profil">Coach & Profil</button>
         </nav>
 
         <div class="topbar-actions">
-          <button id="btn-install-pwa" type="button" class="btn btn-sm btn-primary" hidden>
-            Installer
+          <button id="btn-install-pwa" type="button" class="btn btn-sm btn-primary" aria-label="Installer l'application">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+              <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+            <span>Installer</span>
           </button>
-          <button id="btn-profile-quick" type="button" class="btn btn-sm" hidden>
+          <button id="btn-profile-quick" type="button" class="btn btn-sm topbar-profile-btn" hidden>
             Profil
           </button>
         </div>
@@ -61,17 +64,17 @@
 
     <!-- Chrono de repos sticky (affiché uniquement lorsqu'un repos est en cours) -->
     <div id="rest-timer-bar" class="rest-timer-bar is-hidden" role="status" aria-live="polite">
-      <div class="row">
+      <div class="rest-timer-meta">
         <span class="timer-digits" id="rest-timer-digits">01:30</span>
-        <div class="stack-sm" style="gap: 2px;">
-          <span class="label-tech" id="rest-timer-label">Repos</span>
-          <span class="metric-sm text-muted" id="wakelock-indicator">Écran actif</span>
+        <div class="rest-timer-text">
+          <span class="label-tech truncate" id="rest-timer-label">Repos</span>
+          <span class="metric-xs text-muted" id="wakelock-indicator">Chrono horodaté</span>
         </div>
       </div>
-      <div class="row" style="gap: 6px;">
-        <button type="button" class="btn btn-sm mono" data-timer-delta="-15">-15s</button>
-        <button type="button" class="btn btn-sm mono" data-timer-delta="30">+30s</button>
-        <button type="button" class="btn btn-sm btn-danger" id="btn-timer-stop">Stop</button>
+      <div class="rest-timer-controls">
+        <button type="button" class="btn btn-xs mono" data-timer-delta="-15">-15s</button>
+        <button type="button" class="btn btn-xs mono" data-timer-delta="30">+30s</button>
+        <button type="button" class="btn btn-xs btn-danger" id="btn-timer-stop">Stop</button>
       </div>
     </div>
 
