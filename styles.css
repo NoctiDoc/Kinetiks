@@ -1545,3 +1545,173 @@ input[type="range"].range-tech::-webkit-slider-thumb {
   white-space: nowrap;
   border: 0;
 }
+
+/* ==========================================================================
+   CONSEILLER NUTRITIONNEL PRO — CARBONE TECHNIQUE (ZERO OVERFLOW MOBILE)
+   ========================================================================== */
+
+.nut-score-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+.nut-score-item {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.nut-meter {
+  width: 100%;
+  height: 4px;
+  background-color: var(--bg-input);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.nut-meter-fill {
+  height: 100%;
+  background-color: var(--accent);
+  transition: width 160ms var(--ease-tech);
+}
+
+.nut-meter-fill.is-ok {
+  background-color: var(--ok);
+}
+
+.nut-meter-fill.is-danger {
+  background-color: var(--danger);
+}
+
+.nut-matrix-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-hairline);
+  min-width: 0;
+}
+
+.nut-matrix-row:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.nut-matrix-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.nut-matrix-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.nut-peri-card {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-hairline);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.nut-cadence-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border-hairline);
+  min-width: 0;
+}
+
+.nut-cadence-row:last-child {
+  border-bottom: none;
+}
+
+.nut-shortcut-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  width: 100%;
+}
+
+@media (min-width: 680px) {
+  .nut-shortcut-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.nut-shortcut-btn {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-weight: 500;
+  text-align: left;
+  line-height: 1.3;
+  cursor: pointer;
+  white-space: normal;
+  transition: border-color var(--dur-fast) var(--ease-tech), background-color var(--dur-fast) var(--ease-tech);
+}
+
+.nut-shortcut-btn:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  border-color: var(--accent-border);
+}
+
+.nut-shortcut-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.nut-advisor-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.nut-advisor-msg {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-hairline);
+  background-color: var(--bg-elevated);
+  font-size: 0.84rem;
+  line-height: 1.48;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.nut-advisor-msg.is-user {
+  background-color: var(--bg-input);
+  border-color: var(--border-strong);
+  border-left: 2px solid var(--text-secondary);
+}
+
+.nut-advisor-msg.is-assistant {
+  border-left: 2px solid var(--accent);
+}
+

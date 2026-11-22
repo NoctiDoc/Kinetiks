@@ -646,6 +646,11 @@ export function runTier0Fallback(taskType, prompt, context = {}) {
         bmr_kcal: null,
         note: 'OCR indisponible en Niveau 0 hors-ligne. Saisissez la valeur manuellement ou activez le Niveau 1/2 vision.',
       };
+    case 'nutrition_advisor':
+      return (
+        context.tier0Reply ||
+        'Conseiller Nutritionnel Niveau 0 actif : ouvrez la vue Conseiller Pro pour le diagnostic complet et les équivalents chiffrés.'
+      );
     default:
       return runTier0CoachReply(prompt, context);
   }

@@ -125,6 +125,16 @@ import {
 } from './nutrition-db.js';
 
 import {
+  ADVISOR_SHORTCUTS,
+  getActiveSmoothingAdjustment,
+  computeNutritionClinicalReport,
+  buildEndOfDayRecalibration,
+  buildPersonalizedFoodMatrix,
+  buildPeriWorkoutGuide,
+  askNutritionAdvisor,
+} from './nutrition-advisor.js';
+
+import {
   RestTimerController,
   WorkoutWakeLock,
   listenGymVoice,
@@ -172,11 +182,17 @@ const state = {
   openDrawers: {}, // { [slotId]: 'anatomy' | 'execution' | 'plates' | null }
 
   // État nutrition
-  nutritionSubTab: 'ciqual', // 'photo' | 'barcode' | 'ciqual' | 'plan'
+  nutritionSubTab: 'journal', // 'journal' | 'advisor' | 'plan'
+  nutritionInputMode: 'ciqual', // 'ciqual' | 'photo' | 'barcode'
   ciqualQuery: '',
   offResults: [],
   lastMealVisionResult: null,
   barcodeScanner: null,
+  advisorDayMode: 'auto', // 'auto' | 'training' | 'rest'
+  advisorMatrixTab: 'prioritize', // 'prioritize' | 'moderate' | 'avoid'
+  advisorRecalibrationOpen: false,
+  advisorMessages: [],
+  advisorBusy: false,
 
   // État Labo
   laboSubTab: 'biometrics', // 'biometrics' | 'photos'
@@ -354,6 +370,11 @@ async function loadProfileWorkspace() {
   state.photos = photos;
   state.coachMessages = coachMsgs;
   state.shoppingList = shopping;
+  state.manualKcalOffset = Number(state.profile?.nutritionPrefs?.manualKcalOffset) || 0;
+  state.advisorDayMode = 'auto';
+  state.advisorRecalibrationOpen = false;
+  state.advisorMessages = [];
+  state.advisorBusy = false;
 
   if (!prog) {
     const generated = generateProgram(state.profile, { phase: 'calibration' });
@@ -526,10 +547,12 @@ function getDerivedTelemetry() {
     profile: state.profile,
     bodyFatPct: knownBf,
   });
+  const smoothing = getActiveSmoothingAdjustment(state.profile, getTodayISO());
+  const effectiveKcalOffset = (Number(state.manualKcalOffset) || 0) + (smoothing?.effectiveTodayDeltaKcal || 0);
   const macros = calculateMacroTargets(state.profile, {
     bodyFatPct: knownBf,
     adaptiveTdeeKcal: adaptive.adaptiveActive ? adaptive.estimatedTdeeKcal : null,
-    manualKcalOffset: state.manualKcalOffset,
+    manualKcalOffset: effectiveKcalOffset,
   });
 
   const consumed = state.nutritionToday.reduce(
@@ -546,7 +569,7 @@ function getDerivedTelemetry() {
   const recent7d = state.workouts.filter((w) => Date.now() - (w.startedAt || 0) <= 7 * 86400000).length;
   const deloadStatus = detectDeloadNeed(state.workouts, state.program?.weekNumber || 1);
 
-  return { ewma, latestBio, knownBf, adaptive, macros, consumed, recent7d, deloadStatus };
+  return { ewma, latestBio, knownBf, adaptive, macros, consumed, smoothing, recent7d, deloadStatus };
 }
 
 /* ==========================================================================
@@ -1684,27 +1707,39 @@ function renderSeance(container) {
    ========================================================================== */
 
 function renderNutrition(container) {
-  const { adaptive, macros, consumed } = getDerivedTelemetry();
+  const telemetry = getDerivedTelemetry();
+  const { adaptive, macros, consumed, smoothing } = telemetry;
   const remKcal = Math.max(0, macros.kcal - consumed.kcal);
+  const surplusKcal = Math.max(0, consumed.kcal - macros.kcal);
   const remP = Math.max(0, Math.round(macros.proteinG - consumed.proteinG));
   const remC = Math.max(0, Math.round(macros.carbsG - consumed.carbsG));
   const remF = Math.max(0, Math.round(macros.fatG - consumed.fatG));
+
+  // Compatibilité si une ancienne vue pointait vers ciqual/photo/barcode
+  if (['ciqual', 'photo', 'barcode'].includes(state.nutritionSubTab)) {
+    state.nutritionInputMode = state.nutritionSubTab;
+    state.nutritionSubTab = 'journal';
+  }
 
   container.innerHTML = `
     <section class="stack">
       <div class="row-between">
         <div>
           <h1>Nutrition auto-adaptative</h1>
-          <p class="panel-subtitle">Reste à consommer aujourd’hui · ${esc(macros.formula)} (${macros.tdeeKcal} kcal TDEE)</p>
+          <p class="panel-subtitle">
+            ${esc(macros.formula)} · TDEE ${macros.tdeeKcal} kcal${state.manualKcalOffset ? ` · Ajust. ${state.manualKcalOffset > 0 ? '+' : ''}${state.manualKcalOffset} kcal` : ''}${smoothing?.appliesToday ? ` · Lissage ${smoothing.effectiveTodayDeltaKcal} kcal` : ''}
+          </p>
         </div>
-        <span class="mono metric-lg text-accent">${remKcal} kcal</span>
+        <span class="mono metric-lg ${surplusKcal >= 220 ? 'text-danger' : 'text-accent'}">
+          ${surplusKcal > 0 ? `+${surplusKcal} kcal` : `${remKcal} kcal`}
+        </span>
       </div>
 
       <div class="kpi-strip">
         <div class="kpi-cell">
           <span class="kpi-label">Calories</span>
           <span class="kpi-value">${consumed.kcal}</span>
-          <span class="kpi-delta">Cible ${macros.kcal} · Reste ${remKcal}</span>
+          <span class="kpi-delta">Cible ${macros.kcal} · ${surplusKcal > 0 ? `Surplus +${surplusKcal}` : `Reste ${remKcal}`}</span>
         </div>
         <div class="kpi-cell">
           <span class="kpi-label">Protéines</span>
@@ -1735,50 +1770,25 @@ function renderNutrition(container) {
           : ''
       }
 
-      <!-- 4 Modes d'ajout sans friction (2x2 mobile, zéro débordement) -->
-      <div class="segmented-grid-2" role="tablist">
-        <button type="button" class="segmented-btn ${state.nutritionSubTab === 'ciqual' ? 'is-active' : ''}" data-nut-tab="ciqual">Ciqual & Favoris</button>
-        <button type="button" class="segmented-btn ${state.nutritionSubTab === 'photo' ? 'is-active' : ''}" data-nut-tab="photo">Photo Assiette</button>
-        <button type="button" class="segmented-btn ${state.nutritionSubTab === 'barcode' ? 'is-active' : ''}" data-nut-tab="barcode">Code-Barres</button>
-        <button type="button" class="segmented-btn ${state.nutritionSubTab === 'plan' ? 'is-active' : ''}" data-nut-tab="plan">Plan & Courses</button>
+      <!-- Sous-navigation propre 3 vues (1 tap, zéro surcharge mobile) -->
+      <div class="segmented" role="tablist" aria-label="Vues Nutrition">
+        <button type="button" class="segmented-btn ${state.nutritionSubTab === 'journal' ? 'is-active' : ''}" data-nut-tab="journal">Journal</button>
+        <button type="button" class="segmented-btn ${state.nutritionSubTab === 'advisor' ? 'is-active' : ''}" data-nut-tab="advisor">Conseiller Pro</button>
+        <button type="button" class="segmented-btn ${state.nutritionSubTab === 'plan' ? 'is-active' : ''}" data-nut-tab="plan">Courses & Plans</button>
       </div>
 
       <div id="nutrition-subview"></div>
-
-      <!-- Journal du jour -->
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Journal du jour (${state.nutritionToday.length} entrées)</h2>
-          <span class="mono metric-sm text-secondary">${consumed.kcal} kcal</span>
-        </div>
-        ${
-          state.nutritionToday.length === 0
-            ? `<p class="panel-subtitle">Aucun repas enregistré aujourd’hui.</p>`
-            : `<div class="stack-sm">
-                ${state.nutritionToday
-                  .map(
-                    (log) => `
-                  <div class="row-between" style="padding: 8px 0; border-bottom: 1px solid var(--border-hairline);">
-                    <div class="stack-sm" style="gap: 2px;">
-                      <strong>${esc(log.label)}</strong>
-                      <span class="meta-inline mono">
-                        ${esc(log.mealSlot || 'Repas')} · ${log.kcal} kcal · P ${log.proteinG}g / G ${log.carbsG}g / L ${log.fatG}g
-                      </span>
-                    </div>
-                    <button type="button" class="btn btn-sm btn-danger" data-del-nut="${esc(log.id)}">Suppr.</button>
-                  </div>`
-                  )
-                  .join('')}
-              </div>`
-        }
-      </section>
     </section>
   `;
 
-  document.getElementById('btn-apply-tdee-adj')?.addEventListener('click', () => {
-    state.manualKcalOffset += adaptive.adjustmentProposal.deltaKcal;
+  document.getElementById('btn-apply-tdee-adj')?.addEventListener('click', async () => {
+    const delta = adaptive.adjustmentProposal.deltaKcal;
+    state.manualKcalOffset = (Number(state.manualKcalOffset) || 0) + delta;
+    state.profile = await updateProfile(state.profile.id, {
+      nutritionPrefs: { manualKcalOffset: state.manualKcalOffset },
+    });
     renderApp();
-    showToast(`Cible calorique ajustée de ${adaptive.adjustmentProposal.deltaKcal} kcal/j.`);
+    showToast(`Cible calorique ajustée de ${delta > 0 ? '+' : ''}${delta} kcal/j et enregistrée.`);
   });
 
   container.querySelectorAll('[data-nut-tab]').forEach((btn) => {
@@ -1789,34 +1799,745 @@ function renderNutrition(container) {
     });
   });
 
-  container.querySelectorAll('[data-del-nut]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.delNut;
-      const snapshot = state.nutritionToday.find((n) => n.id === id);
-      await deleteNutritionLog(id);
-      state.nutritionAll = await listNutritionLogs(state.profile.id);
-      state.nutritionToday = state.nutritionAll.filter((n) => n.date === getTodayISO());
-      renderApp();
-      if (snapshot) {
-        showToast('Repas retiré du journal.', {
-          undoAction: async () => {
-            await saveNutritionLog(state.profile.id, snapshot);
-            state.nutritionAll = await listNutritionLogs(state.profile.id);
-            state.nutritionToday = state.nutritionAll.filter((n) => n.date === getTodayISO());
-            renderApp();
-          },
-        });
-      }
-    });
-  });
-
-  renderNutritionSubTab(document.getElementById('nutrition-subview'), macros);
+  renderNutritionSubTab(document.getElementById('nutrition-subview'), telemetry);
 }
 
-function renderNutritionSubTab(slot, macros) {
+function renderNutritionSubTab(slot, telemetry) {
+  if (!slot) return;
+  const { adaptive, ewma, knownBf, macros, consumed, smoothing } = telemetry;
+
+  /* ------------------------------------------------------------------------
+     VUE 1 — JOURNAL (SAISIE CIQUAL/PHOTO/CODE-BARRES + HYDRATATION + JOURNAL)
+     ------------------------------------------------------------------------ */
+  if (state.nutritionSubTab === 'journal') {
+    const waterPct = Math.min(100, Math.round(((state.hydration?.totalMl || 0) / Math.max(1, macros.waterTargetMl)) * 100));
+    slot.innerHTML = `
+      <div class="stack">
+        <!-- Sélecteur compact de saisie -->
+        <div class="segmented" role="tablist" aria-label="Mode de saisie repas">
+          <button type="button" class="segmented-btn ${state.nutritionInputMode === 'ciqual' ? 'is-active' : ''}" data-nut-input="ciqual">Ciqual & Favoris</button>
+          <button type="button" class="segmented-btn ${state.nutritionInputMode === 'photo' ? 'is-active' : ''}" data-nut-input="photo">Photo Assiette</button>
+          <button type="button" class="segmented-btn ${state.nutritionInputMode === 'barcode' ? 'is-active' : ''}" data-nut-input="barcode">Code-Barres</button>
+        </div>
+
+        <div id="nutrition-input-slot"></div>
+
+        <!-- Hydratation rapide -->
+        <section class="panel">
+          <div class="row-between">
+            <div>
+              <h2>Hydratation du jour</h2>
+              <span class="mono metric-xs text-secondary">${state.hydration?.totalMl || 0} / ${macros.waterTargetMl} ml (${waterPct} %)</span>
+            </div>
+            <div class="row" style="gap: 6px;">
+              <button type="button" class="btn btn-sm" data-nut-water="250">+250 ml</button>
+              <button type="button" class="btn btn-sm btn-primary" data-nut-water="500">+500 ml</button>
+            </div>
+          </div>
+          <div class="nut-meter">
+            <div class="nut-meter-fill ${waterPct >= 80 ? 'is-ok' : waterPct < 45 ? 'is-danger' : ''}" style="width: ${waterPct}%;"></div>
+          </div>
+        </section>
+
+        <!-- Journal du jour -->
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Journal du jour (${state.nutritionToday.length} entrées)</h2>
+            <span class="mono metric-sm text-secondary">${consumed.kcal} kcal</span>
+          </div>
+          ${
+            state.nutritionToday.length === 0
+              ? `<p class="panel-subtitle">Aucun repas enregistré aujourd’hui.</p>`
+              : `<div class="stack-sm">
+                  ${state.nutritionToday
+                    .map(
+                      (log) => `
+                    <div class="row-between" style="padding: 8px 0; border-bottom: 1px solid var(--border-hairline);">
+                      <div class="stack-sm" style="gap: 2px;">
+                        <strong>${esc(log.label)}</strong>
+                        <span class="meta-inline mono">
+                          ${esc(log.mealSlot || 'Repas')} · ${log.kcal} kcal · P ${log.proteinG}g / G ${log.carbsG}g / L ${log.fatG}g${log.fiberG ? ` · F ${log.fiberG}g` : ''}
+                        </span>
+                      </div>
+                      <button type="button" class="btn btn-sm btn-danger" data-del-nut="${esc(log.id)}">Suppr.</button>
+                    </div>`
+                    )
+                    .join('')}
+                </div>`
+          }
+        </section>
+      </div>
+    `;
+
+    slot.querySelectorAll('[data-nut-input]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (state.barcodeScanner) await state.barcodeScanner.stop();
+        state.nutritionInputMode = btn.dataset.nutInput;
+        renderNutritionSubTab(slot, telemetry);
+      });
+    });
+
+    slot.querySelectorAll('[data-nut-water]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const ml = Number(btn.dataset.nutWater) || 250;
+        await addHydration(state.profile.id, ml, getTodayISO());
+        state.hydration = await getHydrationForDate(state.profile.id, getTodayISO());
+        renderApp();
+        showToast(`+${ml} ml d’eau enregistrés.`);
+      });
+    });
+
+    slot.querySelectorAll('[data-del-nut]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.delNut;
+        const snapshot = state.nutritionToday.find((n) => n.id === id);
+        await deleteNutritionLog(id);
+        state.nutritionAll = await listNutritionLogs(state.profile.id);
+        state.nutritionToday = state.nutritionAll.filter((n) => n.date === getTodayISO());
+        renderApp();
+        if (snapshot) {
+          showToast('Repas retiré du journal.', {
+            undoAction: async () => {
+              await saveNutritionLog(state.profile.id, snapshot);
+              state.nutritionAll = await listNutritionLogs(state.profile.id);
+              state.nutritionToday = state.nutritionAll.filter((n) => n.date === getTodayISO());
+              renderApp();
+            },
+          });
+        }
+      });
+    });
+
+    renderNutritionInputMode(document.getElementById('nutrition-input-slot'), macros);
+    return;
+  }
+
+  /* ------------------------------------------------------------------------
+     VUE 2 — CONSEILLER NUTRITIONNEL PRO (NIVEAU 0 DÉTERMINISTE + IA)
+     ------------------------------------------------------------------------ */
+  if (state.nutritionSubTab === 'advisor') {
+    const todayISO = getTodayISO();
+    const report = computeNutritionClinicalReport({
+      profile: state.profile,
+      macros,
+      consumed,
+      nutritionToday: state.nutritionToday,
+      nutritionAll: state.nutritionAll,
+      hydration: state.hydration,
+      adaptive,
+      ewma,
+      workouts: state.workouts,
+      activeSession: state.activeSession,
+      dayModeOverride: state.advisorDayMode,
+      todayISO,
+    });
+    const recalibration = buildEndOfDayRecalibration({
+      profile: state.profile,
+      macros,
+      consumed,
+      favorites: state.favorites,
+      todayISO,
+    });
+    const matrix = buildPersonalizedFoodMatrix({ profile: state.profile, report });
+    const periGuide = buildPeriWorkoutGuide({
+      profile: state.profile,
+      macros,
+      isTrainingDay: report.dayStatus.isTrainingDay,
+    });
+
+    const showRecalib =
+      state.advisorRecalibrationOpen ||
+      report.balance.hasSignificantSurplus ||
+      (state.nutritionToday.length > 0 && report.balance.proteinDeficitHigh);
+
+    const scoreTone =
+      report.score.total >= 80 ? 'is-ok' : report.score.total >= 58 ? 'is-accent' : 'is-danger';
+
+    const ewmaTone =
+      report.ewmaAlert.severity === 'danger'
+        ? 'notice-danger'
+        : report.ewmaAlert.severity === 'action'
+          ? 'notice-accent'
+          : '';
+
+    const activeMatrixSection =
+      state.advisorMatrixTab === 'moderate'
+        ? matrix.moderate
+        : state.advisorMatrixTab === 'avoid'
+          ? matrix.avoid
+          : matrix.prioritize;
+
+    slot.innerHTML = `
+      <div class="stack">
+        <!-- 1. TABLEAU DE BORD CLINIQUE DU JOUR -->
+        <section class="panel">
+          <div class="panel-header">
+            <div class="stack-sm" style="gap: 3px;">
+              <div class="row-wrap" style="gap: 6px;">
+                <span class="state-tag ${report.dayStatus.isTrainingDay ? 'is-accent' : 'is-muted'}">${esc(report.dayStatus.label)}</span>
+                <span class="mono metric-xs text-secondary">${esc(report.dayStatus.source)}</span>
+              </div>
+              <h2>Diagnostic clinique du jour</h2>
+            </div>
+            <div style="text-align: right;">
+              <span class="mono metric-xl ${report.score.total >= 80 ? 'text-ok' : report.score.total >= 58 ? 'text-accent' : 'text-danger'}">${report.score.total}</span>
+              <span class="mono metric-xs text-muted">/100</span>
+              <div><span class="state-tag ${scoreTone}">${esc(report.score.grade)}</span></div>
+            </div>
+          </div>
+
+          <p class="panel-subtitle">${esc(report.dayStatus.carbModulation)}</p>
+
+          <!-- Sélecteur statut jour Auto / Entraînement / Repos -->
+          <div class="segmented" role="tablist" aria-label="Statut d'entraînement du jour">
+            <button type="button" class="segmented-btn ${state.advisorDayMode === 'auto' ? 'is-active' : ''}" data-day-mode="auto">Auto</button>
+            <button type="button" class="segmented-btn ${state.advisorDayMode === 'training' ? 'is-active' : ''}" data-day-mode="training">Entraînement</button>
+            <button type="button" class="segmented-btn ${state.advisorDayMode === 'rest' ? 'is-active' : ''}" data-day-mode="rest">Repos</button>
+          </div>
+
+          <!-- 4 Sous-scores cliniques -->
+          <div class="nut-score-grid">
+            ${Object.values(report.score.subscores)
+              .map((sub) => {
+                const pct = Math.min(100, Math.round((sub.points / Math.max(1, sub.max)) * 100));
+                const fillClass = sub.status === 'ok' ? 'is-ok' : sub.status === 'danger' ? 'is-danger' : '';
+                return `
+                  <div class="nut-score-item">
+                    <div class="row-between">
+                      <span class="label-tech">${esc(sub.label)}</span>
+                      <span class="mono metric-xs">${sub.points}/${sub.max}</span>
+                    </div>
+                    <div class="nut-meter"><div class="nut-meter-fill ${fillClass}" style="width: ${pct}%;"></div></div>
+                    <span class="mono metric-xs text-secondary">${esc(sub.detail)}</span>
+                  </div>
+                `;
+              })
+              .join('')}
+          </div>
+
+          ${
+            smoothing
+              ? `<div class="notice notice-accent">
+                  <span><strong>Lissage 72 h actif :</strong> ${smoothing.dailyDeltaKcal} kcal/j sur ${smoothing.remainingDaysCount} j restant(s) (surplus initial +${smoothing.totalSurplusKcal} kcal).</span>
+                  <button type="button" class="btn btn-xs" id="btn-cancel-smoothing">Annuler</button>
+                </div>`
+              : ''
+          }
+
+          <!-- Alerte tendance EWMA 14–21 j -->
+          <div class="${ewmaTone ? `notice ${ewmaTone}` : 'panel-elevated stack-sm'}" style="${ewmaTone ? '' : 'padding: 10px 12px;'}">
+            <div class="stack-sm" style="gap: 3px; flex: 1;">
+              <div class="row-wrap" style="gap: 6px;">
+                <span class="state-tag ${report.ewmaAlert.severity === 'danger' ? 'is-danger' : report.ewmaAlert.severity === 'action' ? 'is-accent' : report.ewmaAlert.severity === 'ok' ? 'is-ok' : 'is-muted'}">
+                  EWMA 14–21 J · ${esc(report.ewmaAlert.statusLabel)}
+                </span>
+                <span class="mono metric-xs text-secondary">${esc(report.ewmaAlert.headline)}</span>
+              </div>
+              <span style="font-size: 0.82rem;">${esc(report.ewmaAlert.explanation)}</span>
+            </div>
+            ${
+              report.ewmaAlert.recommendedDeltaKcal !== 0
+                ? `<button type="button" class="btn btn-sm btn-primary" id="btn-apply-ewma-adj">
+                    Appliquer (${report.ewmaAlert.recommendedDeltaKcal > 0 ? '+' : ''}${report.ewmaAlert.recommendedDeltaKcal} kcal → ${report.ewmaAlert.newTargetKcal})
+                  </button>`
+                : ''
+            }
+          </div>
+        </section>
+
+        <!-- 2. RECALIBRAGE DE FIN DE JOURNÉE & LISSAGE 3 JOURS -->
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Recalibrage de fin de journée</h2>
+              <p class="panel-subtitle mono">
+                ${report.balance.surplusKcal > 0 ? `Surplus +${report.balance.surplusKcal} kcal` : `Reste ${report.balance.remKcal} kcal`} · P ${report.balance.remProteinG}g · G ${report.balance.remCarbsG}g · L ${report.balance.remFatG}g
+              </p>
+            </div>
+            <button type="button" class="btn btn-sm btn-primary" id="btn-toggle-recalib">
+              ${showRecalib ? 'Masquer' : 'Recalibrer ma fin de journée'}
+            </button>
+          </div>
+
+          ${
+            showRecalib
+              ? `<div class="stack-sm">
+                  <p class="panel-subtitle">${esc(recalibration.situationSummary)}</p>
+                  ${recalibration.options
+                    .map(
+                      (opt, idx) => `
+                    <div class="panel-elevated stack-sm" style="padding: 10px 12px;">
+                      <div class="row-between">
+                        <div class="stack-sm" style="gap: 2px;">
+                          <span class="state-tag is-accent">${esc(opt.tag)}</span>
+                          <strong>${esc(opt.title)}</strong>
+                        </div>
+                        <button type="button" class="btn btn-xs btn-primary" data-log-recalib="${idx}">+ Journal</button>
+                      </div>
+                      <span class="mono metric-xs text-accent">
+                        ${opt.totals.kcal} kcal · P ${opt.totals.proteinG}g / G ${opt.totals.carbsG}g / L ${opt.totals.fatG}g${opt.totals.fiberG ? ` · F ${opt.totals.fiberG}g` : ''}
+                      </span>
+                      <div class="stack-sm" style="gap: 2px;">
+                        ${opt.items
+                          .map((i) => `<span class="mono metric-xs text-secondary">• ${esc(i.name)} : ${i.grams} g (${i.kcal} kcal · P ${i.proteinG}g)</span>`)
+                          .join('')}
+                      </div>
+                      <span class="panel-subtitle">${esc(opt.rationale)}</span>
+                    </div>`
+                    )
+                    .join('')}
+
+                  ${
+                    recalibration.smoothingProposal
+                      ? `<div class="notice notice-danger">
+                          <div class="stack-sm" style="gap: 2px;">
+                            <strong>Option Lissage sur 3 jours (72 h)</strong>
+                            <span style="font-size: 0.8rem;">
+                              Répartir le surplus (+${recalibration.smoothingProposal.totalSurplusKcal} kcal) en douceur :
+                              <span class="mono">${recalibration.smoothingProposal.dailyDeltaKcal} kcal/j</span> sur les 3 prochains jours (${recalibration.smoothingProposal.activeDays.join(', ')}) sans sauter de repas.
+                            </span>
+                          </div>
+                          <button type="button" class="btn btn-sm btn-primary" id="btn-activate-smoothing">Lisser sur 3 jours</button>
+                        </div>`
+                      : ''
+                  }
+                </div>`
+              : `<p class="panel-subtitle">Clique sur « Recalibrer ma fin de journée » pour générer 2 à 3 repas/collations chiffrés (Ciqual + favoris) adaptés à ton reste du jour ou lisser un écart sur 72 h.</p>`
+          }
+        </section>
+
+        <!-- 3. MATRICE D'ALIMENTS PERSONNALISÉE -->
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Matrice d’aliments personnalisée</h2>
+              <p class="panel-subtitle">
+                ${esc(matrix.goalLabel)} · ${esc(matrix.dietLabel)}${matrix.allergies.length ? ` · Hors ${esc(matrix.allergies.join(', '))}` : ''}${matrix.hasInjuries ? ' · Focus anti-inflammatoire' : ''}${matrix.lowHydration ? ' · Focus électrolytes' : ''}
+              </p>
+            </div>
+          </div>
+
+          <div class="segmented" role="tablist" aria-label="Catégories matrice alimentaire">
+            <button type="button" class="segmented-btn ${state.advisorMatrixTab === 'prioritize' ? 'is-active' : ''}" data-matrix-tab="prioritize">À privilégier</button>
+            <button type="button" class="segmented-btn ${state.advisorMatrixTab === 'moderate' ? 'is-active' : ''}" data-matrix-tab="moderate">À modérer</button>
+            <button type="button" class="segmented-btn ${state.advisorMatrixTab === 'avoid' ? 'is-active' : ''}" data-matrix-tab="avoid">À limiter</button>
+          </div>
+
+          <div class="stack-sm">
+            <div class="row-between">
+              <span class="label-tech ${state.advisorMatrixTab === 'avoid' ? 'text-danger' : 'text-accent'}">${esc(activeMatrixSection.title)}</span>
+              <span class="mono metric-xs text-muted">${activeMatrixSection.items.length} repères</span>
+            </div>
+            <p class="panel-subtitle">${esc(activeMatrixSection.summary)}</p>
+
+            ${
+              state.advisorMatrixTab === 'avoid'
+                ? activeMatrixSection.items
+                    .map(
+                      (item) => `
+                    <div class="nut-matrix-row">
+                      <div class="nut-matrix-head">
+                        <strong>${esc(item.name)}</strong>
+                        <span class="state-tag is-danger">${esc(item.tag)}</span>
+                      </div>
+                      <span class="panel-subtitle">${esc(item.reason)}</span>
+                    </div>`
+                    )
+                    .join('')
+                : activeMatrixSection.items
+                    .map(
+                      (entry, idx) => `
+                    <div class="nut-matrix-row">
+                      <div class="nut-matrix-head">
+                        <div class="stack-sm" style="gap: 2px;">
+                          <strong>${esc(entry.food.name)}</strong>
+                          <span class="mono metric-xs text-secondary">
+                            ${entry.food.kcal} kcal/100g · P ${entry.food.proteinG}g · G ${entry.food.carbsG}g · L ${entry.food.fatG}g · F ${entry.food.fiberG}g
+                          </span>
+                        </div>
+                        <span class="state-tag ${state.advisorMatrixTab === 'prioritize' ? 'is-ok' : 'is-accent'}">${esc(entry.tag)}</span>
+                      </div>
+                      <span class="panel-subtitle">${esc(entry.reason)}</span>
+                      <div class="nut-matrix-actions">
+                        <button type="button" class="btn btn-xs btn-primary" data-matrix-log="${state.advisorMatrixTab}:${idx}">+ Journal (${entry.defaultGrams} g)</button>
+                        <button type="button" class="btn btn-xs" data-matrix-shop="${state.advisorMatrixTab}:${idx}">+ Courses (${entry.weeklyGrams} g)</button>
+                      </div>
+                    </div>`
+                    )
+                    .join('')
+            }
+          </div>
+        </section>
+
+        <!-- 4. GUIDE PÉRI-ENTRAÎNEMENT & TIMING DES REPAS -->
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Guide péri-entraînement & timing</h2>
+              <p class="panel-subtitle">Cadence calibrée sur ${periGuide.mealsPerDay} repas/jour · ${esc(report.dayStatus.label)}</p>
+            </div>
+          </div>
+
+          <div class="stack-sm">
+            ${periGuide.windows
+              .map(
+                (w) => `
+              <div class="nut-peri-card">
+                <span class="label-tech text-accent">${esc(w.window)}</span>
+                <strong style="font-size: 0.86rem;">${esc(w.focus)}</strong>
+                <span class="panel-subtitle">${esc(w.rationale)}</span>
+                <span class="mono metric-xs text-primary" style="margin-top: 2px;">Repère : ${esc(w.example)}</span>
+              </div>`
+              )
+              .join('')}
+          </div>
+
+          <div class="stack-sm" style="margin-top: 4px;">
+            <span class="label-tech">Répartition cible (${periGuide.mealsPerDay} prises)</span>
+            ${periGuide.cadence
+              .map(
+                (c) => `
+              <div class="nut-cadence-row">
+                <div class="stack-sm" style="gap: 1px;">
+                  <strong style="font-size: 0.84rem;">${esc(c.label)}</strong>
+                  <span class="panel-subtitle">${esc(c.note)}</span>
+                </div>
+                <span class="mono metric-xs text-accent" style="white-space: nowrap;">${c.kcal} kcal · P ${c.proteinG}g</span>
+              </div>`
+              )
+              .join('')}
+          </div>
+        </section>
+
+        <!-- 5. CONSULTATION CONSEILLER NUTRITION INTERACTIVE -->
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Poser une question au Conseiller Nutrition</h2>
+              <p class="panel-subtitle">Contexte injecté : profil, allergies, reste du jour, EWMA & audit 7 jours (${report.audit7d.daysLogged} j logués)</p>
+            </div>
+            <span class="state-tag is-muted">NIVEAU ${state.aiSettings.activeTier}</span>
+          </div>
+
+          <div class="nut-shortcut-grid">
+            ${ADVISOR_SHORTCUTS.map(
+              (sc) => `
+              <button type="button" class="nut-shortcut-btn" data-advisor-shortcut="${esc(sc.id)}" ${state.advisorBusy ? 'disabled' : ''}>
+                ${esc(sc.label)}
+              </button>`
+            ).join('')}
+          </div>
+
+          <form id="advisor-question-form" class="input-action-row">
+            <input
+              id="advisor-question-input"
+              class="input"
+              type="text"
+              placeholder="Ex. Remplace le skyr, ou comment gérer un repas d’affaires ?"
+              ${state.advisorBusy ? 'disabled' : ''}
+            />
+            <button type="submit" class="btn btn-primary" ${state.advisorBusy ? 'disabled' : ''}>
+              ${state.advisorBusy ? '...' : 'Analyser'}
+            </button>
+          </form>
+
+          ${
+            state.advisorMessages.length > 0
+              ? `<div class="stack-sm">
+                  <div class="row-between">
+                    <span class="label-tech">Consultation en cours (${state.advisorMessages.length})</span>
+                    <button type="button" class="btn btn-xs btn-ghost" id="btn-clear-advisor">Effacer</button>
+                  </div>
+                  <div class="nut-advisor-thread" id="advisor-thread-box">
+                    ${state.advisorMessages
+                      .map(
+                        (msg) => `
+                      <div class="nut-advisor-msg ${msg.role === 'user' ? 'is-user' : 'is-assistant'}">
+                        <div class="row-between" style="margin-bottom: 4px;">
+                          <span class="label-tech">${msg.role === 'user' ? 'VOTRE QUESTION' : 'CONSEILLER NUTRITION PRO'}</span>
+                          ${msg.meta ? `<span class="mono metric-xs text-muted">${esc(msg.meta)}</span>` : ''}
+                        </div>
+                        <div>${esc(msg.content)}</div>
+                      </div>`
+                      )
+                      .join('')}
+                  </div>
+                </div>`
+              : `<p class="panel-subtitle">Sélectionne un raccourci terrain ou pose une question libre. Fonctionne à 100 % en local (Niveau 0) et s’enrichit automatiquement si un moteur IA (Niveau 1/2/3) est activé.</p>`
+          }
+        </section>
+      </div>
+    `;
+
+    // Handlers Vue Conseiller Pro
+    slot.querySelectorAll('[data-day-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.advisorDayMode = btn.dataset.dayMode;
+        renderNutritionSubTab(slot, telemetry);
+      });
+    });
+
+    document.getElementById('btn-toggle-recalib')?.addEventListener('click', () => {
+      state.advisorRecalibrationOpen = !showRecalib;
+      renderNutritionSubTab(slot, telemetry);
+    });
+
+    document.getElementById('btn-apply-ewma-adj')?.addEventListener('click', async () => {
+      const delta = report.ewmaAlert.recommendedDeltaKcal;
+      if (!delta) return;
+      state.manualKcalOffset = (Number(state.manualKcalOffset) || 0) + delta;
+      state.profile = await updateProfile(state.profile.id, {
+        nutritionPrefs: { manualKcalOffset: state.manualKcalOffset },
+      });
+      renderApp();
+      showToast(`Cible calorique recalibrée (${delta > 0 ? '+' : ''}${delta} kcal/j).`);
+    });
+
+    document.getElementById('btn-activate-smoothing')?.addEventListener('click', async () => {
+      if (!recalibration.smoothingProposal) return;
+      state.profile = await updateProfile(state.profile.id, {
+        nutritionPrefs: { smoothingPlan: recalibration.smoothingProposal },
+      });
+      renderApp();
+      showToast(`Lissage 72 h activé (${recalibration.smoothingProposal.dailyDeltaKcal} kcal/j sur 3 jours).`);
+    });
+
+    document.getElementById('btn-cancel-smoothing')?.addEventListener('click', async () => {
+      state.profile = await updateProfile(state.profile.id, {
+        nutritionPrefs: { smoothingPlan: null },
+      });
+      renderApp();
+      showToast('Lissage 72 h annulé.');
+    });
+
+    slot.querySelectorAll('[data-log-recalib]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const opt = recalibration.options[Number(btn.dataset.logRecalib)];
+        if (!opt) return;
+        await saveNutritionLog(state.profile.id, {
+          date: todayISO,
+          mealSlot: 'Recalibrage Pro',
+          source: 'advisor_recalib',
+          label: `${opt.title} (${opt.items.map((i) => `${i.name} ${i.grams}g`).join(' + ')})`,
+          kcal: opt.totals.kcal,
+          proteinG: opt.totals.proteinG,
+          carbsG: opt.totals.carbsG,
+          fatG: opt.totals.fatG,
+          fiberG: opt.totals.fiberG,
+        });
+        state.nutritionAll = await listNutritionLogs(state.profile.id);
+        state.nutritionToday = state.nutritionAll.filter((n) => n.date === todayISO);
+        renderApp();
+        showToast(`Option ajoutée au journal (${opt.totals.kcal} kcal · P ${opt.totals.proteinG}g).`);
+      });
+    });
+
+    slot.querySelectorAll('[data-matrix-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.advisorMatrixTab = btn.dataset.matrixTab;
+        renderNutritionSubTab(slot, telemetry);
+      });
+    });
+
+    slot.querySelectorAll('[data-matrix-log]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const [tabKey, idxStr] = String(btn.dataset.matrixLog || '').split(':');
+        const list = tabKey === 'moderate' ? matrix.moderate.items : matrix.prioritize.items;
+        const entry = list[Number(idxStr)];
+        if (!entry) return;
+        const scaled = scaleFoodMacros(entry.food, entry.defaultGrams);
+        await saveNutritionLog(state.profile.id, {
+          date: todayISO,
+          mealSlot: 'Conseiller Pro',
+          source: 'advisor_matrix',
+          label: `${entry.food.name} (${scaled.grams} g)`,
+          ...scaled,
+        });
+        state.nutritionAll = await listNutritionLogs(state.profile.id);
+        state.nutritionToday = state.nutritionAll.filter((n) => n.date === todayISO);
+        renderApp();
+        showToast(`Ajouté au journal : ${entry.food.name} (${scaled.grams} g · ${scaled.kcal} kcal).`);
+      });
+    });
+
+    slot.querySelectorAll('[data-matrix-shop]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const [tabKey, idxStr] = String(btn.dataset.matrixShop || '').split(':');
+        const list = tabKey === 'moderate' ? matrix.moderate.items : matrix.prioritize.items;
+        const entry = list[Number(idxStr)];
+        if (!entry) return;
+        const existing = state.shoppingList.find((x) => x.name === entry.food.name);
+        if (existing) {
+          existing.checked = false;
+          await saveShoppingItem(state.profile.id, existing);
+        } else {
+          const useKg = entry.weeklyGrams >= 1000;
+          await saveShoppingItem(state.profile.id, {
+            aisle: entry.food.aisle,
+            name: entry.food.name,
+            quantity: useKg ? Number((entry.weeklyGrams / 1000).toFixed(2)) : entry.weeklyGrams,
+            unit: useKg ? 'kg' : 'g',
+            checked: false,
+          });
+        }
+        state.shoppingList = await listShoppingList(state.profile.id);
+        showToast(`Ajouté aux courses : ${entry.food.name} (${entry.food.aisle}).`);
+      });
+    });
+
+    const submitAdvisorQuestion = async (questionText) => {
+      const cleanQ = String(questionText || '').trim();
+      if (!cleanQ || state.advisorBusy) return;
+      state.advisorBusy = true;
+      state.advisorMessages.push({ role: 'user', content: cleanQ, meta: null });
+      renderNutritionSubTab(slot, telemetry);
+
+      try {
+        const reply = await askNutritionAdvisor({
+          question: cleanQ,
+          profile: state.profile,
+          macros,
+          report,
+          matrix,
+          recalibration,
+          knownBf,
+          history: state.advisorMessages.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
+          aiSettings: state.aiSettings,
+        });
+        const meta = reply.usedFallback
+          ? `Niveau 0 local (repli) · ${reply.latencyMs} ms`
+          : `${reply.provider} · ${reply.latencyMs} ms`;
+        state.advisorMessages.push({ role: 'assistant', content: reply.text, meta });
+      } catch (err) {
+        state.advisorMessages.push({
+          role: 'assistant',
+          content: `Impossible de finaliser l’analyse : ${err?.message || err}`,
+          meta: 'Erreur',
+        });
+      } finally {
+        state.advisorBusy = false;
+        renderNutritionSubTab(slot, telemetry);
+        const threadBox = document.getElementById('advisor-thread-box');
+        if (threadBox) threadBox.scrollTop = threadBox.scrollHeight;
+      }
+    };
+
+    slot.querySelectorAll('[data-advisor-shortcut]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const sc = ADVISOR_SHORTCUTS.find((x) => x.id === btn.dataset.advisorShortcut);
+        if (sc) submitAdvisorQuestion(sc.prompt);
+      });
+    });
+
+    document.getElementById('advisor-question-form')?.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const input = document.getElementById('advisor-question-input');
+      if (input && input.value.trim()) {
+        submitAdvisorQuestion(input.value.trim());
+      }
+    });
+
+    document.getElementById('btn-clear-advisor')?.addEventListener('click', () => {
+      state.advisorMessages = [];
+      renderNutritionSubTab(slot, telemetry);
+    });
+    return;
+  }
+
+  /* ------------------------------------------------------------------------
+     VUE 3 — COURSES & PLANS (PLAN TYPE + LISTE DE COURSES PAR RAYON)
+     ------------------------------------------------------------------------ */
+  const generated = generateMealPlanAndShoppingList(state.profile, macros);
+  const aislesMap = new Map();
+  for (const item of state.shoppingList) {
+    const arr = aislesMap.get(item.aisle) || [];
+    arr.push(item);
+    aislesMap.set(item.aisle, arr);
+  }
+
+  slot.innerHTML = `
+    <div class="grid-2">
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Plan type (${state.profile.nutritionPrefs?.mealsPerDay || 3} repas · ${esc(state.profile.nutritionPrefs?.dietType || 'omnivore')})</h2>
+          <button type="button" class="btn btn-sm btn-primary" id="btn-sync-shopping">Remplir liste courses</button>
+        </div>
+        <div class="stack">
+          ${generated.mealPlan
+            .map(
+              (m) => `
+            <div class="panel-elevated stack-sm">
+              <div class="row-between">
+                <strong>${esc(m.slot)}</strong>
+                <span class="mono metric-sm text-accent">${m.totals.kcal} kcal · P ${m.totals.proteinG}g</span>
+              </div>
+              ${m.items.map((i) => `<span class="panel-subtitle mono">• ${esc(i.name)} : ${i.grams} g (${i.kcal} kcal)</span>`).join('')}
+            </div>`
+            )
+            .join('')}
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Liste de courses par rayon (7 j)</h2>
+          <span class="mono metric-sm text-secondary">${state.shoppingList.filter((i) => i.checked).length}/${state.shoppingList.length}</span>
+        </div>
+        ${
+          state.shoppingList.length === 0
+            ? `<p class="panel-subtitle">Cliquez sur "Remplir liste courses" (ou sur "+ Courses" dans Conseiller Pro) pour générer les quantités adaptées à vos macros et allergies.</p>`
+            : Array.from(aislesMap.entries())
+                .map(
+                  ([aisle, items]) => `
+                <div class="stack-sm">
+                  <span class="label-tech text-accent">${esc(aisle)}</span>
+                  ${items
+                    .map(
+                      (it) => `
+                    <label class="row-between" style="padding: 6px 0; border-bottom: 1px solid var(--border-hairline); cursor: pointer;">
+                      <span class="row">
+                        <input type="checkbox" data-toggle-shop="${esc(it.id)}" ${it.checked ? 'checked' : ''} />
+                        <span style="${it.checked ? 'text-decoration: line-through; opacity: 0.5;' : ''}">${esc(it.name)}</span>
+                      </span>
+                      <span class="mono metric-sm">${it.quantity} ${esc(it.unit)}</span>
+                    </label>`
+                    )
+                    .join('')}
+                </div>`
+                )
+                .join('')
+        }
+      </section>
+    </div>
+  `;
+
+  document.getElementById('btn-sync-shopping')?.addEventListener('click', async () => {
+    for (const old of state.shoppingList) {
+      await deleteShoppingItem(old.id);
+    }
+    for (const item of generated.shoppingList) {
+      await saveShoppingItem(state.profile.id, item);
+    }
+    state.shoppingList = await listShoppingList(state.profile.id);
+    renderNutritionSubTab(slot, telemetry);
+    showToast(`${state.shoppingList.length} articles classés par rayon.`);
+  });
+
+  slot.querySelectorAll('[data-toggle-shop]').forEach((cb) => {
+    cb.addEventListener('change', async () => {
+      const it = state.shoppingList.find((x) => x.id === cb.dataset.toggleShop);
+      if (!it) return;
+      it.checked = cb.checked;
+      await saveShoppingItem(state.profile.id, it);
+      renderNutritionSubTab(slot, telemetry);
+    });
+  });
+}
+
+function renderNutritionInputMode(slot, macros) {
   if (!slot) return;
 
-  if (state.nutritionSubTab === 'ciqual') {
+  if (state.nutritionInputMode === 'ciqual') {
     const foods = searchCiqualOffline(state.ciqualQuery, state.profile).slice(0, 14);
     slot.innerHTML = `
       <div class="grid-2">
@@ -1876,7 +2597,7 @@ function renderNutritionSubTab(slot, macros) {
 
     document.getElementById('ciqual-search')?.addEventListener('input', (e) => {
       state.ciqualQuery = e.target.value;
-      renderNutritionSubTab(slot, macros);
+      renderNutritionInputMode(slot, macros);
     });
 
     slot.querySelectorAll('[data-add-ciqual]').forEach((btn) => {
@@ -1961,7 +2682,7 @@ function renderNutritionSubTab(slot, macros) {
     return;
   }
 
-  if (state.nutritionSubTab === 'photo') {
+  if (state.nutritionInputMode === 'photo') {
     const res = state.lastMealVisionResult;
     slot.innerHTML = `
       <section class="panel">
@@ -2022,7 +2743,7 @@ function renderNutritionSubTab(slot, macros) {
       try {
         const compressed = await compressPhysiqueImage(file, { maxWidth: 960, targetBytes: 180000 });
         state.lastMealVisionResult = await analyzeMealPhoto(compressed.dataUrl, state.profile, state.aiSettings);
-        renderNutritionSubTab(slot, macros);
+        renderNutritionInputMode(slot, macros);
       } catch (err) {
         showToast(err.message);
       }
@@ -2053,184 +2774,95 @@ function renderNutritionSubTab(slot, macros) {
     return;
   }
 
-  if (state.nutritionSubTab === 'barcode') {
-    slot.innerHTML = `
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Scanner Code-Barres & Open Food Facts (0 clé)</h2>
-          <button type="button" class="btn btn-sm btn-primary" id="btn-start-barcode">Ouvrir caméra</button>
-        </div>
-
-        <div id="barcode-reader-box" style="width: 100%; max-width: 420px;"></div>
-
-        <div class="grid-2">
-          <div class="input-action-row">
-            <input id="manual-barcode-input" class="input mono" type="text" inputmode="numeric" placeholder="Code EAN (ex. 3017620422003)" />
-            <button type="button" class="btn btn-sm" id="btn-lookup-barcode">Chercher</button>
-          </div>
-          <div class="input-action-row">
-            <input id="off-text-input" class="input" type="search" placeholder="Recherche Open Food Facts..." />
-            <button type="button" class="btn btn-sm" id="btn-search-off">OK</button>
-          </div>
-        </div>
-
-        <div class="row">
-          <label class="label-tech" for="off-grams">Portion à ajouter (g) :</label>
-          <input id="off-grams" class="input mono" type="number" min="5" max="1500" value="100" style="max-width: 110px;" />
-        </div>
-
-        <div id="off-results-list" class="stack-sm">
-          ${state.offResults
-            .map(
-              (p, idx) => `
-            <div class="row-between panel-elevated" style="padding: 10px 12px;">
-              <div class="stack-sm" style="gap: 2px;">
-                <strong>${esc(p.name)} ${p.brand ? `· ${esc(p.brand)}` : ''}</strong>
-                <span class="mono metric-sm text-secondary">${p.kcal} kcal/100g · P ${p.proteinG}g · G ${p.carbsG}g · L ${p.fatG}g ${p.nutriscore ? `· Nutri-Score ${esc(p.nutriscore)}` : ''}</span>
-              </div>
-              <button type="button" class="btn btn-sm btn-primary" data-add-off="${idx}">+ Ajouter</button>
-            </div>`
-            )
-            .join('')}
-        </div>
-      </section>
-    `;
-
-    const handleBarcode = async (code) => {
-      try {
-        const product = await lookupBarcodeOpenFoodFacts(code);
-        state.offResults = [product];
-        renderNutritionSubTab(slot, macros);
-        showToast(`Produit trouvé : ${product.name}`);
-      } catch (err) {
-        showToast(err.message);
-      }
-    };
-
-    document.getElementById('btn-start-barcode')?.addEventListener('click', async () => {
-      try {
-        state.barcodeScanner = new BarcodeScannerController('barcode-reader-box');
-        await state.barcodeScanner.start((code) => handleBarcode(code));
-      } catch (err) {
-        showToast(err.message);
-      }
-    });
-
-    document.getElementById('btn-lookup-barcode')?.addEventListener('click', () => {
-      handleBarcode(document.getElementById('manual-barcode-input').value);
-    });
-
-    document.getElementById('btn-search-off')?.addEventListener('click', async () => {
-      const q = document.getElementById('off-text-input').value;
-      state.offResults = await searchOpenFoodFactsText(q);
-      renderNutritionSubTab(slot, macros);
-    });
-
-    slot.querySelectorAll('[data-add-off]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const prod = state.offResults[Number(btn.dataset.addOff)];
-        const grams = Number(document.getElementById('off-grams')?.value) || 100;
-        const scaled = scaleFoodMacros(prod, grams);
-        await saveNutritionLog(state.profile.id, {
-          date: getTodayISO(),
-          mealSlot: 'Code-Barres',
-          source: 'barcode',
-          label: `${prod.name} (${scaled.grams} g)`,
-          ...scaled,
-        });
-        state.nutritionAll = await listNutritionLogs(state.profile.id);
-        state.nutritionToday = state.nutritionAll.filter((n) => n.date === getTodayISO());
-        renderApp();
-        showToast(`${prod.name} ajouté (${scaled.kcal} kcal).`);
-      });
-    });
-    return;
-  }
-
-  // Onglet Plan type & Liste de courses interactive par rayon
-  const generated = generateMealPlanAndShoppingList(state.profile, macros);
-  const aislesMap = new Map();
-  for (const item of state.shoppingList) {
-    const arr = aislesMap.get(item.aisle) || [];
-    arr.push(item);
-    aislesMap.set(item.aisle, arr);
-  }
-
+  // Mode Code-Barres & Open Food Facts
   slot.innerHTML = `
-    <div class="grid-2">
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Plan type (${state.profile.nutritionPrefs?.mealsPerDay || 3} repas · ${esc(state.profile.nutritionPrefs?.dietType || 'omnivore')})</h2>
-          <button type="button" class="btn btn-sm btn-primary" id="btn-sync-shopping">Remplir liste courses</button>
-        </div>
-        <div class="stack">
-          ${generated.mealPlan
-            .map(
-              (m) => `
-            <div class="panel-elevated stack-sm">
-              <div class="row-between">
-                <strong>${esc(m.slot)}</strong>
-                <span class="mono metric-sm text-accent">${m.totals.kcal} kcal · P ${m.totals.proteinG}g</span>
-              </div>
-              ${m.items.map((i) => `<span class="panel-subtitle mono">• ${esc(i.name)} : ${i.grams} g (${i.kcal} kcal)</span>`).join('')}
-            </div>`
-            )
-            .join('')}
-        </div>
-      </section>
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Scanner Code-Barres & Open Food Facts (0 clé)</h2>
+        <button type="button" class="btn btn-sm btn-primary" id="btn-start-barcode">Ouvrir caméra</button>
+      </div>
 
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Liste de courses par rayon (7 j)</h2>
-          <span class="mono metric-sm text-secondary">${state.shoppingList.filter((i) => i.checked).length}/${state.shoppingList.length}</span>
+      <div id="barcode-reader-box" style="width: 100%; max-width: 420px;"></div>
+
+      <div class="grid-2">
+        <div class="input-action-row">
+          <input id="manual-barcode-input" class="input mono" type="text" inputmode="numeric" placeholder="Code EAN (ex. 3017620422003)" />
+          <button type="button" class="btn btn-sm" id="btn-lookup-barcode">Chercher</button>
         </div>
-        ${
-          state.shoppingList.length === 0
-            ? `<p class="panel-subtitle">Cliquez sur "Remplir liste courses" pour générer les quantités hebdomadaires adaptées à vos macros et allergies.</p>`
-            : Array.from(aislesMap.entries())
-                .map(
-                  ([aisle, items]) => `
-                <div class="stack-sm">
-                  <span class="label-tech text-accent">${esc(aisle)}</span>
-                  ${items
-                    .map(
-                      (it) => `
-                    <label class="row-between" style="padding: 6px 0; border-bottom: 1px solid var(--border-hairline); cursor: pointer;">
-                      <span class="row">
-                        <input type="checkbox" data-toggle-shop="${esc(it.id)}" ${it.checked ? 'checked' : ''} />
-                        <span style="${it.checked ? 'text-decoration: line-through; opacity: 0.5;' : ''}">${esc(it.name)}</span>
-                      </span>
-                      <span class="mono metric-sm">${it.quantity} ${esc(it.unit)}</span>
-                    </label>`
-                    )
-                    .join('')}
-                </div>`
-                )
-                .join('')
-        }
-      </section>
-    </div>
+        <div class="input-action-row">
+          <input id="off-text-input" class="input" type="search" placeholder="Recherche Open Food Facts..." />
+          <button type="button" class="btn btn-sm" id="btn-search-off">OK</button>
+        </div>
+      </div>
+
+      <div class="row">
+        <label class="label-tech" for="off-grams">Portion à ajouter (g) :</label>
+        <input id="off-grams" class="input mono" type="number" min="5" max="1500" value="100" style="max-width: 110px;" />
+      </div>
+
+      <div id="off-results-list" class="stack-sm">
+        ${state.offResults
+          .map(
+            (p, idx) => `
+          <div class="row-between panel-elevated" style="padding: 10px 12px;">
+            <div class="stack-sm" style="gap: 2px;">
+              <strong>${esc(p.name)} ${p.brand ? `· ${esc(p.brand)}` : ''}</strong>
+              <span class="mono metric-sm text-secondary">${p.kcal} kcal/100g · P ${p.proteinG}g · G ${p.carbsG}g · L ${p.fatG}g ${p.nutriscore ? `· Nutri-Score ${esc(p.nutriscore)}` : ''}</span>
+            </div>
+            <button type="button" class="btn btn-sm btn-primary" data-add-off="${idx}">+ Ajouter</button>
+          </div>`
+          )
+          .join('')}
+      </div>
+    </section>
   `;
 
-  document.getElementById('btn-sync-shopping')?.addEventListener('click', async () => {
-    for (const old of state.shoppingList) {
-      await deleteShoppingItem(old.id);
+  const handleBarcode = async (code) => {
+    try {
+      const product = await lookupBarcodeOpenFoodFacts(code);
+      state.offResults = [product];
+      renderNutritionInputMode(slot, macros);
+      showToast(`Produit trouvé : ${product.name}`);
+    } catch (err) {
+      showToast(err.message);
     }
-    for (const item of generated.shoppingList) {
-      await saveShoppingItem(state.profile.id, item);
+  };
+
+  document.getElementById('btn-start-barcode')?.addEventListener('click', async () => {
+    try {
+      state.barcodeScanner = new BarcodeScannerController('barcode-reader-box');
+      await state.barcodeScanner.start((code) => handleBarcode(code));
+    } catch (err) {
+      showToast(err.message);
     }
-    state.shoppingList = await listShoppingList(state.profile.id);
-    renderNutritionSubTab(slot, macros);
-    showToast(`${state.shoppingList.length} articles classés par rayon.`);
   });
 
-  slot.querySelectorAll('[data-toggle-shop]').forEach((cb) => {
-    cb.addEventListener('change', async () => {
-      const it = state.shoppingList.find((x) => x.id === cb.dataset.toggleShop);
-      if (!it) return;
-      it.checked = cb.checked;
-      await saveShoppingItem(state.profile.id, it);
-      renderNutritionSubTab(slot, macros);
+  document.getElementById('btn-lookup-barcode')?.addEventListener('click', () => {
+    handleBarcode(document.getElementById('manual-barcode-input').value);
+  });
+
+  document.getElementById('btn-search-off')?.addEventListener('click', async () => {
+    const q = document.getElementById('off-text-input').value;
+    state.offResults = await searchOpenFoodFactsText(q);
+    renderNutritionInputMode(slot, macros);
+  });
+
+  slot.querySelectorAll('[data-add-off]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const prod = state.offResults[Number(btn.dataset.addOff)];
+      const grams = Number(document.getElementById('off-grams')?.value) || 100;
+      const scaled = scaleFoodMacros(prod, grams);
+      await saveNutritionLog(state.profile.id, {
+        date: getTodayISO(),
+        mealSlot: 'Code-Barres',
+        source: 'barcode',
+        label: `${prod.name} (${scaled.grams} g)`,
+        ...scaled,
+      });
+      state.nutritionAll = await listNutritionLogs(state.profile.id);
+      state.nutritionToday = state.nutritionAll.filter((n) => n.date === getTodayISO());
+      renderApp();
+      showToast(`${prod.name} ajouté (${scaled.kcal} kcal).`);
     });
   });
 }

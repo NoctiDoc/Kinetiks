@@ -8,7 +8,7 @@
  * - Network-Only strict pour tous les endpoints IA, GitHub API et ntfy.sh
  */
 
-const SHELL_CACHE = 'kinetix-shell-v1.3.3';
+const SHELL_CACHE = 'kinetix-shell-v1.4.0';
 const MEDIA_CACHE = 'kinetix-exercise-media-v2';
 const FONTS_CACHE = 'kinetix-fonts-v1';
 const CDN_CACHE = 'kinetix-cdn-v1';
@@ -34,6 +34,7 @@ const OPTIONAL_MODULE_ASSETS = [
   './js/biomechanics-engine.js',
   './js/physique-lab.js',
   './js/nutrition-db.js',
+  './js/nutrition-advisor.js',
   './js/timer.js',
   './js/p2p-share.js',
   './js/ui.js',
