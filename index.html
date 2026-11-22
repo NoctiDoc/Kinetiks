@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Kinetix Lab — Biomécanique, Entraînement & Nutrition</title>
+    <meta
+      name="description"
+      content="Application PWA mobile-first de biomécanique sportive, suivi d'entraînement autorégulé, nutrition auto-adaptative et analyse physique locale."
+    />
+    <meta property="og:title" content="Kinetix Lab — Biomécanique & Nutrition" />
+    <meta
+      property="og:description"
+      content="Préparation physique biomécanique, entraînement autorégulé, suivi nutritionnel EWMA/TDEE et labo physique 100 % local."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#090A0C" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="KinetixLab" />
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="icon" type="image/svg+xml" href="./icons/icon.svg" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <!-- Top Bar 3 zones strictes -->
+    <header class="app-topbar">
+      <div class="app-topbar-inner">
+        <a href="#cockpit" class="brand-mark" id="brand-home-link">
+          <span class="brand-mark-square" aria-hidden="true">K</span>
+          <span>Kinetix Lab</span>
+        </a>
+
+        <nav class="desktop-nav" aria-label="Navigation principale">
+          <button type="button" class="desktop-nav-btn is-active" data-nav="cockpit">Cockpit</button>
+          <button type="button" class="desktop-nav-btn" data-nav="seance">Séance</button>
+          <button type="button" class="desktop-nav-btn" data-nav="nutrition">Nutrition</button>
+          <button type="button" class="desktop-nav-btn" data-nav="labo">Labo & Évolution</button>
+          <button type="button" class="desktop-nav-btn" data-nav="profil">Coach & Profil</button>
+        </nav>
+
+        <div class="topbar-actions">
+          <button id="btn-install-pwa" type="button" class="btn btn-sm btn-primary" hidden>
+            Installer
+          </button>
+          <button id="btn-profile-quick" type="button" class="btn btn-sm" hidden>
+            Profil
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Chrono de repos sticky (affiché uniquement lorsqu'un repos est en cours) -->
+    <div id="rest-timer-bar" class="rest-timer-bar is-hidden" role="status" aria-live="polite">
+      <div class="row">
+        <span class="timer-digits" id="rest-timer-digits">01:30</span>
+        <div class="stack-sm" style="gap: 2px;">
+          <span class="label-tech" id="rest-timer-label">Repos</span>
+          <span class="metric-sm text-muted" id="wakelock-indicator">Écran actif</span>
+        </div>
+      </div>
+      <div class="row" style="gap: 6px;">
+        <button type="button" class="btn btn-sm mono" data-timer-delta="-15">-15s</button>
+        <button type="button" class="btn btn-sm mono" data-timer-delta="30">+30s</button>
+        <button type="button" class="btn btn-sm btn-danger" id="btn-timer-stop">Stop</button>
+      </div>
+    </div>
+
+    <!-- Bandeaux système discrets (iOS anti-purge / Rappel export 30j / Hors-ligne) -->
+    <div id="system-banners" class="app-main" style="padding-bottom: 0; gap: 10px;" hidden>
+      <div id="banner-offline" class="notice notice-accent" hidden>
+        <span>Mode hors-ligne actif — Toutes vos données locales IndexedDB et la base Ciqual restent disponibles.</span>
+      </div>
+      <div id="banner-ios-install" class="notice notice-accent" hidden>
+        <div class="stack-sm">
+          <strong>Protection stockage iOS Safari</strong>
+          <span class="text-secondary">
+            Installez Kinetix Lab sur l’écran d’accueil (Partager → Sur l’écran d’accueil) pour éviter la purge WebKit après 7 jours d’inactivité.
+          </span>
+        </div>
+        <button type="button" class="btn btn-sm" id="btn-dismiss-ios-banner">Fermer</button>
+      </div>
+      <div id="banner-backup-reminder" class="notice notice-accent" hidden>
+        <span>Aucune sauvegarde JSON depuis plus de 30 jours. Exportez une copie de sécurité locale.</span>
+        <button type="button" class="btn btn-sm btn-primary" id="btn-quick-backup">Exporter</button>
+      </div>
+    </div>
+
+    <!-- Conteneur principal des 5 écrans / Onboarding 90s -->
+    <main class="app-main" id="app-view"></main>
+
+    <!-- Barre de navigation basse mobile fixe (5 onglets, zones >= 44px) -->
+    <nav class="bottom-nav" id="bottom-nav" aria-label="Navigation mobile">
+      <button type="button" class="bottom-nav-item is-active" data-nav="cockpit">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+          <rect x="3" y="3" width="7" height="9" rx="1" />
+          <rect x="14" y="3" width="7" height="5" rx="1" />
+          <rect x="14" y="12" width="7" height="9" rx="1" />
+          <rect x="3" y="16" width="7" height="5" rx="1" />
+        </svg>
+        <span class="bottom-nav-label">Cockpit</span>
+      </button>
+
+      <button type="button" class="bottom-nav-item" data-nav="seance">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+          <path d="M6.5 6.5v11M17.5 6.5v11M3 9.5v5M21 9.5v5M6.5 12h11" stroke-linecap="round" />
+        </svg>
+        <span class="bottom-nav-label">Séance</span>
+      </button>
+
+      <button type="button" class="bottom-nav-item" data-nav="nutrition">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+          <path d="M4 3v7a3 3 0 0 0 6 0V3M7 3v18M17 3v18M17 3c2.5 1 3.5 3.5 3.5 6.5H17" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span class="bottom-nav-label">Nutrition</span>
+      </button>
+
+      <button type="button" class="bottom-nav-item" data-nav="labo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+          <path d="M3 17l5-5 4 4 9-9" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M15 7h6v6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span class="bottom-nav-label">Labo</span>
+      </button>
+
+      <button type="button" class="bottom-nav-item" data-nav="profil">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+          <circle cx="12" cy="8" r="4" />
+          <path d="M4 20c1.6-3.6 4.6-5.5 8-5.5s6.4 1.9 8 5.5" stroke-linecap="round" />
+        </svg>
+        <span class="bottom-nav-label">Profil</span>
+      </button>
+    </nav>
+
+    <!-- Modales & Toasts Annuler 5s -->
+    <div id="modal-root"></div>
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+    <script type="module" src="./js/ui.js"></script>
+  </body>
+</html>

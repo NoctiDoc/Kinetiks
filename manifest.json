@@ -1,0 +1,65 @@
+{
+  "id": "./",
+  "name": "Kinetix Lab — Biomécanique & Nutrition",
+  "short_name": "KinetixLab",
+  "description": "Préparation physique biomécanique, entraînement autorégulé, suivi nutritionnel EWMA/TDEE et labo physique 100 % local.",
+  "lang": "fr",
+  "dir": "ltr",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "theme_color": "#090A0C",
+  "background_color": "#090A0C",
+  "categories": ["fitness", "health", "sports", "lifestyle"],
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "./icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Démarrer la séance",
+      "short_name": "Séance",
+      "description": "Ouvrir directement la séance du jour et le check-in Readiness",
+      "url": "./index.html#seance",
+      "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Journal Nutrition",
+      "short_name": "Nutrition",
+      "description": "Scanner un produit ou analyser une assiette",
+      "url": "./index.html#nutrition",
+      "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Labo & Évolution",
+      "short_name": "Labo",
+      "description": "Importer une pesée ou capturer un check-in photo",
+      "url": "./index.html#labo",
+      "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}

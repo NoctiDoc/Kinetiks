@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" fill="#090A0C"/>
+  <rect x="32" y="32" width="448" height="448" rx="24" fill="#111317" stroke="#242933" stroke-width="6"/>
+  <!-- Swiss technical grid ticks -->
+  <line x1="88" y1="88" x2="128" y2="88" stroke="#323946" stroke-width="4"/>
+  <line x1="88" y1="88" x2="88" y2="128" stroke="#323946" stroke-width="4"/>
+  <line x1="424" y1="424" x2="384" y2="424" stroke="#323946" stroke-width="4"/>
+  <line x1="424" y1="424" x2="424" y2="384" stroke="#323946" stroke-width="4"/>
+  <!-- Precision K monogram & biomechanical vector -->
+  <rect x="148" y="136" width="38" height="240" fill="#F3F5F8"/>
+  <polygon points="196,256 320,136 372,136 244,256 372,376 320,376" fill="#F59E0B"/>
+  <rect x="148" y="396" width="224" height="8" fill="#242933"/>
+  <rect x="148" y="396" width="144" height="8" fill="#F59E0B"/>
+</svg>

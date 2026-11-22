@@ -1,0 +1,6 @@
+{
+  "name": "Kinetix Lab",
+  "description": "Application PWA mobile-first de biomécanique sportive, suivi d'entraînement autorégulé, nutrition auto-adaptative et analyse physique locale.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": []
+}

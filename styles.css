@@ -1,0 +1,1152 @@
+/* ==========================================================================
+   KINETIX LAB — DESIGN SYSTEM "CARBONE TECHNIQUE"
+   Instrument de télémétrie sportive / Design industriel suisse
+   Zéro dégradé néon, zéro glassmorphism flou, zéro pill décorative.
+   ========================================================================== */
+
+:root {
+  /* Palette Carbone Technique (60% Canvas / 30% Surfaces / 10% Accent) */
+  --bg-canvas: #090a0c;
+  --bg-surface: #111317;
+  --bg-elevated: #181b21;
+  --bg-hover: #1e222a;
+  --bg-input: #0d0f13;
+
+  /* Filets nets 1px */
+  --border-hairline: #242933;
+  --border-strong: #323946;
+  --border-focus: #f59e0b;
+
+  /* Typographie haute lisibilité (compensation optique dark mode) */
+  --text-primary: #f3f5f8;
+  --text-secondary: #9ca3b2;
+  --text-muted: #687182;
+
+  /* Accent fonctionnel unique : Ambre technique */
+  --accent: #f59e0b;
+  --accent-hover: #d97706;
+  --accent-contrast: #090a0c;
+  --accent-subtle: rgba(245, 158, 11, 0.12);
+  --accent-border: rgba(245, 158, 11, 0.42);
+
+  /* Rouge strictement réservé : alertes biomécaniques, douleurs, groupes [LAG] */
+  --danger: #ef4444;
+  --danger-subtle: rgba(239, 68, 68, 0.12);
+  --danger-border: rgba(239, 68, 68, 0.45);
+
+  /* Validation / équilibre discret */
+  --ok: #10b981;
+  --ok-subtle: rgba(16, 185, 129, 0.12);
+  --ok-border: rgba(16, 185, 129, 0.4);
+
+  /* Rayons secs industriels (4px à 6px) */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+
+  /* Polices */
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Ergonomie salle (zones tactiles >= 44px, cap sticky <= 15%) */
+  --touch-min: 44px;
+  --topbar-height: 52px;
+  --bottomnav-height: 60px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-top: env(safe-area-inset-top, 0px);
+  --content-max-width: 1180px;
+
+  /* Transitions rapides (<= 180ms, compositor-only) */
+  --ease-tech: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 150ms;
+}
+
+/* ==========================================================================
+   1. RESET & FONDATIONS
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color-scheme: dark;
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
+  overflow-x: hidden;
+  padding-bottom: calc(var(--bottomnav-height) + var(--safe-bottom) + 16px);
+}
+
+h1, h2, h3, h4, p, ul, ol, figure {
+  margin: 0;
+}
+
+h1, h2, h3, h4 {
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+  color: var(--text-primary);
+}
+
+h1 { font-size: clamp(1.35rem, 2.6vw, 1.85rem); line-height: 1.2; }
+h2 { font-size: clamp(1.05rem, 2vw, 1.3rem); line-height: 1.25; }
+h3 { font-size: 0.95rem; line-height: 1.3; }
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+img, svg, canvas, video {
+  display: block;
+  max-width: 100%;
+}
+
+button, input, select, textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ==========================================================================
+   2. DISCIPLINE MONOSPACE TABULAIRE (OBLIGATOIRE POUR TOUTES MÉTRIQUES)
+   ========================================================================== */
+
+.mono,
+.metric,
+.metric-lg,
+.metric-xl,
+.metric-sm,
+.timer-digits,
+input[type="number"],
+table td.num,
+table th.num,
+[data-metric] {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+.metric-xl {
+  font-size: clamp(1.75rem, 4vw, 2.35rem);
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+}
+
+.metric-lg {
+  font-size: 1.35rem;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.metric-sm {
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.label-tech {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text-secondary);
+}
+
+.meta-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.meta-sep {
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.text-muted { color: var(--text-muted); }
+.text-secondary { color: var(--text-secondary); }
+.text-accent { color: var(--accent); }
+.text-danger { color: var(--danger); }
+.text-ok { color: var(--ok); }
+
+/* ==========================================================================
+   3. LAYOUT & BARRE SUPÉRIEURE / NAVIGATION BASSE (5 ONGLETS)
+   ========================================================================== */
+
+.app-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  height: calc(var(--topbar-height) + var(--safe-top));
+  padding-top: var(--safe-top);
+  background-color: var(--bg-canvas);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.app-topbar-inner {
+  max-width: var(--content-max-width);
+  height: var(--topbar-height);
+  margin: 0 auto;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-primary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.brand-mark-square {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.desktop-nav {
+  display: none;
+  align-items: center;
+  gap: 24px;
+}
+
+.desktop-nav-btn {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 14px 2px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: color var(--dur-fast) var(--ease-tech), border-color var(--dur-fast) var(--ease-tech);
+}
+
+.desktop-nav-btn:hover {
+  color: var(--text-primary);
+}
+
+.desktop-nav-btn.is-active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.app-main {
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Navigation basse fixe mobile (5 onglets, hitbox >= 44px) */
+.bottom-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 45;
+  height: calc(var(--bottomnav-height) + var(--safe-bottom));
+  padding-bottom: var(--safe-bottom);
+  background-color: var(--bg-surface);
+  border-top: 1px solid var(--border-hairline);
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+}
+
+.bottom-nav-item {
+  appearance: none;
+  background: transparent;
+  border: none;
+  border-top: 2px solid transparent;
+  min-height: var(--touch-min);
+  padding: 6px 2px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-tech), border-color var(--dur-fast) var(--ease-tech);
+}
+
+.bottom-nav-item svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 1.85;
+}
+
+.bottom-nav-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.bottom-nav-item.is-active {
+  color: var(--accent);
+  border-top-color: var(--accent);
+}
+
+@media (min-width: 900px) {
+  body {
+    padding-bottom: 32px;
+  }
+  .desktop-nav {
+    display: flex;
+  }
+  .bottom-nav {
+    display: none;
+  }
+  .app-main {
+    padding: 24px;
+    gap: 24px;
+  }
+}
+
+/* ==========================================================================
+   4. SURFACES, PANNEAUX & GRILLES RESPONSIVES
+   ========================================================================== */
+
+.panel {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.panel-elevated {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 16px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.panel-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.panel-subtitle {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.divider {
+  height: 1px;
+  width: 100%;
+  background-color: var(--border-hairline);
+  border: none;
+  margin: 0;
+}
+
+/* Grilles de télémétrie */
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
+.grid-3 {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
+.grid-4 {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+@media (min-width: 680px) {
+  .grid-2 { grid-template-columns: repeat(2, 1fr); }
+  .grid-4 { grid-template-columns: repeat(4, 1fr); gap: 14px; }
+}
+
+@media (min-width: 960px) {
+  .grid-3 { grid-template-columns: repeat(3, 1fr); }
+}
+
+/* Cellules KPI sans imbrication de cartes lourdes */
+.kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-md);
+  background-color: var(--bg-surface);
+  overflow: hidden;
+}
+
+.kpi-cell {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-right: 1px solid var(--border-hairline);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.kpi-cell:nth-child(2n) {
+  border-right: none;
+}
+
+.kpi-cell:nth-last-child(-n + 2) {
+  border-bottom: none;
+}
+
+@media (min-width: 760px) {
+  .kpi-strip {
+    grid-template-columns: repeat(4, 1fr);
+  }
+  .kpi-cell {
+    border-bottom: none;
+    border-right: 1px solid var(--border-hairline);
+  }
+  .kpi-cell:nth-child(2n) {
+    border-right: 1px solid var(--border-hairline);
+  }
+  .kpi-cell:last-child {
+    border-right: none;
+  }
+}
+
+.kpi-label {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.kpi-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.15;
+}
+
+.kpi-delta {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+/* ==========================================================================
+   5. BOUTONS, CONTRÔLES SEGMENTÉS & FORMULAIRES (>= 44px TOUCH)
+   ========================================================================== */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: var(--touch-min);
+  padding: 0 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-tech),
+              border-color var(--dur-fast) var(--ease-tech),
+              transform var(--dur-fast) var(--ease-tech);
+}
+
+.btn:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  border-color: var(--text-muted);
+}
+
+.btn:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background-color: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.btn-danger {
+  background-color: var(--danger-subtle);
+  border-color: var(--danger-border);
+  color: var(--danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background-color: rgba(239, 68, 68, 0.22);
+  border-color: var(--danger);
+}
+
+.btn-ghost {
+  background-color: transparent;
+  border-color: transparent;
+  color: var(--text-secondary);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.btn-sm {
+  min-height: 38px;
+  padding: 0 12px;
+  font-size: 0.78rem;
+}
+
+.btn-icon {
+  width: var(--touch-min);
+  min-width: var(--touch-min);
+  padding: 0;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+/* Contrôles segmentés fonctionnels (tabs/filtres interactifs) */
+.segmented {
+  display: inline-flex;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+  gap: 3px;
+  width: 100%;
+}
+
+.segmented-btn {
+  flex: 1;
+  min-height: 38px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 3px;
+  background-color: transparent;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-tech), color var(--dur-fast) var(--ease-tech);
+}
+
+.segmented-btn.is-active {
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+/* Champs de saisie */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.input,
+.select,
+.textarea {
+  width: 100%;
+  min-height: var(--touch-min);
+  padding: 10px 12px;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  transition: border-color var(--dur-fast) var(--ease-tech);
+}
+
+.textarea {
+  min-height: 92px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.input:focus,
+.select:focus,
+.textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.input::placeholder,
+.textarea::placeholder {
+  color: var(--text-muted);
+}
+
+/* Curseurs tactiles (Readiness, comparaison) */
+input[type="range"].range-tech {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 36px;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"].range-tech::-webkit-slider-runnable-track {
+  height: 4px;
+  background-color: var(--border-strong);
+  border-radius: 2px;
+}
+
+input[type="range"].range-tech::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  margin-top: -9px;
+  border-radius: var(--radius-sm);
+  background-color: var(--accent);
+  border: 2px solid var(--bg-canvas);
+}
+
+/* ==========================================================================
+   6. JAUGES, BARRES DE PROGRESSION & INDICATEURS D'ÉTAT (SANS PILLS)
+   ========================================================================== */
+
+.gauge-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gauge-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.gauge-track {
+  width: 100%;
+  height: 6px;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-hairline);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.gauge-fill {
+  height: 100%;
+  background-color: var(--accent);
+  transform-origin: left center;
+  transition: transform 220ms var(--ease-tech);
+}
+
+.gauge-fill.is-danger {
+  background-color: var(--danger);
+}
+
+.gauge-fill.is-ok {
+  background-color: var(--ok);
+}
+
+/* Marqueurs typographiques sobres (zéro capsule arrondie) */
+.state-tag {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.state-tag.is-lag,
+.state-tag.is-danger {
+  color: var(--danger);
+}
+
+.state-tag.is-accent {
+  color: var(--accent);
+}
+
+.state-tag.is-ok {
+  color: var(--ok);
+}
+
+.state-tag.is-muted {
+  color: var(--text-secondary);
+}
+
+/* Bandeaux d'alerte biomécanique / iOS / offline (filet 1px tout autour, zéro border-l-4) */
+.notice {
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-elevated);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.84rem;
+}
+
+.notice-accent {
+  background-color: var(--accent-subtle);
+  border-color: var(--accent-border);
+}
+
+.notice-danger {
+  background-color: var(--danger-subtle);
+  border-color: var(--danger-border);
+}
+
+.notice-ok {
+  background-color: var(--ok-subtle);
+  border-color: var(--ok-border);
+}
+
+/* ==========================================================================
+   7. COMPOSANTS TERRAIN : SÉANCE, CHRONO STICKY, LABO PHOTOS, TOAST 5S
+   ========================================================================== */
+
+/* Chrono de repos sticky (compact pour respecter le plafond mobile <= 15%) */
+.rest-timer-bar {
+  position: sticky;
+  top: calc(var(--topbar-height) + var(--safe-top));
+  z-index: 35;
+  background-color: var(--bg-elevated);
+  border-bottom: 1px solid var(--accent-border);
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rest-timer-bar.is-hidden {
+  display: none;
+}
+
+.timer-digits {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+
+/* Lignes de séries (ergonomie mains moites) */
+.set-row {
+  display: grid;
+  grid-template-columns: 34px 1fr 1fr 68px 46px;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.set-row:last-child {
+  border-bottom: none;
+}
+
+.set-row.is-done {
+  opacity: 0.72;
+}
+
+.set-row.is-warmup {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+.set-input {
+  min-height: 44px;
+  width: 100%;
+  padding: 0 8px;
+  text-align: center;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.set-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.set-check-btn {
+  min-height: 44px;
+  min-width: 44px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-input);
+  color: var(--text-secondary);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.set-check-btn.is-checked {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+
+/* Cadre anatomie SVG wger & médias séquentiels free-exercise-db */
+.anatomy-stage {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+}
+
+.anatomy-figure {
+  position: relative;
+  aspect-ratio: 3 / 5;
+  max-height: 260px;
+  margin: 0 auto;
+  width: 100%;
+  display: grid;
+  place-items: center;
+}
+
+.anatomy-figure img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.execution-frames {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.execution-frame {
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  aspect-ratio: 4 / 3;
+  position: relative;
+}
+
+.execution-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Labo Photos : Caméra Ghost Overlay & Comparateur Avant/Après */
+.camera-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  max-height: 520px;
+  background-color: #050608;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.camera-stage video,
+.camera-stage .ghost-overlay-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.camera-stage .ghost-overlay-img {
+  opacity: 0.32;
+  pointer-events: none;
+  mix-blend-mode: screen;
+}
+
+.compare-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  max-height: 500px;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-input);
+  user-select: none;
+}
+
+.compare-stage img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.compare-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background-color: var(--accent);
+  pointer-events: none;
+}
+
+/* Toast "Annuler (5s)" */
+.toast-region {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: calc(var(--bottomnav-height) + var(--safe-bottom) + 12px);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+@media (min-width: 900px) {
+  .toast-region {
+    bottom: 24px;
+    left: auto;
+    right: 24px;
+    align-items: flex-end;
+  }
+}
+
+.toast {
+  pointer-events: auto;
+  width: 100%;
+  max-width: 420px;
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.85rem;
+}
+
+.toast-undo-btn {
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-border);
+  background-color: var(--accent-subtle);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Modales / Feuilles basses */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background-color: rgba(5, 6, 8, 0.78);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0;
+}
+
+@media (min-width: 720px) {
+  .modal-backdrop {
+    align-items: center;
+    padding: 24px;
+  }
+}
+
+.modal-sheet {
+  width: 100%;
+  max-width: 620px;
+  max-height: 90dvh;
+  overflow-y: auto;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+@media (min-width: 720px) {
+  .modal-sheet {
+    border-radius: var(--radius-md);
+  }
+}
+
+/* Tableaux techniques */
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.table-tech {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.table-tech th,
+.table-tech td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.table-tech th {
+  color: var(--text-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.table-tech td.num,
+.table-tech th.num {
+  text-align: right;
+}
+
+/* Blocs de diagnostic / logs structurés */
+.code-box {
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Utilitaires rapides */
+.row { display: flex; align-items: center; gap: 10px; }
+.row-between { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.row-wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.stack { display: flex; flex-direction: column; gap: 12px; }
+.stack-sm { display: flex; flex-direction: column; gap: 6px; }
+.stack-lg { display: flex; flex-direction: column; gap: 20px; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
