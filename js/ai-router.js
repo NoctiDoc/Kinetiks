@@ -793,20 +793,41 @@ function parseDataUri(dataUri) {
   return { mimeType: match[1], base64: match[2] };
 }
 
-function parseProviderErrorMessage(rawBody, fallbackStatus) {
-  if (!rawBody) return `HTTP ${fallbackStatus}`;
+function extractRawProviderError(rawBody, fallbackStatus) {
+  const rawStr = String(rawBody || '').trim();
+  if (!rawStr) {
+    return {
+      statusLabel: `HTTP_${fallbackStatus}`,
+      message: `HTTP ${fallbackStatus} (corps vide)`,
+      formatted: `HTTP ${fallbackStatus} (corps vide)`,
+    };
+  }
   try {
-    const parsed = JSON.parse(rawBody);
+    const parsed = JSON.parse(rawStr);
+    const errObj = parsed?.error && typeof parsed.error === 'object' ? parsed.error : null;
+    const statusLabel = errObj?.status || parsed?.status || (errObj?.code ? `CODE_${errObj.code}` : null);
     const msg =
-      parsed?.error?.message ||
+      errObj?.message ||
       parsed?.message ||
       parsed?.detail ||
       (typeof parsed?.error === 'string' ? parsed.error : null);
-    if (msg) return String(msg).slice(0, 260);
+    if (msg || statusLabel) {
+      const formatted = statusLabel && msg ? `${statusLabel} — ${msg}` : String(msg || statusLabel);
+      return {
+        statusLabel: statusLabel ? String(statusLabel) : null,
+        message: String(msg || statusLabel).slice(0, 400),
+        formatted: formatted.slice(0, 500),
+      };
+    }
   } catch {
-    // Texte brut
+    // Texte brut ou HTML
   }
-  return String(rawBody).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 220);
+  const cleanText = rawStr.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 400);
+  return {
+    statusLabel: null,
+    message: cleanText || `HTTP ${fallbackStatus}`,
+    formatted: cleanText || `HTTP ${fallbackStatus}`,
+  };
 }
 
 function cleanApiKey(rawKey) {
@@ -816,76 +837,258 @@ function cleanApiKey(rawKey) {
     .replace(/[\r\n\t\s]+/g, '');
 }
 
-async function runGeminiNative({ prompt, systemPrompt, history = [], images, settings, expectJson, timeoutMs = 35000 }) {
-  const apiKey = cleanApiKey(settings.apiKey);
-  if (!apiKey) {
-    throw new Error('Clé API Gemini manquante. Collez votre clé Google AI Studio dans Profil → Clés IA.');
+/**
+ * Normalise strictement l'URL de base Gemini native :
+ * - trim, suppression query/hash, slashs finaux et suffixes erronés (/openai, /chat/completions, /models/..., :generateContent)
+ * - déduplication /v1beta/v1beta
+ * - ajout automatique de /v1beta si absent
+ */
+export function normalizeGeminiBaseUrl(rawBaseUrl) {
+  let base = String(rawBaseUrl || '').trim();
+  if (!base) return TIER2_PRESETS.gemini.baseUrl;
+
+  // Retire d'éventuels paramètres ?key=... ou #hash collés par erreur
+  base = base.split(/[?#]/)[0].trim();
+  if (!base) return TIER2_PRESETS.gemini.baseUrl;
+
+  if (!/^https?:\/\//i.test(base)) {
+    base = `https://${base}`;
   }
 
-  // Toujours cibler l'endpoint natif generativelanguage.googleapis.com (jamais la route /openai qui rejette les clés AQ.)
-  const rawBase = (settings.baseUrl || TIER2_PRESETS.gemini.baseUrl)
+  // Nettoie les doubles slashs hors protocole (https://)
+  base = base.replace(/([^:]\/)\/+/g, '$1').replace(/\/+$/, '');
+
+  // Retire d'éventuels suffixes copiés par erreur
+  base = base
+    .replace(/\/chat\/completions$/i, '')
+    .replace(/\/openai$/i, '')
+    .replace(/\/models(?:\/.*)?$/i, '')
+    .replace(/:(?:stream)?generateContent$/i, '')
+    .replace(/\/+$/, '');
+
+  // Supprime les doublons /v1beta/v1beta ou /v1/v1
+  base = base.replace(/(\/v1(?:beta)?)\1+/gi, '$1');
+
+  // Ajoute /v1beta automatiquement s'il est absent
+  if (!/\/v1(?:beta)?$/i.test(base)) {
+    base = `${base}/v1beta`;
+  }
+
+  return base;
+}
+
+export function normalizeGeminiModelName(rawModel) {
+  const cleaned = String(rawModel || '')
     .trim()
-    .replace(/\/+$/, '')
-    .replace(/\/openai$/i, '');
-  const base = rawBase || TIER2_PRESETS.gemini.baseUrl;
-  const rawModel = (images.length > 0 ? settings.visionModel || settings.model : settings.model) || 'gemini-2.5-flash';
-  const modelName = rawModel.trim().replace(/^models\//i, '');
-  const endpoint = `${base}/models/${encodeURIComponent(modelName)}:generateContent`;
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .replace(/^(?:models\/)+/i, '')
+    .replace(/:(?:stream)?generateContent$/i, '')
+    .trim();
+  return cleaned || 'gemini-2.5-flash';
+}
 
-  const parts = [{ text: prompt }];
-  for (const img of images) {
-    const parsed = parseDataUri(img);
-    if (parsed) {
-      parts.push({
-        inline_data: {
-          mime_type: parsed.mimeType,
-          data: parsed.base64,
-        },
-      });
-    }
+export function buildGeminiGenerateUrl(rawBaseUrl, rawModel) {
+  const base = normalizeGeminiBaseUrl(rawBaseUrl);
+  const modelName = normalizeGeminiModelName(rawModel);
+  return {
+    base,
+    modelName,
+    safeUrl: `${base}/models/${encodeURIComponent(modelName)}:generateContent`,
+  };
+}
+
+/**
+ * Exécute un appel Gemini REST natif en passant la clé via x-goog-api-key,
+ * avec repli automatique en ?key= si le préflight CORS échoue sur navigateur mobile.
+ */
+async function fetchGeminiWithAuthFallback(safeUrl, { method = 'POST', body = null, apiKey, signal }) {
+  const primaryHeaders = { 'x-goog-api-key': apiKey };
+  if (method !== 'GET') {
+    primaryHeaders['Content-Type'] = 'application/json';
   }
 
-  const priorContents = sanitizeHistoryMessages(history).map((m) => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }],
-  }));
+  try {
+    const res = await fetch(safeUrl, {
+      method,
+      headers: primaryHeaders,
+      ...(body !== null ? { body: JSON.stringify(body) } : {}),
+      signal,
+    });
+    return { res, authMode: 'header:x-goog-api-key' };
+  } catch (err) {
+    // Ne pas retenter si délai expiré (AbortError)
+    if (err?.name === 'AbortError') throw err;
+    const isNetworkOrCors =
+      err instanceof TypeError ||
+      /failed to fetch|load failed|networkerror|cors/i.test(String(err?.message || ''));
+    if (!isNetworkOrCors) throw err;
 
-  const body = {
-    ...(systemPrompt ? { systemInstruction: { parts: [{ text: systemPrompt }] } } : {}),
-    contents: [...priorContents, { role: 'user', parts }],
-    generationConfig: {
-      temperature: expectJson ? 0.2 : 0.5,
-      ...(expectJson ? { responseMimeType: 'application/json' } : {}),
-    },
-  };
+    // Repli mobile CORS : passage de la clé en paramètre ?key= sans header personnalisé
+    const sep = safeUrl.includes('?') ? '&' : '?';
+    const queryUrl = `${safeUrl}${sep}key=${encodeURIComponent(apiKey)}`;
+    const fallbackHeaders = method !== 'GET' ? { 'Content-Type': 'application/json' } : undefined;
+    const res = await fetch(queryUrl, {
+      method,
+      ...(fallbackHeaders ? { headers: fallbackHeaders } : {}),
+      ...(body !== null ? { body: JSON.stringify(body) } : {}),
+      signal,
+    });
+    return { res, authMode: 'query:?key=' };
+  }
+}
+
+/**
+ * Interroge GET /v1beta/models pour lister les modèles Gemini réellement actifs sur cette clé (diagnostic 404).
+ */
+export async function listAvailableGeminiModels(rawBaseUrl, rawApiKey, timeoutMs = 10000) {
+  const apiKey = cleanApiKey(rawApiKey);
+  const base = normalizeGeminiBaseUrl(rawBaseUrl);
+  const listSafeUrl = `${base}/models`;
+  if (!apiKey) {
+    return { ok: false, models: [], safeUrl: listSafeUrl, httpStatus: null, rawError: 'Clé API vide.' };
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify(body),
+    const { res } = await fetchGeminiWithAuthFallback(listSafeUrl, {
+      method: 'GET',
+      body: null,
+      apiKey,
       signal: controller.signal,
     });
+    const rawText = await res.text();
+    if (!res.ok) {
+      const parsedErr = extractRawProviderError(rawText, res.status);
+      return {
+        ok: false,
+        models: [],
+        safeUrl: listSafeUrl,
+        httpStatus: res.status,
+        rawError: parsedErr.formatted,
+      };
+    }
+    const json = JSON.parse(rawText);
+    const models = (Array.isArray(json?.models) ? json.models : [])
+      .filter((m) => {
+        const name = String(m?.name || '').toLowerCase();
+        const methods = Array.isArray(m?.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+        return name.includes('gemini') && (methods.length === 0 || methods.includes('generateContent'));
+      })
+      .map((m) => String(m.name).replace(/^models\//i, ''));
+
+    return { ok: true, models, safeUrl: listSafeUrl, httpStatus: res.status, rawError: null };
+  } catch (err) {
+    return {
+      ok: false,
+      models: [],
+      safeUrl: listSafeUrl,
+      httpStatus: null,
+      rawError: String(err?.message || err),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function runGeminiNative({
+  prompt,
+  systemPrompt,
+  history = [],
+  images = [],
+  settings,
+  expectJson = false,
+  isHealthProbe = false,
+  timeoutMs = 35000,
+}) {
+  const apiKey = cleanApiKey(settings.apiKey);
+  const rawModel = (images.length > 0 ? settings.visionModel || settings.model : settings.model) || 'gemini-2.5-flash';
+  const { base, modelName, safeUrl } = buildGeminiGenerateUrl(settings.baseUrl, rawModel);
+
+  if (!apiKey) {
+    const err = new Error('Clé API Gemini manquante. Collez votre clé Google AI Studio dans Profil → Clés IA.');
+    err.endpointUrl = safeUrl;
+    throw err;
+  }
+
+  let body;
+  if (isHealthProbe && images.length === 0) {
+    // Schéma natif minimal officiel Gemini REST v1beta
+    body = {
+      contents: [{ parts: [{ text: 'ping' }] }],
+    };
+  } else {
+    const parts = [{ text: prompt }];
+    for (const img of images) {
+      const parsed = parseDataUri(img);
+      if (parsed) {
+        parts.push({
+          inline_data: {
+            mime_type: parsed.mimeType,
+            data: parsed.base64,
+          },
+        });
+      }
+    }
+
+    const priorContents = sanitizeHistoryMessages(history).map((m) => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.content }],
+    }));
+
+    body = {
+      ...(systemPrompt ? { systemInstruction: { parts: [{ text: systemPrompt }] } } : {}),
+      contents: [...priorContents, { role: 'user', parts }],
+      generationConfig: {
+        temperature: expectJson ? 0.2 : 0.5,
+        ...(expectJson ? { responseMimeType: 'application/json' } : {}),
+      },
+    };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const { res, authMode } = await fetchGeminiWithAuthFallback(safeUrl, {
+      method: 'POST',
+      body,
+      apiKey,
+      signal: controller.signal,
+    });
+
     if (!res.ok) {
       const errBody = await res.text();
-      const detail = parseProviderErrorMessage(errBody, res.status);
-      const err = new Error(`Gemini HTTP ${res.status} : ${detail}`);
+      const parsedErr = extractRawProviderError(errBody, res.status);
+      const err = new Error(parsedErr.formatted);
       err.httpStatus = res.status;
+      err.endpointUrl = safeUrl;
+      err.geminiBaseUrl = base;
+      err.geminiModel = modelName;
+      err.rawError = parsedErr.formatted;
+      err.googleStatus = parsedErr.statusLabel;
+      err.googleMessage = parsedErr.message;
+      err.authMode = authMode;
+      err.isGeminiNative = true;
       err.isGeminiAuth = res.status === 401 || res.status === 403;
       throw err;
     }
+
     const json = await res.json();
     const text = json?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('\n').trim() || '';
     if (!text) {
       const blockReason = json?.promptFeedback?.blockReason;
-      throw new Error(blockReason ? `Réponse Gemini bloquée (${blockReason}).` : 'Réponse Gemini vide.');
+      const err = new Error(blockReason ? `Réponse Gemini bloquée (${blockReason}).` : 'Réponse Gemini vide.');
+      err.endpointUrl = safeUrl;
+      err.rawError = JSON.stringify(json).slice(0, 350);
+      throw err;
     }
-    return { rawText: text, provider: `gemini:${modelName}` };
+    return { rawText: text, provider: `gemini:${modelName}`, endpointUrl: safeUrl, authMode };
+  } catch (err) {
+    if (err && typeof err === 'object' && !err.endpointUrl) {
+      err.endpointUrl = safeUrl;
+      err.isGeminiNative = true;
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
@@ -904,7 +1107,9 @@ async function runOpenAICompatible({ prompt, systemPrompt, history = [], images,
   const endpoint = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
   const model = (images.length > 0 ? settings.visionModel || settings.model : settings.model || '').trim();
   if (!model) {
-    throw new Error('Nom du modèle manquant dans Profil → Clés IA.');
+    const err = new Error('Nom du modèle manquant dans Profil → Clés IA.');
+    err.endpointUrl = endpoint;
+    throw err;
   }
 
   const headers = { 'Content-Type': 'application/json' };
@@ -912,7 +1117,9 @@ async function runOpenAICompatible({ prompt, systemPrompt, history = [], images,
   if (apiKey) {
     headers.Authorization = `Bearer ${apiKey}`;
   } else if (TIER2_PRESETS[settings.tier2Preset]?.requiresApiKey) {
-    throw new Error(`Clé API requise pour ${TIER2_PRESETS[settings.tier2Preset].label}.`);
+    const err = new Error(`Clé API requise pour ${TIER2_PRESETS[settings.tier2Preset].label}.`);
+    err.endpointUrl = endpoint;
+    throw err;
   }
 
   if (baseUrl.includes('openrouter.ai')) {
@@ -953,9 +1160,11 @@ async function runOpenAICompatible({ prompt, systemPrompt, history = [], images,
 
     if (!res.ok) {
       const errBody = await res.text();
-      const detail = parseProviderErrorMessage(errBody, res.status);
-      const err = new Error(`HTTP ${res.status} : ${detail}`);
+      const parsedErr = extractRawProviderError(errBody, res.status);
+      const err = new Error(parsedErr.formatted);
       err.httpStatus = res.status;
+      err.endpointUrl = endpoint;
+      err.rawError = parsedErr.formatted;
       throw err;
     }
 
@@ -967,7 +1176,12 @@ async function runOpenAICompatible({ prompt, systemPrompt, history = [], images,
     if (!rawText) {
       throw new Error('Réponse du serveur compatible OpenAI vide.');
     }
-    return { rawText, provider: `${settings.tier2Preset || 'custom'}:${model}` };
+    return { rawText, provider: `${settings.tier2Preset || 'custom'}:${model}`, endpointUrl: endpoint };
+  } catch (err) {
+    if (err && typeof err === 'object' && !err.endpointUrl) {
+      err.endpointUrl = endpoint;
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
@@ -1128,8 +1342,14 @@ export async function testAIConnection(rawSettings) {
     };
   }
 
+  const isGeminiMode =
+    settings.activeTier === AI_TIERS.TIER_2_BYO &&
+    (settings.protocol === 'gemini_native' ||
+      settings.tier2Preset === 'gemini' ||
+      String(settings.baseUrl || '').includes('generativelanguage.googleapis.com'));
+
   try {
-    const probePrompt = 'Réponds uniquement OK.';
+    const probePrompt = isGeminiMode ? 'ping' : 'Réponds uniquement OK.';
     const res =
       settings.activeTier === AI_TIERS.TIER_1_FREE_CLOUD
         ? await runTier1FreeCloud({
@@ -1141,10 +1361,11 @@ export async function testAIConnection(rawSettings) {
           })
         : await runTier2BYO({
             prompt: probePrompt,
-            systemPrompt: 'Réponds très brièvement.',
+            systemPrompt: isGeminiMode ? '' : 'Réponds très brièvement.',
             images: [],
             settings,
             expectJson: false,
+            isHealthProbe: isGeminiMode,
             timeoutMs: 18000,
           });
 
@@ -1190,33 +1411,56 @@ export async function testAIConnection(rawSettings) {
       latencyMs,
       visionSupported,
       provider: res.provider,
+      endpointUrl: res.endpointUrl || null,
+      httpStatus: 200,
+      authMode: res.authMode || null,
+      rawError: null,
+      suggestedModels: [],
       replyPreview: String(res.rawText || '').slice(0, 60),
-      diagnostic: `Connexion validée en ${latencyMs} ms via ${res.provider}. Vision : ${visionSupported ? 'activée' : 'texte seul'}.`,
+      diagnostic: `Connexion validée en ${latencyMs} ms via ${res.provider}${res.authMode ? ` (${res.authMode})` : ''}. Vision : ${visionSupported ? 'activée' : 'texte seul'}.`,
     };
   } catch (err) {
     const latencyMs = Math.round(performance.now() - started);
     const msg = String(err?.message || err);
+    const rawError = String(err?.rawError || msg);
+    const endpointUrl =
+      err?.endpointUrl ||
+      (isGeminiMode ? buildGeminiGenerateUrl(settings.baseUrl, settings.model).safeUrl : settings.baseUrl || null);
+    const httpStatus = err?.httpStatus ?? null;
     const isHttpsPage = typeof window !== 'undefined' && window.location.protocol === 'https:';
     const isHttpTarget = String(settings.baseUrl || '').startsWith('http://');
-    let diagnostic = msg;
 
+    let suggestedModels = [];
+    let modelProbeNote = '';
+
+    // En cas de HTTP 404 sur Gemini natif, liste automatiquement les modèles actifs sur /v1beta/models
+    if (isGeminiMode && httpStatus === 404) {
+      const listed = await listAvailableGeminiModels(settings.baseUrl, settings.apiKey, 10000);
+      if (listed.ok && listed.models.length > 0) {
+        suggestedModels = listed.models.slice(0, 3);
+        modelProbeNote = ` Modèles Gemini actifs détectés pour cette clé : ${suggestedModels.join(', ')}.`;
+      } else if (listed.rawError) {
+        modelProbeNote = ` Sondage GET /v1beta/models échoué (HTTP ${listed.httpStatus ?? 'réseau'}) : ${listed.rawError}`;
+      }
+    }
+
+    let diagnostic = rawError;
     if (err.isGeminiAuth) {
-      diagnostic = `Clé Gemini refusée (HTTP ${err.httpStatus}) : ${msg}. Vérifiez la clé complète sans espace ni guillemets et, dans Google Cloud Console → APIs & Services → Credentials → API restrictions, assurez-vous que "Generative Language API" est bien cochée (patientez 60–90 s après sauvegarde).`;
-    } else if (err.httpStatus === 401 || err.httpStatus === 403) {
-      diagnostic = `Clé API refusée (HTTP ${err.httpStatus}) : vérifiez que la clé correspond bien au fournisseur "${settings.tier2Preset}" (${msg}).`;
-    } else if (err.httpStatus === 404) {
-      diagnostic = `Modèle ou URL introuvable (HTTP 404) : vérifiez l’URL (${settings.baseUrl}) et le modèle (${settings.model}).`;
-    } else if (err.httpStatus === 429) {
-      diagnostic = 'Quota dépassé / limite de requêtes (HTTP 429). Patientez quelques instants ou changez de modèle.';
+      diagnostic = `Clé Gemini refusée (HTTP ${httpStatus}) : ${rawError}. Vérifiez la clé complète sans espace ni guillemets et, dans Google Cloud Console → APIs & Services → Credentials → API restrictions, assurez-vous que "Generative Language API" est cochée (patientez 60–90 s).`;
+    } else if (httpStatus === 401 || httpStatus === 403) {
+      diagnostic = `Clé API refusée (HTTP ${httpStatus}) : ${rawError}`;
+    } else if (httpStatus === 404) {
+      diagnostic = `HTTP 404 sur ${endpointUrl} — Réponse serveur : ${rawError}.${modelProbeNote}`;
+    } else if (httpStatus === 429) {
+      diagnostic = `Quota dépassé / limite de requêtes (HTTP 429) : ${rawError}`;
     } else if (err.name === 'AbortError') {
       diagnostic = 'Délai dépassé (18 s) : le serveur ne répond pas.';
-    } else if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || err instanceof TypeError) {
+    } else if (msg.includes('Failed to fetch') || msg.includes('Load failed') || msg.includes('NetworkError') || err instanceof TypeError) {
       if (isHttpsPage && isHttpTarget) {
         diagnostic =
           'Blocage HTTPS → HTTP (Mixed Content) : sur mobile HTTPS, exposez Ollama/LM Studio via Tailscale Funnel ou Cloudflare Tunnel avec OLLAMA_ORIGINS="*".';
       } else {
-        diagnostic =
-          'Erreur réseau ou CORS (Failed to fetch) : vérifiez la connexion Internet ou l’autorisation CORS du serveur.';
+        diagnostic = `Erreur réseau ou CORS (${msg}) sur ${endpointUrl || settings.baseUrl}. Vérifiez la connexion Internet ou l’autorisation CORS du serveur.`;
       }
     }
 
@@ -1226,6 +1470,10 @@ export async function testAIConnection(rawSettings) {
       latencyMs,
       visionSupported: false,
       provider: settings.tier2Preset || `tier_${settings.activeTier}`,
+      endpointUrl,
+      httpStatus,
+      rawError,
+      suggestedModels,
       diagnostic,
     };
   }

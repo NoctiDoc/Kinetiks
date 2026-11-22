@@ -63,6 +63,7 @@ import {
   TIER2_PRESETS,
   TIER3_MODELS,
   normalizeAISettings,
+  normalizeGeminiBaseUrl,
   detectPresetFromApiKey,
   testAIConnection,
   detectBrowserLlmCapability,
@@ -3495,10 +3496,41 @@ Méthodes supportées dans l'appli : Double progression, Pyramidal inversé (RPT
               ? `<div class="probe-card ${probe.ok ? 'is-ok' : 'is-err'}">
                   <div class="row-between">
                     <span class="state-tag ${probe.ok ? 'is-ok' : 'is-danger'}">${probe.ok ? 'CONNEXION VALIDÉE' : 'ÉCHEC CONNEXION'}</span>
-                    <span class="mono metric-xs">${probe.latencyMs ?? 0} ms · Vision ${probe.visionSupported ? 'OK' : 'Non'}</span>
+                    <span class="mono metric-xs">${probe.latencyMs ?? 0} ms · HTTP ${probe.httpStatus ?? 'Réseau'}${probe.ok ? ` · Vision ${probe.visionSupported ? 'OK' : 'Non'}` : ''}</span>
                   </div>
-                  <span class="mono metric-xs text-secondary">Moteur : ${esc(probe.provider || '')}</span>
+                  <span class="mono metric-xs text-secondary">Moteur : ${esc(probe.provider || '')}${probe.authMode ? ` · ${esc(probe.authMode)}` : ''}</span>
+                  ${
+                    probe.endpointUrl
+                      ? `<div class="stack-sm" style="gap: 2px;">
+                          <span class="label-tech">URL appelée (sans clé)</span>
+                          <code class="code-box" style="padding: 6px 8px;">${esc(probe.endpointUrl)}</code>
+                        </div>`
+                      : ''
+                  }
+                  ${
+                    !probe.ok && probe.rawError
+                      ? `<div class="stack-sm" style="gap: 2px;">
+                          <span class="label-tech">Réponse brute serveur (HTTP ${probe.httpStatus ?? 'Réseau/CORS'})</span>
+                          <pre class="code-box" style="padding: 6px 8px;">${esc(probe.rawError)}</pre>
+                        </div>`
+                      : ''
+                  }
                   <span style="font-size: 0.82rem;">${esc(probe.diagnostic || '')}</span>
+                  ${
+                    !probe.ok && Array.isArray(probe.suggestedModels) && probe.suggestedModels.length > 0
+                      ? `<div class="stack-sm" style="gap: 6px; margin-top: 2px;">
+                          <span class="label-tech text-accent">Modèles Gemini actifs détectés (1 clic pour appliquer)</span>
+                          <div class="row-wrap">
+                            ${probe.suggestedModels
+                              .map(
+                                (mName) =>
+                                  `<button type="button" class="btn btn-xs btn-primary mono" data-pick-gemini-model="${esc(mName)}">Utiliser ${esc(mName)}</button>`
+                              )
+                              .join('')}
+                          </div>
+                        </div>`
+                      : ''
+                  }
                 </div>`
               : `<div class="probe-card"><span class="panel-subtitle">Appuyez sur "Tester la connexion maintenant" pour vérifier votre clé et mesurer la latence réelle.</span></div>`
           }
@@ -3511,10 +3543,22 @@ Méthodes supportées dans l'appli : Double progression, Pyramidal inversé (RPT
         s.tier1Provider = document.getElementById('ai-t1-provider')?.value || 'puter';
         s.allowPublicBodyPhotos = Boolean(document.getElementById('ai-allow-public-body')?.checked);
       } else if (s.activeTier === 2) {
-        s.baseUrl = (document.getElementById('ai-url')?.value || '').trim();
+        const rawUrl = (document.getElementById('ai-url')?.value || '').trim();
+        const isGeminiUrl = s.tier2Preset === 'gemini' || rawUrl.includes('generativelanguage.googleapis.com');
+        s.baseUrl = isGeminiUrl ? normalizeGeminiBaseUrl(rawUrl) : rawUrl;
+        if (isGeminiUrl) {
+          s.protocol = 'gemini_native';
+          if (!silent) {
+            const urlEl = document.getElementById('ai-url');
+            if (urlEl) urlEl.value = s.baseUrl;
+          }
+        }
         s.model = (document.getElementById('ai-mod')?.value || '').trim();
         s.visionModel = (document.getElementById('ai-vmod')?.value || '').trim();
-        s.apiKey = (document.getElementById('ai-key')?.value || '').replace(/[\r\n\t\s]+/g, '');
+        s.apiKey = (document.getElementById('ai-key')?.value || '')
+          .trim()
+          .replace(/^["'`]+|["'`]+$/g, '')
+          .replace(/[\r\n\t\s]+/g, '');
         s.groqWhisperEnabled = Boolean(document.getElementById('ai-whisper')?.checked);
       } else if (s.activeTier === 3) {
         s.tier3ModelId = document.getElementById('ai-t3-model')?.value || TIER3_MODELS[0].id;
@@ -3601,6 +3645,19 @@ Méthodes supportées dans l'appli : Double progression, Pyramidal inversé (RPT
       const res = await testAIConnection(state.aiSettings);
       state.lastProbeResult = res;
       renderProfilSubTab(slot);
+    });
+
+    slot.querySelectorAll('[data-pick-gemini-model]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const picked = btn.dataset.pickGeminiModel;
+        s.model = picked;
+        s.visionModel = picked;
+        s.baseUrl = normalizeGeminiBaseUrl(s.baseUrl);
+        state.aiSettings = await saveAISettings(state.profile.id, s);
+        state.lastProbeResult = null;
+        renderProfilSubTab(slot);
+        showToast(`Modèle ${picked} sélectionné — lancez "Tester la connexion".`);
+      });
     });
     return;
   }
