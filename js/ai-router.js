@@ -79,7 +79,8 @@ export const TIER2_PRESETS = Object.freeze({
     requiresApiKey: true,
     supportsVision: true,
     supportsWhisper: false,
-    corsNote: 'Clé gratuite sur aistudio.google.com (commence par AIza). Texte + Vision multimodale + JSON natif.',
+    corsNote:
+      'CORS natif navigateur via x-goog-api-key. Compatible clés AQ. (Google AI Studio) et AIza…. Si HTTP 401 : vérifiez que "Generative Language API" est bien autorisée dans Google Cloud Console → Credentials.',
   },
   openai: {
     id: 'openai',
@@ -108,21 +109,13 @@ export const TIER2_PRESETS = Object.freeze({
 });
 
 /**
- * Indique si la clé API collée est une clé Vertex AI Express Mode (préfixe AQ.).
- */
-export function isVertexExpressKey(rawKey) {
-  const key = String(rawKey || '').replace(/[\r\n\t\s]+/g, '');
-  return key.startsWith('AQ.');
-}
-
-/**
- * Détecte automatiquement le fournisseur probable d'une clé API collée.
+ * Détecte automatiquement le fournisseur probable d'une clé API collée
+ * (simple aide au pré-remplissage — aucun préfixe n'est jamais bloqué).
  */
 export function detectPresetFromApiKey(rawKey) {
-  const key = String(rawKey || '').replace(/\s+/g, '');
+  const key = String(rawKey || '').replace(/[\r\n\t\s"'`]+/g, '');
   if (!key || key.length < 16) return null;
-  if (key.startsWith('AIza')) return 'gemini';
-  if (key.startsWith('AQ.')) return 'gemini';
+  if (key.startsWith('AQ.') || key.startsWith('AIza')) return 'gemini';
   if (key.startsWith('gsk_')) return 'groq';
   if (key.startsWith('sk-or-')) return 'openrouter';
   if (key.startsWith('sk-')) return 'openai';
@@ -817,25 +810,27 @@ function parseProviderErrorMessage(rawBody, fallbackStatus) {
 }
 
 function cleanApiKey(rawKey) {
-  return String(rawKey || '').replace(/[\r\n\t\s]+/g, '');
+  return String(rawKey || '')
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .replace(/[\r\n\t\s]+/g, '');
 }
-
-const VERTEX_EXPRESS_CORS_HINT =
-  'Clé Vertex AI Express (AQ.) détectée : Google Cloud (aiplatform.googleapis.com) bloque les appels directs depuis un navigateur sans serveur proxy (CORS). Comme cette PWA tourne 100 % en local sur téléphone, créez une clé Google AI Studio gratuite (commence par AIza...) sur aistudio.google.com/apikey — elle fonctionne directement sur mobile.';
 
 async function runGeminiNative({ prompt, systemPrompt, history = [], images, settings, expectJson, timeoutMs = 35000 }) {
   const apiKey = cleanApiKey(settings.apiKey);
   if (!apiKey) {
-    throw new Error('Clé API Gemini manquante. Collez votre clé Google AI Studio (AIza...) dans Profil → Clés IA.');
+    throw new Error('Clé API Gemini manquante. Collez votre clé Google AI Studio dans Profil → Clés IA.');
   }
 
-  const isVertexKey = isVertexExpressKey(apiKey);
+  // Toujours cibler l'endpoint natif generativelanguage.googleapis.com (jamais la route /openai qui rejette les clés AQ.)
+  const rawBase = (settings.baseUrl || TIER2_PRESETS.gemini.baseUrl)
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/openai$/i, '');
+  const base = rawBase || TIER2_PRESETS.gemini.baseUrl;
   const rawModel = (images.length > 0 ? settings.visionModel || settings.model : settings.model) || 'gemini-2.5-flash';
   const modelName = rawModel.trim().replace(/^models\//i, '');
-
-  const endpoint = isVertexKey
-    ? `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`
-    : `${(settings.baseUrl || TIER2_PRESETS.gemini.baseUrl).trim().replace(/\/+$/, '')}/models/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const endpoint = `${base}/models/${encodeURIComponent(modelName)}:generateContent`;
 
   const parts = [{ text: prompt }];
   for (const img of images) {
@@ -869,20 +864,19 @@ async function runGeminiNative({ prompt, systemPrompt, history = [], images, set
   try {
     const res = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
     if (!res.ok) {
       const errBody = await res.text();
       const detail = parseProviderErrorMessage(errBody, res.status);
-      const err = new Error(
-        isVertexKey
-          ? `Vertex AI Express HTTP ${res.status} (${detail}). ${VERTEX_EXPRESS_CORS_HINT}`
-          : `Gemini HTTP ${res.status} : ${detail}`
-      );
+      const err = new Error(`Gemini HTTP ${res.status} : ${detail}`);
       err.httpStatus = res.status;
-      err.isVertexExpress = isVertexKey;
+      err.isGeminiAuth = res.status === 401 || res.status === 403;
       throw err;
     }
     const json = await res.json();
@@ -891,14 +885,7 @@ async function runGeminiNative({ prompt, systemPrompt, history = [], images, set
       const blockReason = json?.promptFeedback?.blockReason;
       throw new Error(blockReason ? `Réponse Gemini bloquée (${blockReason}).` : 'Réponse Gemini vide.');
     }
-    return { rawText: text, provider: `${isVertexKey ? 'vertex' : 'gemini'}:${modelName}` };
-  } catch (err) {
-    if (isVertexKey && (err instanceof TypeError || String(err?.message || '').includes('Failed to fetch'))) {
-      const corsErr = new Error(VERTEX_EXPRESS_CORS_HINT);
-      corsErr.isVertexExpress = true;
-      throw corsErr;
-    }
-    throw err;
+    return { rawText: text, provider: `gemini:${modelName}` };
   } finally {
     clearTimeout(timer);
   }
@@ -1213,8 +1200,8 @@ export async function testAIConnection(rawSettings) {
     const isHttpTarget = String(settings.baseUrl || '').startsWith('http://');
     let diagnostic = msg;
 
-    if (err.isVertexExpress) {
-      diagnostic = msg;
+    if (err.isGeminiAuth) {
+      diagnostic = `Clé Gemini refusée (HTTP ${err.httpStatus}) : ${msg}. Vérifiez la clé complète sans espace ni guillemets et, dans Google Cloud Console → APIs & Services → Credentials → API restrictions, assurez-vous que "Generative Language API" est bien cochée (patientez 60–90 s après sauvegarde).`;
     } else if (err.httpStatus === 401 || err.httpStatus === 403) {
       diagnostic = `Clé API refusée (HTTP ${err.httpStatus}) : vérifiez que la clé correspond bien au fournisseur "${settings.tier2Preset}" (${msg}).`;
     } else if (err.httpStatus === 404) {

@@ -64,7 +64,6 @@ import {
   TIER3_MODELS,
   normalizeAISettings,
   detectPresetFromApiKey,
-  isVertexExpressKey,
   testAIConnection,
   detectBrowserLlmCapability,
   routeAIRequest,
@@ -3442,16 +3441,9 @@ Méthodes supportées dans l'appli : Double progression, Pyramidal inversé (RPT
                 <span class="mono metric-xs ${s.apiKey ? 'text-ok' : 'text-muted'}">${s.apiKey ? 'Clé enregistrée' : preset.requiresApiKey ? 'Requise' : 'Optionnelle'}</span>
               </label>
               <div class="input-action-row">
-                <input id="ai-key" class="input mono" type="${state.showApiKey ? 'text' : 'password'}" autocomplete="off" spellcheck="false" placeholder="Collez AIza... / gsk_... / sk-or-... / sk-..." value="${esc(s.apiKey)}" />
+                <input id="ai-key" class="input mono" type="${state.showApiKey ? 'text' : 'password'}" autocomplete="off" spellcheck="false" placeholder="Collez AQ.... / AIza... / gsk_... / sk-or-... / sk-..." value="${esc(s.apiKey)}" />
                 <button type="button" class="btn btn-sm" id="btn-toggle-apikey">${state.showApiKey ? 'Masquer' : 'Voir'}</button>
               </div>
-              ${
-                isVertexExpressKey(s.apiKey)
-                  ? `<div class="notice notice-danger" style="margin-top: 4px;">
-                      <span><strong>Clé Vertex AI Express (AQ.) détectée :</strong> Google Cloud bloque souvent les appels directs depuis un navigateur mobile (CORS) sans serveur backend. Pour une appli 100 % locale, générez une clé gratuite <strong>Google AI Studio (AIza...)</strong> sur <strong>aistudio.google.com/apikey</strong> ou utilisez <strong>Groq (gsk_...)</strong>.</span>
-                    </div>`
-                  : ''
-              }
             </div>
 
             <div class="field"><label class="field-label" for="ai-url">URL de base</label><input id="ai-url" class="input mono" value="${esc(s.baseUrl)}" /></div>
@@ -3563,12 +3555,13 @@ Méthodes supportées dans l'appli : Double progression, Pyramidal inversé (RPT
       renderProfilSubTab(slot);
     });
 
-    // Auto-sauvegarde + auto-détection du fournisseur dès le collage d'une clé API
+    // Auto-sauvegarde + auto-détection du fournisseur dès le collage d'une clé API (aucun préfixe bloqué)
     const keyInput = document.getElementById('ai-key');
     keyInput?.addEventListener('input', async () => {
-      const wasVertex = isVertexExpressKey(s.apiKey);
-      const cleaned = keyInput.value.replace(/[\r\n\t\s]+/g, '');
-      const nowVertex = isVertexExpressKey(cleaned);
+      const cleaned = keyInput.value
+        .trim()
+        .replace(/^["'`]+|["'`]+$/g, '')
+        .replace(/[\r\n\t\s]+/g, '');
       const detected = detectPresetFromApiKey(cleaned);
       s.apiKey = cleaned;
       if (detected && detected !== s.tier2Preset) {
@@ -3580,17 +3573,10 @@ Méthodes supportées dans l'appli : Double progression, Pyramidal inversé (RPT
         s.visionModel = pr.visionModel;
         state.aiSettings = await saveAISettings(state.profile.id, s);
         renderProfilSubTab(slot);
-        showToast(
-          nowVertex
-            ? 'Clé Vertex AI Express (AQ.) détectée — consultez l’avertissement CORS ci-dessous.'
-            : `Clé ${pr.label} détectée — fournisseur et modèle configurés.`
-        );
+        showToast(`Clé ${pr.label} détectée — fournisseur et modèle configurés.`);
         return;
       }
       await persistCurrentAI({ silent: true });
-      if (wasVertex !== nowVertex) {
-        renderProfilSubTab(slot);
-      }
     });
 
     ['ai-url', 'ai-mod', 'ai-vmod'].forEach((id) => {
