@@ -3496,9 +3496,9 @@ Méthodes supportées dans l'appli : Double progression, Pyramidal inversé (RPT
               ? `<div class="probe-card ${probe.ok ? 'is-ok' : 'is-err'}">
                   <div class="row-between">
                     <span class="state-tag ${probe.ok ? 'is-ok' : 'is-danger'}">${probe.ok ? 'CONNEXION VALIDÉE' : 'ÉCHEC CONNEXION'}</span>
-                    <span class="mono metric-xs">${probe.latencyMs ?? 0} ms · HTTP ${probe.httpStatus ?? 'Réseau'}${probe.ok ? ` · Vision ${probe.visionSupported ? 'OK' : 'Non'}` : ''}</span>
+                    <span class="mono metric-xs">${probe.latencyMs ?? 0} ms · HTTP ${probe.httpStatus ?? 'Réseau'}${probe.ok ? ` · Vision ${probe.visionSupported ? 'Oui' : 'Non'}` : ''}</span>
                   </div>
-                  <span class="mono metric-xs text-secondary">Moteur : ${esc(probe.provider || '')}${probe.authMode ? ` · ${esc(probe.authMode)}` : ''}</span>
+                  <span class="mono metric-xs text-secondary">Moteur : ${esc(probe.provider || '')}${probe.visionModelUsed ? ` · Vision : ${esc(probe.visionModelUsed)}` : ''}${probe.authMode ? ` · ${esc(probe.authMode)}` : ''}</span>
                   ${
                     probe.endpointUrl
                       ? `<div class="stack-sm" style="gap: 2px;">
@@ -3515,16 +3515,40 @@ Méthodes supportées dans l'appli : Double progression, Pyramidal inversé (RPT
                         </div>`
                       : ''
                   }
+                  ${
+                    probe.ok && !probe.visionSupported && probe.visionError
+                      ? `<div class="stack-sm" style="gap: 2px;">
+                          <span class="label-tech">Échec micro-test Vision (HTTP ${probe.visionHttpStatus ?? 'Réseau/CORS'})</span>
+                          ${probe.visionEndpointUrl ? `<code class="code-box" style="padding: 6px 8px;">${esc(probe.visionEndpointUrl)}</code>` : ''}
+                          <pre class="code-box" style="padding: 6px 8px;">${esc(probe.visionError)}</pre>
+                        </div>`
+                      : ''
+                  }
                   <span style="font-size: 0.82rem;">${esc(probe.diagnostic || '')}</span>
                   ${
                     !probe.ok && Array.isArray(probe.suggestedModels) && probe.suggestedModels.length > 0
                       ? `<div class="stack-sm" style="gap: 6px; margin-top: 2px;">
-                          <span class="label-tech text-accent">Modèles Gemini actifs détectés (1 clic pour appliquer)</span>
+                          <span class="label-tech text-accent">Modèles Gemini actifs recommandés (1 clic pour appliquer)</span>
                           <div class="row-wrap">
                             ${probe.suggestedModels
                               .map(
                                 (mName) =>
                                   `<button type="button" class="btn btn-xs btn-primary mono" data-pick-gemini-model="${esc(mName)}">Utiliser ${esc(mName)}</button>`
+                              )
+                              .join('')}
+                          </div>
+                        </div>`
+                      : ''
+                  }
+                  ${
+                    probe.ok && !probe.visionSupported && Array.isArray(probe.visionSuggestedModels) && probe.visionSuggestedModels.length > 0
+                      ? `<div class="stack-sm" style="gap: 6px; margin-top: 2px;">
+                          <span class="label-tech text-accent">Modèles Gemini actifs pour la Vision (1 clic)</span>
+                          <div class="row-wrap">
+                            ${probe.visionSuggestedModels
+                              .map(
+                                (mName) =>
+                                  `<button type="button" class="btn btn-xs btn-primary mono" data-pick-gemini-vision="${esc(mName)}">Vision : ${esc(mName)}</button>`
                               )
                               .join('')}
                           </div>
@@ -3657,6 +3681,18 @@ Méthodes supportées dans l'appli : Double progression, Pyramidal inversé (RPT
         state.lastProbeResult = null;
         renderProfilSubTab(slot);
         showToast(`Modèle ${picked} sélectionné — lancez "Tester la connexion".`);
+      });
+    });
+
+    slot.querySelectorAll('[data-pick-gemini-vision]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const picked = btn.dataset.pickGeminiVision;
+        s.visionModel = picked;
+        s.baseUrl = normalizeGeminiBaseUrl(s.baseUrl);
+        state.aiSettings = await saveAISettings(state.profile.id, s);
+        state.lastProbeResult = null;
+        renderProfilSubTab(slot);
+        showToast(`Modèle vision ${picked} sélectionné — lancez "Tester la connexion".`);
       });
     });
     return;
