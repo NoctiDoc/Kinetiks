@@ -493,6 +493,56 @@ export async function listBiometrics(profileId) {
   return rows.sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.timestamp || 0) - (b.timestamp || 0));
 }
 
+export async function deleteBiometric(bioId) {
+  return deleteRecord(STORES.BIOMETRICS, bioId);
+}
+
+export async function resetBiometricsBaseline(profileId, currentWeightKg, todayISO = getTodayISO()) {
+  const previous = await listBiometrics(profileId);
+  const weight = Number(currentWeightKg);
+  const baselineRecord =
+    Number.isFinite(weight) && weight > 25
+      ? {
+          id: generateId('bio'),
+          profileId,
+          date: todayISO,
+          timestamp: Date.now(),
+          weightKg: Number(weight.toFixed(1)),
+          source: 'baseline_reset',
+        }
+      : null;
+
+  await runTx(STORES.BIOMETRICS, 'readwrite', async (tx) => {
+    const store = tx.objectStore(STORES.BIOMETRICS);
+    const keys = await reqToPromise(store.index('by_profile').getAllKeys(profileId));
+    for (const key of keys) {
+      store.delete(key);
+    }
+    if (baselineRecord) {
+      store.put(baselineRecord);
+    }
+  });
+
+  return {
+    previous,
+    baselineRecord,
+  };
+}
+
+export async function restoreBiometricsForProfile(profileId, entries = []) {
+  await runTx(STORES.BIOMETRICS, 'readwrite', async (tx) => {
+    const store = tx.objectStore(STORES.BIOMETRICS);
+    const keys = await reqToPromise(store.index('by_profile').getAllKeys(profileId));
+    for (const key of keys) {
+      store.delete(key);
+    }
+    for (const entry of entries || []) {
+      store.put({ ...entry, profileId });
+    }
+  });
+  return listBiometrics(profileId);
+}
+
 export async function saveNutritionLog(profileId, entry) {
   const record = {
     id: entry.id || generateId('nut'),
@@ -590,6 +640,7 @@ export async function addCoachMessage(profileId, message) {
     fallbackReason: message.fallbackReason || null,
     actionProposal: message.actionProposal || null,
     actionApplied: Boolean(message.actionApplied),
+    executedBadges: Array.isArray(message.executedBadges) ? message.executedBadges : [],
     meta: message.meta || {},
   };
   await putRecord(STORES.COACH_MESSAGES, record);

@@ -33,6 +33,8 @@ import {
   saveWorkout,
   listBiometrics,
   saveBiometric,
+  resetBiometricsBaseline,
+  restoreBiometricsForProfile,
   listNutritionLogs,
   saveNutritionLog,
   deleteNutritionLog,
@@ -119,6 +121,9 @@ import {
   computeEWMASeries,
   computeAdaptiveTDEE,
   calculateMacroTargets,
+  computeCoherentMacrosForCalories,
+  clampAdaptiveAdjustmentKcal,
+  sanitizeStoredAdaptiveAdjustmentKcal,
   analyzeMealPhoto,
   extractScaleMetricsOCR,
   generateMealPlanAndShoppingList,
@@ -133,6 +138,13 @@ import {
   buildPeriWorkoutGuide,
   askNutritionAdvisor,
 } from './nutrition-advisor.js';
+
+import {
+  buildAgenticCoachSystemPrompt,
+  parseCoachActionsResponse,
+  parseTier0DeterministicActions,
+  executeCoachActions,
+} from './coach-actions.js';
 
 import {
   RestTimerController,
@@ -246,6 +258,86 @@ function esc(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+/**
+ * Parseur Markdown léger et 100 % protégé XSS :
+ * échappe d'abord tout HTML brut, puis convertit **gras**, *italique*,
+ * `code`, listes à puces (- / * / •) / numérotées et sauts de ligne.
+ */
+function formatInlineMarkdown(escapedLine) {
+  return escapedLine
+    .replace(/`([^`\n]+)`/g, '<code class="mono">$1</code>')
+    .replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[\s([{"'«])\*([^*\s][^*\n]*?[^*\s]|[^*\s])\*(?=[\s)\]}.,;:!?"'»]|$)/g, '$1<em>$2</em>');
+}
+
+function renderCoachMarkdown(rawText) {
+  const escaped = esc(String(rawText ?? '').replace(/\r\n/g, '\n')).trim();
+  if (!escaped) return '';
+
+  const lines = escaped.split('\n');
+  const blocks = [];
+  let paragraphLines = [];
+  let listType = null; // 'ul' | 'ol'
+  let listItems = [];
+
+  const flushParagraph = () => {
+    if (paragraphLines.length === 0) return;
+    blocks.push(`<p>${paragraphLines.map(formatInlineMarkdown).join('<br>')}</p>`);
+    paragraphLines = [];
+  };
+
+  const flushList = () => {
+    if (!listType || listItems.length === 0) return;
+    blocks.push(
+      `<${listType} class="coach-md-list">${listItems.map((item) => `<li>${formatInlineMarkdown(item)}</li>`).join('')}</${listType}>`
+    );
+    listType = null;
+    listItems = [];
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+
+    const headingMatch = line.match(/^#{1,3}\s+(.+)$/);
+    if (headingMatch) {
+      flushParagraph();
+      flushList();
+      blocks.push(`<p class="coach-md-heading"><strong>${formatInlineMarkdown(headingMatch[1])}</strong></p>`);
+      continue;
+    }
+
+    const ulMatch = line.match(/^(?:[-*•])\s+(.+)$/);
+    if (ulMatch) {
+      flushParagraph();
+      if (listType && listType !== 'ul') flushList();
+      listType = 'ul';
+      listItems.push(ulMatch[1]);
+      continue;
+    }
+
+    const olMatch = line.match(/^\d+[.)]\s+(.+)$/);
+    if (olMatch) {
+      flushParagraph();
+      if (listType && listType !== 'ol') flushList();
+      listType = 'ol';
+      listItems.push(olMatch[1]);
+      continue;
+    }
+
+    flushList();
+    paragraphLines.push(line);
+  }
+
+  flushParagraph();
+  flushList();
+  return blocks.join('');
 }
 
 function showToast(message, { undoAction = null, durationMs = 5000 } = {}) {
@@ -370,7 +462,24 @@ async function loadProfileWorkspace() {
   state.photos = photos;
   state.coachMessages = coachMsgs;
   state.shoppingList = shopping;
-  state.manualKcalOffset = Number(state.profile?.nutritionPrefs?.manualKcalOffset) || 0;
+
+  // Auto-réparation au chargement si un ancien profil contenait un ajustement aberrant (< -400 ou > +400)
+  const rawSavedAdj =
+    state.profile?.nutritionPrefs?.adaptiveAdjustmentKcal ??
+    state.profile?.nutritionPrefs?.manualKcalOffset ??
+    0;
+  const sanitizedAdj = sanitizeStoredAdaptiveAdjustmentKcal(rawSavedAdj);
+  state.manualKcalOffset = sanitizedAdj.value;
+  if (sanitizedAdj.wasCorrupted) {
+    state.profile = await updateProfile(pid, {
+      nutritionPrefs: {
+        adaptiveAdjustmentKcal: 0,
+        manualKcalOffset: 0,
+      },
+    });
+    showToast(`Ajustement EWMA hors-bornes (${sanitizedAdj.previousValue} kcal) réinitialisé à 0 kcal.`);
+  }
+
   state.advisorDayMode = 'auto';
   state.advisorRecalibrationOpen = false;
   state.advisorMessages = [];
@@ -538,7 +647,8 @@ async function seedDemoProfile() {
    ========================================================================== */
 
 function getDerivedTelemetry() {
-  const ewma = computeEWMASeries(state.biometrics);
+  const baselineDate = state.profile?.nutritionPrefs?.ewmaBaselineDate || null;
+  const ewma = computeEWMASeries(state.biometrics, 0.2, { baselineDate });
   const latestBio = state.biometrics[state.biometrics.length - 1] || null;
   const knownBf = latestBio?.bodyFatPct ?? latestBio?.navyBodyFatPct ?? null;
   const adaptive = computeAdaptiveTDEE({
@@ -548,11 +658,12 @@ function getDerivedTelemetry() {
     bodyFatPct: knownBf,
   });
   const smoothing = getActiveSmoothingAdjustment(state.profile, getTodayISO());
-  const effectiveKcalOffset = (Number(state.manualKcalOffset) || 0) + (smoothing?.effectiveTodayDeltaKcal || 0);
+  const clampedAdaptiveAdj = clampAdaptiveAdjustmentKcal(state.manualKcalOffset);
   const macros = calculateMacroTargets(state.profile, {
     bodyFatPct: knownBf,
     adaptiveTdeeKcal: adaptive.adaptiveActive ? adaptive.estimatedTdeeKcal : null,
-    manualKcalOffset: effectiveKcalOffset,
+    adaptiveAdjustmentKcal: clampedAdaptiveAdj,
+    smoothingDeltaKcal: smoothing?.effectiveTodayDeltaKcal || 0,
   });
 
   const consumed = state.nutritionToday.reduce(
@@ -1727,7 +1838,13 @@ function renderNutrition(container) {
         <div>
           <h1>Nutrition auto-adaptative</h1>
           <p class="panel-subtitle">
-            ${esc(macros.formula)} · TDEE ${macros.tdeeKcal} kcal${state.manualKcalOffset ? ` · Ajust. ${state.manualKcalOffset > 0 ? '+' : ''}${state.manualKcalOffset} kcal` : ''}${smoothing?.appliesToday ? ` · Lissage ${smoothing.effectiveTodayDeltaKcal} kcal` : ''}
+            ${esc(macros.formula)} · TDEE ${macros.tdeeKcal} kcal${
+              macros.isOverride
+                ? ` · Mode ${macros.overrideSource === 'coach' ? 'Coach IA' : 'Manuel'}${macros.overrideLocked ? ' (verrouillé)' : ''}`
+                : state.manualKcalOffset
+                  ? ` · Ajust. ${state.manualKcalOffset > 0 ? '+' : ''}${state.manualKcalOffset} kcal`
+                  : ''
+            }${smoothing?.appliesToday && !macros.isOverride ? ` · Lissage ${smoothing.effectiveTodayDeltaKcal} kcal` : ''}
           </p>
         </div>
         <span class="mono metric-lg ${surplusKcal >= 220 ? 'text-danger' : 'text-accent'}">
@@ -1758,8 +1875,56 @@ function renderNutrition(container) {
         </div>
       </div>
 
+      <!-- Contrôle manuel direct & réinitialisation EWMA -->
+      <details class="panel-elevated nut-override-details">
+        <summary class="nut-override-summary">
+          <span>Ajuster mes cibles / Réinitialiser</span>
+          <span class="mono metric-xs ${macros.isOverride ? 'text-accent' : 'text-muted'}">
+            ${macros.isOverride ? (macros.overrideSource === 'coach' ? 'COACH IA' : 'MANUEL') : `AUTO · AJUST ${macros.adaptiveAdjustmentKcal >= 0 ? '+' : ''}${macros.adaptiveAdjustmentKcal} KCAL`}
+          </span>
+        </summary>
+        <div class="stack-sm" style="margin-top: 10px;">
+          <form id="nut-override-form" class="stack-sm">
+            <div class="nut-override-grid">
+              <label class="field">
+                <span class="field-label">Calories (kcal)</span>
+                <input id="nut-ov-kcal" class="input mono" type="number" min="1200" max="6000" step="10" value="${macros.kcal}" required />
+              </label>
+              <label class="field">
+                <span class="field-label">Protéines (g)</span>
+                <input id="nut-ov-prot" class="input mono" type="number" min="60" max="300" step="1" value="${macros.proteinG}" required />
+              </label>
+              <label class="field">
+                <span class="field-label">Glucides (g)</span>
+                <input id="nut-ov-carbs" class="input mono" type="number" min="0" max="800" step="1" value="${macros.carbsG}" required />
+              </label>
+              <label class="field">
+                <span class="field-label">Lipides (g)</span>
+                <input id="nut-ov-fat" class="input mono" type="number" min="35" max="200" step="1" value="${macros.fatG}" required />
+              </label>
+              <label class="field">
+                <span class="field-label">Eau (ml/j)</span>
+                <input id="nut-ov-water" class="input mono" type="number" min="1500" max="5500" step="50" value="${macros.waterTargetMl}" required />
+              </label>
+            </div>
+            <label class="row" style="gap: 8px; font-size: 0.78rem; color: var(--text-secondary); cursor: pointer;">
+              <input id="nut-ov-lock" type="checkbox" ${macros.isOverride ? (macros.overrideLocked ? 'checked' : '') : 'checked'} />
+              <span>Verrouiller ces cibles (empêcher l’ajustement EWMA automatique de les écraser)</span>
+            </label>
+            <div class="row-wrap" style="gap: 6px;">
+              <button type="submit" class="btn btn-sm btn-primary">Enregistrer mes cibles</button>
+              <button type="button" class="btn btn-sm" id="btn-reset-ewma-adj">Réinitialiser ajustement EWMA (0 kcal)</button>
+              <button type="button" class="btn btn-sm btn-danger" id="btn-reset-ewma-zero">Repartir à zéro pour l’EWMA (à partir d’aujourd’hui)</button>
+            </div>
+          </form>
+          <p class="panel-subtitle mono" style="font-size: 0.72rem;">
+            Plancher calorique sûr : ${macros.safeFloorKcal} kcal (max(1500, 85 % BMR)) · Ajustement adaptatif borné [-400, +400 kcal].
+          </p>
+        </div>
+      </details>
+
       ${
-        adaptive.adjustmentProposal
+        adaptive.adjustmentProposal && !macros.overrideLocked
           ? `
         <div class="notice notice-accent">
           <span><strong>TDEE Adaptatif :</strong> ${esc(adaptive.adjustmentProposal.reason)}</span>
@@ -1781,14 +1946,111 @@ function renderNutrition(container) {
     </section>
   `;
 
-  document.getElementById('btn-apply-tdee-adj')?.addEventListener('click', async () => {
-    const delta = adaptive.adjustmentProposal.deltaKcal;
-    state.manualKcalOffset = (Number(state.manualKcalOffset) || 0) + delta;
+  document.getElementById('nut-override-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const kcal = Math.round(Number(document.getElementById('nut-ov-kcal')?.value) || macros.kcal);
+    const proteinG = Math.round(Number(document.getElementById('nut-ov-prot')?.value) || macros.proteinG);
+    const carbsG = Math.round(Number(document.getElementById('nut-ov-carbs')?.value) || macros.carbsG);
+    const fatG = Math.round(Number(document.getElementById('nut-ov-fat')?.value) || macros.fatG);
+    const waterTargetMl = Math.round((Number(document.getElementById('nut-ov-water')?.value) || macros.waterTargetMl) / 50) * 50;
+    const locked = Boolean(document.getElementById('nut-ov-lock')?.checked);
+
+    const coherent = computeCoherentMacrosForCalories(kcal, {
+      leanMassKg: macros.leanMassKg,
+      goal: state.profile.goal,
+      proteinOverride: proteinG,
+      fatOverride: fatG,
+      carbsOverride: carbsG,
+    });
+
+    const prevPrefs = structuredClone(state.profile.nutritionPrefs || {});
+    state.manualKcalOffset = 0;
     state.profile = await updateProfile(state.profile.id, {
-      nutritionPrefs: { manualKcalOffset: state.manualKcalOffset },
+      nutritionPrefs: {
+        adaptiveAdjustmentKcal: 0,
+        manualKcalOffset: 0,
+        smoothingPlan: null,
+        nutritionOverride: {
+          enabled: true,
+          locked,
+          source: 'manual',
+          kcal: coherent.kcal,
+          proteinG: coherent.proteinG,
+          carbsG: coherent.carbsG,
+          fatG: coherent.fatG,
+          waterTargetMl,
+          updatedAt: Date.now(),
+        },
+      },
     });
     renderApp();
-    showToast(`Cible calorique ajustée de ${delta > 0 ? '+' : ''}${delta} kcal/j et enregistrée.`);
+    showToast(`Cibles enregistrées : ${coherent.kcal} kcal (P ${coherent.proteinG}g · G ${coherent.carbsG}g · L ${coherent.fatG}g).`, {
+      undoAction: async () => {
+        state.profile = await updateProfile(state.profile.id, { nutritionPrefs: prevPrefs });
+        state.manualKcalOffset = clampAdaptiveAdjustmentKcal(prevPrefs.adaptiveAdjustmentKcal ?? prevPrefs.manualKcalOffset ?? 0);
+        renderApp();
+      },
+    });
+  });
+
+  document.getElementById('btn-reset-ewma-adj')?.addEventListener('click', async () => {
+    const prevPrefs = structuredClone(state.profile.nutritionPrefs || {});
+    state.manualKcalOffset = 0;
+    state.profile = await updateProfile(state.profile.id, {
+      nutritionPrefs: {
+        nutritionOverride: null,
+        adaptiveAdjustmentKcal: 0,
+        manualKcalOffset: 0,
+        smoothingPlan: null,
+      },
+    });
+    renderApp();
+    showToast('Ajustement EWMA remis à 0 kcal et cibles recalculées depuis le TDEE.', {
+      undoAction: async () => {
+        state.profile = await updateProfile(state.profile.id, { nutritionPrefs: prevPrefs });
+        state.manualKcalOffset = clampAdaptiveAdjustmentKcal(prevPrefs.adaptiveAdjustmentKcal ?? prevPrefs.manualKcalOffset ?? 0);
+        renderApp();
+      },
+    });
+  });
+
+  document.getElementById('btn-reset-ewma-zero')?.addEventListener('click', async () => {
+    const today = getTodayISO();
+    const prevPrefs = structuredClone(state.profile.nutritionPrefs || {});
+    const currentWeight = Number(state.profile.weightKg) || 75;
+    const { previous } = await resetBiometricsBaseline(state.profile.id, currentWeight, today);
+    state.manualKcalOffset = 0;
+    state.profile = await updateProfile(state.profile.id, {
+      nutritionPrefs: {
+        ewmaBaselineDate: today,
+        adaptiveAdjustmentKcal: 0,
+        manualKcalOffset: 0,
+      },
+    });
+    state.biometrics = await listBiometrics(state.profile.id);
+    renderApp();
+    showToast(`EWMA réinitialisé à partir d’aujourd’hui (${currentWeight} kg · ${today}).`, {
+      undoAction: async () => {
+        await restoreBiometricsForProfile(state.profile.id, previous);
+        state.biometrics = await listBiometrics(state.profile.id);
+        state.profile = await updateProfile(state.profile.id, { nutritionPrefs: prevPrefs });
+        state.manualKcalOffset = clampAdaptiveAdjustmentKcal(prevPrefs.adaptiveAdjustmentKcal ?? prevPrefs.manualKcalOffset ?? 0);
+        renderApp();
+      },
+    });
+  });
+
+  document.getElementById('btn-apply-tdee-adj')?.addEventListener('click', async () => {
+    const delta = adaptive.adjustmentProposal.deltaKcal;
+    state.manualKcalOffset = clampAdaptiveAdjustmentKcal((Number(state.manualKcalOffset) || 0) + delta);
+    state.profile = await updateProfile(state.profile.id, {
+      nutritionPrefs: {
+        adaptiveAdjustmentKcal: state.manualKcalOffset,
+        manualKcalOffset: state.manualKcalOffset,
+      },
+    });
+    renderApp();
+    showToast(`Cible calorique ajustée (${delta > 0 ? '+' : ''}${delta} kcal/j · cumul ${state.manualKcalOffset} kcal).`);
   });
 
   container.querySelectorAll('[data-nut-tab]').forEach((btn) => {
@@ -2257,7 +2519,7 @@ function renderNutritionSubTab(slot, telemetry) {
                           <span class="label-tech">${msg.role === 'user' ? 'VOTRE QUESTION' : 'CONSEILLER NUTRITION PRO'}</span>
                           ${msg.meta ? `<span class="mono metric-xs text-muted">${esc(msg.meta)}</span>` : ''}
                         </div>
-                        <div>${esc(msg.content)}</div>
+                        <div class="coach-md">${msg.role === 'user' ? esc(msg.content) : renderCoachMarkdown(msg.content)}</div>
                       </div>`
                       )
                       .join('')}
@@ -2285,12 +2547,15 @@ function renderNutritionSubTab(slot, telemetry) {
     document.getElementById('btn-apply-ewma-adj')?.addEventListener('click', async () => {
       const delta = report.ewmaAlert.recommendedDeltaKcal;
       if (!delta) return;
-      state.manualKcalOffset = (Number(state.manualKcalOffset) || 0) + delta;
+      state.manualKcalOffset = clampAdaptiveAdjustmentKcal((Number(state.manualKcalOffset) || 0) + delta);
       state.profile = await updateProfile(state.profile.id, {
-        nutritionPrefs: { manualKcalOffset: state.manualKcalOffset },
+        nutritionPrefs: {
+          adaptiveAdjustmentKcal: state.manualKcalOffset,
+          manualKcalOffset: state.manualKcalOffset,
+        },
       });
       renderApp();
-      showToast(`Cible calorique recalibrée (${delta > 0 ? '+' : ''}${delta} kcal/j).`);
+      showToast(`Cible calorique recalibrée (${delta > 0 ? '+' : ''}${delta} kcal/j · cumul ${state.manualKcalOffset} kcal).`);
     });
 
     document.getElementById('btn-activate-smoothing')?.addEventListener('click', async () => {
@@ -3607,9 +3872,20 @@ function renderProfilSubTab(slot) {
                       <span class="label-tech ${m.role === 'user' ? 'text-accent' : ''}">${m.role === 'user' ? esc(state.profile.name) : 'Coach Kinetix'}</span>
                       ${m.tierUsed !== null && m.tierUsed !== undefined ? `<span class="mono metric-xs text-muted">Niv. ${m.tierUsed}${m.provider ? ` · ${esc(m.provider)}` : ''}</span>` : ''}
                     </div>
-                    <p>${esc(m.content)}</p>
                     ${
-                      m.actionProposal
+                      m.role === 'user'
+                        ? `<p>${esc(m.content)}</p>`
+                        : `<div class="coach-md">${renderCoachMarkdown(m.content)}</div>`
+                    }
+                    ${
+                      Array.isArray(m.executedBadges) && m.executedBadges.length > 0
+                        ? `<div class="coach-action-badges">
+                            ${m.executedBadges.map((b) => `<span class="coach-exec-badge mono">[${esc(b)}]</span>`).join('')}
+                          </div>`
+                        : ''
+                    }
+                    ${
+                      m.actionProposal && (!Array.isArray(m.executedBadges) || m.executedBadges.length === 0)
                         ? `<div class="coach-action-card ${m.actionApplied ? 'is-applied' : ''}">
                             <div class="row-between">
                               <span class="label-tech ${m.actionApplied ? 'text-ok' : 'text-accent'}">${m.actionApplied ? 'ADAPTATION APPLIQUÉE' : esc(m.actionProposal.title)}</span>
@@ -3639,14 +3915,14 @@ function renderProfilSubTab(slot) {
         </div>
 
         <div class="row-wrap">
-          <button type="button" class="btn btn-xs" data-quick-prompt="Passe mon programme en pyramidal inversé (RPT) et explique comment progresser">Pyramidal inversé</button>
+          <button type="button" class="btn btn-xs" data-quick-prompt="Passe mon programme en pyramidal inversé (RPT) et applique-le">Pyramidal inversé</button>
           <button type="button" class="btn btn-xs" data-quick-prompt="Passe-moi en Full Body 3 jours par semaine">Passer en Full Body</button>
-          <button type="button" class="btn btn-xs" data-quick-prompt="J'ai mal à l'épaule au développé, adapte mon programme pour la protéger">Douleur épaule</button>
-          <button type="button" class="btn btn-xs" data-quick-prompt="Mes séances sont trop longues, passe-moi sur 45 min avec du Rest-Pause / Myo-Reps">Séances 45 min</button>
+          <button type="button" class="btn btn-xs" data-quick-prompt="J'ai mal à l'épaule au développé, remplace les exercices risqués dans mon programme">Douleur épaule</button>
+          <button type="button" class="btn btn-xs" data-quick-prompt="Réinitialise ma nutrition en mode auto (0 kcal d'ajustement EWMA) et vérifie mes macros">Reset nutrition auto</button>
         </div>
 
         <form id="coach-chat-form" class="input-action-row">
-          <input id="coach-input" class="input" type="text" required placeholder="Ex. Passe en PPL + Top Set / Back-off..." ${state.coachBusy ? 'disabled' : ''} />
+          <input id="coach-input" class="input" type="text" required placeholder="Ex. Passe à 2450 kcal P 185g, ou passe en Full Body 3j..." ${state.coachBusy ? 'disabled' : ''} />
           <button type="submit" class="btn btn-primary" ${state.coachBusy ? 'disabled' : ''}>Envoyer</button>
         </form>
       </section>
@@ -3680,7 +3956,7 @@ function renderProfilSubTab(slot) {
       const nextMem = [
         ...(state.profile.coachMemory || []),
         { id: generateId('mem'), category: 'user', text: noteText, createdAt: Date.now() },
-      ].slice(-12);
+      ].slice(-16);
       state.profile = await updateProfile(state.profile.id, { coachMemory: nextMem });
       renderProfilSubTab(slot);
       showToast('Repère mémorisé par le Coach.');
@@ -3692,6 +3968,7 @@ function renderProfilSubTab(slot) {
         const nextMem = (state.profile.coachMemory || []).filter((m) => m.id !== memId);
         state.profile = await updateProfile(state.profile.id, { coachMemory: nextMem });
         renderProfilSubTab(slot);
+        showToast('Repère retiré de la mémoire du Coach.');
       });
     });
 
@@ -3741,6 +4018,34 @@ function renderProfilSubTab(slot) {
       });
     });
 
+    const refreshAllProfileDataFromDB = async () => {
+      const pid = state.profile.id;
+      const today = getTodayISO();
+      const [freshProfile, freshProg, freshBio, freshNutAll, freshHyd, freshMsgs] = await Promise.all([
+        getActiveProfile(),
+        getActiveProgram(pid),
+        listBiometrics(pid),
+        listNutritionLogs(pid),
+        getHydrationForDate(pid, today),
+        listCoachMessages(pid),
+      ]);
+      if (freshProfile && freshProfile.id === pid) {
+        state.profile = freshProfile;
+        state.profiles = await listProfiles();
+      }
+      if (freshProg) state.program = freshProg;
+      state.biometrics = freshBio;
+      state.nutritionAll = freshNutAll;
+      state.nutritionToday = freshNutAll.filter((n) => n.date === today);
+      state.hydration = freshHyd;
+      state.coachMessages = freshMsgs;
+      state.manualKcalOffset = clampAdaptiveAdjustmentKcal(
+        state.profile?.nutritionPrefs?.adaptiveAdjustmentKcal ??
+          state.profile?.nutritionPrefs?.manualKcalOffset ??
+          0
+      );
+    };
+
     const submitCoachQuestion = async (text) => {
       if (!text || state.coachBusy) return;
       state.coachBusy = true;
@@ -3750,41 +4055,28 @@ function renderProfilSubTab(slot) {
         content: m.content,
       }));
 
-      // Analyse déterministe immédiate des retours & souhaits (splits, méthodes, douleurs, durée, deload)
+      // Analyse déterministe de secours (proposition 1-clic & mémoire terrain)
       const { actionProposal, memoryNote } = analyzeCoachFeedbackAndProposeAction(text, state.profile, state.program);
-      if (memoryNote) {
-        const existingMem = Array.isArray(state.profile.coachMemory) ? state.profile.coachMemory : [];
-        if (!existingMem.some((m) => m.text === memoryNote.text)) {
-          const nextMem = [
-            ...existingMem,
-            { id: generateId('mem'), ...memoryNote, createdAt: Date.now() },
-          ].slice(-12);
-          state.profile = await updateProfile(state.profile.id, { coachMemory: nextMem });
-        }
-      }
 
       await addCoachMessage(state.profile.id, { role: 'user', content: text });
       state.coachMessages = await listCoachMessages(state.profile.id);
       renderProfilSubTab(slot);
 
-      const { ewma, adaptive, macros } = getDerivedTelemetry();
+      const telemetry = getDerivedTelemetry();
       const trainingSummary = buildCoachRuntimeContext(state.profile, state.program, state.workouts);
-      const systemPrompt = `Tu es un préparateur physique certifié en biomécanique et nutritionniste sportif. Réponds en français clair, concret et pragmatique.
-Contexte athlète : ${state.profile.name}, ${state.profile.sex}, ${state.profile.age} ans, ${state.profile.heightCm} cm, ${state.profile.weightKg} kg (EWMA ${ewma.latestEwmaKg ?? state.profile.weightKg} kg, tendance ${ewma.weeklyDeltaKg} kg/sem).
-Objectif : ${state.profile.goal} · Split actif : ${trainingSummary.activeSplitLabel} · Méthode active : ${trainingSummary.activeMethodLabel}.
-TDEE estimé : ${adaptive.estimatedTdeeKcal} kcal · Cible : ${macros.kcal} kcal (P ${macros.proteinG}g / G ${macros.carbsG}g / L ${macros.fatG}g).
-Priorités LAG : ${(state.profile.lagPriorities || []).join(', ') || 'aucune'} · Douleurs profil : ${(state.profile.injuries || []).map((i) => `${i.zone}(sev ${i.severity})`).join(', ') || 'aucune'}.
-Retours des 5 dernières séances (${trainingSummary.recentWorkoutsCount} enregistrées, Readiness moyen ${trainingSummary.readinessAvg ?? 'N/A'}/100) :
-- Douleurs en séance : ${trainingSummary.painExercises.join(', ') || 'aucune'}
-- Exercices en zone limite : ${trainingSummary.limitExercises.join(', ') || 'aucun'}
-- Exercices faciles : ${trainingSummary.easyExercises.join(', ') || 'aucun'}
-Mémoire persistante de l'athlète : ${trainingSummary.memoryItems.join(' | ') || 'aucune note'}.
-Splits supportés dans l'appli : Full Body, Upper/Lower, PPL, Hybride UL+PPL, Arnold Split, Split classique.
-Méthodes supportées dans l'appli : Double progression, Pyramidal inversé (RPT), Top Set + Back-off, Pyramidal montant, Rest-Pause / Myo-Reps, Ondulatoire DUP.${
-        actionProposal
-          ? `\nNote : Un bouton 1-clic va s'afficher sous ta réponse pour appliquer automatiquement : ${actionProposal.summary}. Mentionne brièvement l'intérêt biomécanique de cet ajustement.`
-          : ''
-      }`;
+      const systemPrompt = buildAgenticCoachSystemPrompt({
+        profile: state.profile,
+        program: state.program,
+        telemetry,
+        workouts: state.workouts,
+        nutritionToday: state.nutritionToday,
+        hydration: state.hydration,
+        activeSession: state.activeSession,
+      });
+
+      let executedBadges = [];
+      let undoFn = null;
+      let changedModules = [];
 
       try {
         const res = await routeAIRequest({
@@ -3802,19 +4094,93 @@ Méthodes supportées dans l'appli : Double progression, Pyramidal inversé (RPT
           expectJson: false,
         });
 
+        const rawResponse = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+        const parsed = parseCoachActionsResponse(rawResponse);
+        let actionsToExecute = parsed.actions;
+
+        // Repli Niveau 0 déterministe pour les commandes directes sans modèle cloud/Ollama
+        if (actionsToExecute.length === 0 && res.tierUsed === 0) {
+          actionsToExecute = parseTier0DeterministicActions(text, {
+            profile: state.profile,
+            program: state.program,
+            telemetry,
+          });
+        }
+
+        // Si une note mémoire terrain a été détectée et que le modèle n'a pas déjà émis SAVE_COACH_MEMORY
+        if (
+          memoryNote &&
+          !actionsToExecute.some((a) => a.type === 'SAVE_COACH_MEMORY')
+        ) {
+          const existingMem = Array.isArray(state.profile.coachMemory) ? state.profile.coachMemory : [];
+          if (!existingMem.some((m) => m.text === memoryNote.text)) {
+            actionsToExecute = [
+              ...actionsToExecute,
+              { type: 'SAVE_COACH_MEMORY', payload: { text: memoryNote.text, category: memoryNote.category || 'preference' } },
+            ];
+          }
+        }
+
+        if (actionsToExecute.length > 0) {
+          const execResult = await executeCoachActions(actionsToExecute, {
+            profile: state.profile,
+            program: state.program,
+            biometrics: state.biometrics,
+            nutritionToday: state.nutritionToday,
+            todayISO: getTodayISO(),
+            db: {
+              updateProfile,
+              saveProgram,
+              resetBiometricsBaseline,
+              restoreBiometricsForProfile,
+              saveBiometric,
+              saveNutritionLog,
+              deleteNutritionLog,
+            },
+          });
+          executedBadges = execResult.executedBadges;
+          changedModules = execResult.changedModules;
+          undoFn = execResult.undo;
+
+          if (changedModules.includes('program')) {
+            state.activeSession = null;
+            state.selectedDayIdx = 0;
+          }
+        }
+
+        const displayContent =
+          parsed.cleanText ||
+          (executedBadges.length > 0
+            ? 'Modifications enregistrées et appliquées dans votre espace Kinetix Lab.'
+            : rawResponse);
+
         await addCoachMessage(state.profile.id, {
           role: 'assistant',
-          content: typeof res.data === 'string' ? res.data : JSON.stringify(res.data),
+          content: displayContent,
           tierUsed: res.tierUsed,
           provider: res.provider || null,
           fallbackReason: res.usedFallback ? res.fallbackReason : null,
-          actionProposal: actionProposal || null,
+          actionProposal: executedBadges.length === 0 ? actionProposal || null : null,
           actionApplied: false,
+          executedBadges,
         });
       } finally {
         state.coachBusy = false;
-        state.coachMessages = await listCoachMessages(state.profile.id);
-        renderProfilSubTab(slot);
+        await refreshAllProfileDataFromDB();
+        renderApp();
+
+        if (executedBadges.length > 0 && typeof undoFn === 'function') {
+          showToast(`Coach IA : ${executedBadges[0].replace(/^EXÉCUTÉ · /, '')}`, {
+            undoAction: async () => {
+              await undoFn();
+              if (changedModules.includes('program')) {
+                state.activeSession = null;
+              }
+              await refreshAllProfileDataFromDB();
+              renderApp();
+            },
+          });
+        }
       }
     };
 

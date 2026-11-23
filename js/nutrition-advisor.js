@@ -13,7 +13,15 @@
  * - Consultation Conseiller interactive (contexte complet profil + 7j + repli Niveau 0 chiffré)
  */
 
-import { CIQUAL_DB, searchCiqualOffline, scaleFoodMacros } from './nutrition-db.js';
+import {
+  CIQUAL_DB,
+  ADAPTIVE_KCAL_MIN,
+  ADAPTIVE_KCAL_MAX,
+  computeSafeCalorieFloor,
+  getProfileAdaptiveAdjustmentKcal,
+  searchCiqualOffline,
+  scaleFoodMacros,
+} from './nutrition-db.js';
 import { routeAIRequest } from './ai-router.js';
 
 const GOAL_LABELS = Object.freeze({
@@ -221,9 +229,10 @@ export function getActiveSmoothingAdjustment(profile, todayISO = toISODate()) {
   };
 }
 
-export function createThreeDaySmoothingPlan(surplusKcal, currentTargetKcal, todayISO = toISODate()) {
+export function createThreeDaySmoothingPlan(surplusKcal, currentTargetKcal, todayISO = toISODate(), safeFloorKcal = 1500) {
   const safeSurplus = Math.max(150, Math.round(Number(surplusKcal) || 0));
-  const maxSafeDailyReduction = Math.max(80, Math.min(250, Math.round((currentTargetKcal - 1350) * 0.7)));
+  const floor = Math.max(1500, Number(safeFloorKcal) || 1500);
+  const maxSafeDailyReduction = Math.max(60, Math.min(250, Math.round(Math.max(0, currentTargetKcal - floor) * 0.7)));
   const rawDaily = Math.round(safeSurplus / 3 / 10) * 10;
   const dailyReduction = Math.min(maxSafeDailyReduction, Math.max(60, rawDaily));
 
@@ -458,21 +467,47 @@ function buildEwmaTrendAlert({ profile, adaptive, ewma, macros }) {
   const weeklyKg = Number(ewma?.weeklyDeltaKg) || 0;
   const weeklyPct = latestEwma > 0 ? Number(((weeklyKg / latestEwma) * 100).toFixed(2)) : 0;
   const seriesCount = ewma?.series?.length || 0;
+  const safeFloorKcal = macros?.safeFloorKcal || computeSafeCalorieFloor(macros?.bmrKcal);
+  const currentAdj = getProfileAdaptiveAdjustmentKcal(profile);
+
+  // Si les cibles sont verrouillées manuellement ou par le Coach IA, l'EWMA observe sans écraser
+  if (macros?.overrideLocked) {
+    return {
+      severity: 'info',
+      statusLabel: 'CIBLES VERROUILLÉES',
+      weeklyKg,
+      weeklyPct,
+      spanDays: adaptive?.spanDays || 14,
+      headline: `EWMA ${weeklyKg >= 0 ? '+' : ''}${weeklyKg} kg/sem (${weeklyPct >= 0 ? '+' : ''}${weeklyPct} %/sem) · Mode ${macros.overrideSource === 'coach' ? 'Coach IA' : 'Manuel'}`,
+      explanation:
+        'Tes cibles caloriques personnalisées sont verrouillées : l’ajustement automatique EWMA est en pause jusqu’au déverrouillage ou retour en mode Auto.',
+      recommendedDeltaKcal: 0,
+      newTargetKcal: macros.kcal,
+    };
+  }
+
+  const boundedDelta = (desired) => {
+    if (!desired) return 0;
+    if (desired < 0) return Math.max(ADAPTIVE_KCAL_MIN - currentAdj, desired);
+    return Math.min(ADAPTIVE_KCAL_MAX - currentAdj, desired);
+  };
 
   // Priorité à la proposition calibrée du moteur TDEE adaptatif si présente
   if (adaptive?.adjustmentProposal) {
-    const delta = adaptive.adjustmentProposal.deltaKcal;
-    return {
-      severity: 'action',
-      statusLabel: 'AJUSTEMENT RECOMMANDÉ',
-      weeklyKg,
-      weeklyPct,
-      spanDays: adaptive.spanDays || 14,
-      headline: `Tendance EWMA ${weeklyKg >= 0 ? '+' : ''}${weeklyKg} kg/sem (${weeklyPct >= 0 ? '+' : ''}${weeklyPct} %/sem)`,
-      explanation: adaptive.adjustmentProposal.reason,
-      recommendedDeltaKcal: delta,
-      newTargetKcal: Math.max(1300, macros.kcal + delta),
-    };
+    const delta = boundedDelta(adaptive.adjustmentProposal.deltaKcal);
+    if (delta !== 0) {
+      return {
+        severity: 'action',
+        statusLabel: 'AJUSTEMENT RECOMMANDÉ',
+        weeklyKg,
+        weeklyPct,
+        spanDays: adaptive.spanDays || 14,
+        headline: `Tendance EWMA ${weeklyKg >= 0 ? '+' : ''}${weeklyKg} kg/sem (${weeklyPct >= 0 ? '+' : ''}${weeklyPct} %/sem)`,
+        explanation: adaptive.adjustmentProposal.reason,
+        recommendedDeltaKcal: delta,
+        newTargetKcal: Math.max(safeFloorKcal, macros.kcal + delta),
+      };
+    }
   }
 
   if (seriesCount < 4) {
@@ -482,9 +517,9 @@ function buildEwmaTrendAlert({ profile, adaptive, ewma, macros }) {
       weeklyKg,
       weeklyPct,
       spanDays: 0,
-      headline: `${seriesCount}/4 pesées enregistrées (fenêtre 14–21 j)`,
+      headline: `${seriesCount}/4 pesées cohérentes enregistrées (fenêtre 14–21 j)`,
       explanation:
-        'Ajoute des pesées matinales dans Labo & Évolution pour lisser les fluctuations hydriques et déclencher les ajustements automatiques ±100–150 kcal.',
+        'Ajoute des pesées matinales dans Labo & Évolution pour lisser les fluctuations hydriques et déclencher les ajustements automatiques bornés à ±400 kcal.',
       recommendedDeltaKcal: 0,
       newTargetKcal: macros.kcal,
     };
@@ -493,20 +528,24 @@ function buildEwmaTrendAlert({ profile, adaptive, ewma, macros }) {
   // Évaluation vitesse EWMA par objectif même avant 5 jours complets de logs
   if (goal === 'fat_loss') {
     if (weeklyPct > -0.2) {
+      const delta = boundedDelta(-150);
       return {
-        severity: 'action',
-        statusLabel: 'VITESSE TROP LENTE',
+        severity: delta !== 0 ? 'action' : 'info',
+        statusLabel: delta !== 0 ? 'VITESSE TROP LENTE' : 'PLAFOND AJUSTEMENT ATTEINT',
         weeklyKg,
         weeklyPct,
         spanDays: adaptive?.spanDays || 14,
         headline: `EWMA ${weeklyKg >= 0 ? '+' : ''}${weeklyKg} kg/sem (${weeklyPct} %/sem) · Cible : -0,4 à -0,8 %/sem`,
         explanation:
-          'La tendance pondérale stagne malgré le déficit théorique. Réduire de 150 kcal/j (ou +1 500 pas/j) relancera la perte sans sacrifier la masse maigre.',
-        recommendedDeltaKcal: -150,
-        newTargetKcal: Math.max(1300, macros.kcal - 150),
+          delta !== 0
+            ? `La tendance pondérale stagne malgré le déficit théorique. Réduire de ${Math.abs(delta)} kcal/j (ou +1 500 pas/j) relancera la perte sans sacrifier la masse maigre.`
+            : 'Ajustement adaptatif déjà au plancher sécuritaire (-400 kcal). Vérifie la pesée des aliments ou augmente les pas quotidiens.',
+        recommendedDeltaKcal: delta,
+        newTargetKcal: Math.max(safeFloorKcal, macros.kcal + delta),
       };
     }
     if (weeklyPct < -1.05) {
+      const delta = boundedDelta(+125);
       return {
         severity: 'danger',
         statusLabel: 'PERTE TROP RAPIDE',
@@ -515,9 +554,9 @@ function buildEwmaTrendAlert({ profile, adaptive, ewma, macros }) {
         spanDays: adaptive?.spanDays || 14,
         headline: `EWMA ${weeklyKg} kg/sem (${weeklyPct} %/sem) · Risque catabolique`,
         explanation:
-          'Rythme supérieur à 1 %/semaine : remonter de +125 kcal/j en glucides péri-séance protège les performances et les tissus.',
-        recommendedDeltaKcal: +125,
-        newTargetKcal: macros.kcal + 125,
+          'Rythme supérieur à 1 %/semaine : remonter les glucides péri-séance protège les performances et les tissus.',
+        recommendedDeltaKcal: delta,
+        newTargetKcal: macros.kcal + delta,
       };
     }
     return {
@@ -535,29 +574,37 @@ function buildEwmaTrendAlert({ profile, adaptive, ewma, macros }) {
 
   if (goal === 'lean_bulk' || goal === 'hypertrophy') {
     if (weeklyPct < 0.1) {
+      const delta = boundedDelta(+150);
       return {
-        severity: 'action',
-        statusLabel: 'SURPLUS INSUFFISANT',
+        severity: delta !== 0 ? 'action' : 'info',
+        statusLabel: delta !== 0 ? 'SURPLUS INSUFFISANT' : 'PLAFOND AJUSTEMENT ATTEINT',
         weeklyKg,
         weeklyPct,
         spanDays: adaptive?.spanDays || 14,
         headline: `EWMA ${weeklyKg >= 0 ? '+' : ''}${weeklyKg} kg/sem (${weeklyPct} %/sem) · Cible : +0,2 à +0,4 %/sem`,
-        explanation: 'La prise de masse stagne : ajoute +150 kcal/j principalement en glucides digestes autour des séances.',
-        recommendedDeltaKcal: +150,
-        newTargetKcal: macros.kcal + 150,
+        explanation:
+          delta !== 0
+            ? `La prise de masse stagne : ajoute +${delta} kcal/j principalement en glucides digestes autour des séances.`
+            : 'Ajustement adaptatif déjà au plafond sécuritaire (+400 kcal). Réévalue ton profil ou utilise la surcharge manuelle.',
+        recommendedDeltaKcal: delta,
+        newTargetKcal: macros.kcal + delta,
       };
     }
     if (weeklyPct > 0.5) {
+      const delta = boundedDelta(-100);
       return {
-        severity: 'action',
+        severity: delta !== 0 ? 'action' : 'info',
         statusLabel: 'PRISE TROP RAPIDE',
         weeklyKg,
         weeklyPct,
         spanDays: adaptive?.spanDays || 14,
         headline: `EWMA +${weeklyKg} kg/sem (+${weeklyPct} %/sem) · Excès adipeux probable`,
-        explanation: 'Réduis légèrement de -100 kcal/j pour maximiser le ratio muscle/gras sur la durée du mésocycle.',
-        recommendedDeltaKcal: -100,
-        newTargetKcal: Math.max(1300, macros.kcal - 100),
+        explanation:
+          delta !== 0
+            ? `Réduis légèrement de ${delta} kcal/j pour maximiser le ratio muscle/gras sur la durée du mésocycle.`
+            : 'Ajustement déjà au plancher (-400 kcal). Contrôle la précision de ton suivi.',
+        recommendedDeltaKcal: delta,
+        newTargetKcal: Math.max(safeFloorKcal, macros.kcal + delta),
       };
     }
     return {
@@ -575,17 +622,20 @@ function buildEwmaTrendAlert({ profile, adaptive, ewma, macros }) {
 
   // Recomp / Strength / Health
   if (Math.abs(weeklyPct) > 0.45) {
-    const delta = weeklyPct > 0 ? -120 : +120;
+    const delta = boundedDelta(weeklyPct > 0 ? -120 : +120);
     return {
-      severity: 'action',
+      severity: delta !== 0 ? 'action' : 'info',
       statusLabel: 'DÉRIVE PONDÉRALE',
       weeklyKg,
       weeklyPct,
       spanDays: adaptive?.spanDays || 14,
       headline: `EWMA ${weeklyKg >= 0 ? '+' : ''}${weeklyKg} kg/sem (${weeklyPct >= 0 ? '+' : ''}${weeklyPct} %/sem)`,
-      explanation: `Pour une ${GOAL_LABELS[goal] || 'recomposition'} stable, réajuste de ${delta > 0 ? '+' : ''}${delta} kcal/j afin de stabiliser la tendance.`,
+      explanation:
+        delta !== 0
+          ? `Pour une ${GOAL_LABELS[goal] || 'recomposition'} stable, réajuste de ${delta > 0 ? '+' : ''}${delta} kcal/j afin de stabiliser la tendance.`
+          : 'Plafond d’ajustement adaptatif atteint (±400 kcal). Réinitialise l’EWMA si ton poids de référence a changé.',
       recommendedDeltaKcal: delta,
-      newTargetKcal: Math.max(1300, macros.kcal + delta),
+      newTargetKcal: Math.max(safeFloorKcal, macros.kcal + delta),
     };
   }
 
@@ -866,7 +916,7 @@ export function buildEndOfDayRecalibration({ profile, macros, consumed, favorite
   }
 
   const smoothingProposal =
-    surplusKcal >= 220 ? createThreeDaySmoothingPlan(surplusKcal, macros.kcal, todayISO) : null;
+    surplusKcal >= 220 ? createThreeDaySmoothingPlan(surplusKcal, macros.kcal, todayISO, macros.safeFloorKcal) : null;
 
   return {
     situationCode,

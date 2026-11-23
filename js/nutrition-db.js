@@ -308,16 +308,85 @@ export function computeBMR(profile, bodyFatPct = null) {
 }
 
 /* ==========================================================================
-   4. POIDS LISSÉ (EWMA) & TDEE AUTO-ADAPTATIF (FENÊTRE 14–21 JOURS)
+   4. POIDS LISSÉ (EWMA), GARDE-FOUS DÉRIVE & TDEE AUTO-ADAPTATIF (14–21 J)
    ========================================================================== */
 
-export function computeEWMASeries(biometrics = [], alpha = 0.2) {
-  const valid = [...(biometrics || [])]
-    .filter((b) => typeof b.weightKg === 'number' && b.weightKg > 25)
+export const ADAPTIVE_KCAL_MIN = -400;
+export const ADAPTIVE_KCAL_MAX = 400;
+export const EWMA_MAX_CONSECUTIVE_JUMP_KG = 2.5;
+
+export function clampAdaptiveAdjustmentKcal(value) {
+  const n = Math.round(Number(value) || 0);
+  return Math.max(ADAPTIVE_KCAL_MIN, Math.min(ADAPTIVE_KCAL_MAX, n));
+}
+
+/**
+ * Vérifie une valeur persistée d'ajustement adaptatif :
+ * si elle est hors-bornes (< -400 ou > +400, ex. bug historique -2280 kcal),
+ * elle est automatiquement réinitialisée à 0 pour débloquer le profil.
+ */
+export function sanitizeStoredAdaptiveAdjustmentKcal(rawValue) {
+  const n = Number(rawValue);
+  if (!Number.isFinite(n)) {
+    return { value: 0, wasCorrupted: false };
+  }
+  if (n < ADAPTIVE_KCAL_MIN || n > ADAPTIVE_KCAL_MAX) {
+    return { value: 0, wasCorrupted: true, previousValue: Math.round(n) };
+  }
+  return { value: Math.round(n), wasCorrupted: false };
+}
+
+export function getProfileAdaptiveAdjustmentKcal(profile) {
+  const prefs = profile?.nutritionPrefs || {};
+  const raw =
+    prefs.adaptiveAdjustmentKcal !== undefined && prefs.adaptiveAdjustmentKcal !== null
+      ? prefs.adaptiveAdjustmentKcal
+      : prefs.manualKcalOffset;
+  return sanitizeStoredAdaptiveAdjustmentKcal(raw).value;
+}
+
+export function computeSafeCalorieFloor(bmrKcal) {
+  const bmr = Number(bmrKcal) || 1750;
+  return Math.max(1500, Math.round(bmr * 0.85));
+}
+
+export function computeEWMASeries(biometrics = [], alpha = 0.2, { baselineDate = null, maxJumpKg = EWMA_MAX_CONSECUTIVE_JUMP_KG } = {}) {
+  const sorted = [...(biometrics || [])]
+    .filter((b) => typeof b?.weightKg === 'number' && Number.isFinite(b.weightKg) && b.weightKg > 25 && b.weightKg < 300)
+    .filter((b) => !baselineDate || !b.date || b.date >= baselineDate)
     .sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.timestamp || 0) - (b.timestamp || 0));
 
+  // Si un point "baseline_reset" explicite existe dans la série, on démarre proprement à partir du dernier reset
+  let startIdx = 0;
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    if (sorted[i].source === 'baseline_reset') {
+      startIdx = i;
+      break;
+    }
+  }
+  const activeCandidates = sorted.slice(startIdx);
+
+  // Garde-fou dérive pondérale : filtre les sauts aberrants (> 2,5 kg entre deux pesées consécutives)
+  const accepted = [];
+  const skippedOutliers = [];
+  let prevWeight = null;
+
+  for (const entry of activeCandidates) {
+    if (prevWeight !== null && Math.abs(entry.weightKg - prevWeight) > maxJumpKg) {
+      skippedOutliers.push({
+        date: entry.date,
+        weightKg: entry.weightKg,
+        prevWeightKg: prevWeight,
+        deltaKg: Number((entry.weightKg - prevWeight).toFixed(2)),
+      });
+      continue;
+    }
+    accepted.push(entry);
+    prevWeight = entry.weightKg;
+  }
+
   let ewma = null;
-  const series = valid.map((entry) => {
+  const series = accepted.map((entry) => {
     ewma = ewma === null ? entry.weightKg : alpha * entry.weightKg + (1 - alpha) * ewma;
     return {
       ...entry,
@@ -331,15 +400,25 @@ export function computeEWMASeries(biometrics = [], alpha = 0.2) {
   if (series.length >= 2) {
     const lookbackIdx = Math.max(0, series.length - Math.min(series.length, 8));
     const ref = series[lookbackIdx];
-    const daysDiff = Math.max(
-      1,
-      (new Date(latest.date).getTime() - new Date(ref.date).getTime()) / (24 * 60 * 60 * 1000)
-    );
-    weeklyDeltaKg = Number((((latest.ewmaWeightKg - ref.ewmaWeightKg) / daysDiff) * 7).toFixed(2));
+    const latestTs = new Date(latest.date).getTime();
+    const refTs = new Date(ref.date).getTime();
+    const daysDiff = Number.isFinite(latestTs) && Number.isFinite(refTs)
+      ? Math.max(0, (latestTs - refTs) / (24 * 60 * 60 * 1000))
+      : 0;
+
+    // Évite l'extrapolation ×7 absurde sur un écart de 0–2 jours
+    const rawWeekly =
+      daysDiff >= 3
+        ? ((latest.ewmaWeightKg - ref.ewmaWeightKg) / daysDiff) * 7
+        : latest.ewmaWeightKg - ref.ewmaWeightKg;
+
+    // Plafond de sécurité physiologique absolu sur la vitesse hebdo lissée
+    weeklyDeltaKg = Number(Math.max(-2.5, Math.min(2.5, rawWeekly)).toFixed(2));
   }
 
   return {
     series,
+    skippedOutliers,
     latestRawKg: latest?.weightKg ?? null,
     latestEwmaKg: latest?.ewmaWeightKg ?? null,
     weeklyDeltaKg,
@@ -359,7 +438,9 @@ export function computeBaselineTDEE(profile, bodyFatPct = null) {
 
 export function computeAdaptiveTDEE({ biometrics = [], nutritionLogs = [], profile, bodyFatPct = null, windowDays = 14 }) {
   const baseline = computeBaselineTDEE(profile, bodyFatPct);
-  const ewmaInfo = computeEWMASeries(biometrics);
+  const baselineDate = profile?.nutritionPrefs?.ewmaBaselineDate || null;
+  const ewmaInfo = computeEWMASeries(biometrics, 0.2, { baselineDate });
+  const overrideLocked = Boolean(profile?.nutritionPrefs?.nutritionOverride?.enabled && profile?.nutritionPrefs?.nutritionOverride?.locked);
 
   if (ewmaInfo.series.length < 4) {
     return {
@@ -370,7 +451,8 @@ export function computeAdaptiveTDEE({ biometrics = [], nutritionLogs = [], profi
       ewmaDeltaKg: 0,
       avgLoggedKcal: null,
       adjustmentProposal: null,
-      note: 'Enregistrez au moins 4 pesées et 7 jours de calories pour activer le calcul TDEE adaptatif.',
+      skippedOutliersCount: ewmaInfo.skippedOutliers.length,
+      note: 'Enregistrez au moins 4 pesées cohérentes et 5 jours de calories pour activer le calcul TDEE adaptatif.',
     };
   }
 
@@ -387,6 +469,7 @@ export function computeAdaptiveTDEE({ biometrics = [], nutritionLogs = [], profi
       ewmaDeltaKg: 0,
       avgLoggedKcal: null,
       adjustmentProposal: null,
+      skippedOutliersCount: ewmaInfo.skippedOutliers.length,
       note: 'Fenêtre de pesées insuffisante sur les 14–21 derniers jours.',
     };
   }
@@ -395,6 +478,7 @@ export function computeAdaptiveTDEE({ biometrics = [], nutritionLogs = [], profi
   const dailyKcalMap = new Map();
   for (const log of nutritionLogs || []) {
     if (!log.date) continue;
+    if (baselineDate && log.date < baselineDate) continue;
     const ts = new Date(log.date).getTime();
     if (ts >= cutoffTs && ts <= latestDate.getTime()) {
       dailyKcalMap.set(log.date, (dailyKcalMap.get(log.date) || 0) + (Number(log.kcal) || 0));
@@ -411,6 +495,7 @@ export function computeAdaptiveTDEE({ biometrics = [], nutritionLogs = [], profi
       ewmaDeltaKg: Number((windowWeights[windowWeights.length - 1].ewmaWeightKg - windowWeights[0].ewmaWeightKg).toFixed(2)),
       avgLoggedKcal: loggedDays.length ? Math.round(loggedDays.reduce((a, b) => a + b, 0) / loggedDays.length) : null,
       adjustmentProposal: null,
+      skippedOutliersCount: ewmaInfo.skippedOutliers.length,
       note: `${loggedDays.length}/5 jours caloriques complets : continuez la saisie pour calibrer votre TDEE réel.`,
     };
   }
@@ -433,31 +518,46 @@ export function computeAdaptiveTDEE({ biometrics = [], nutritionLogs = [], profi
   );
 
   const weeklyRatePct = ((ewmaDeltaKg / spanDays) * 7) / Math.max(35, last.ewmaWeightKg) * 100;
+  const currentAdaptiveAdj = getProfileAdaptiveAdjustmentKcal(profile);
   let adjustmentProposal = null;
 
-  if (profile?.goal === 'fat_loss') {
-    if (weeklyRatePct > -0.25) {
-      adjustmentProposal = {
-        deltaKcal: -150,
-        reason: `Plateau détecté (tendance EWMA ${ewmaDeltaKg >= 0 ? '+' : ''}${ewmaDeltaKg} kg sur ${spanDays} j) : réduire de 150 kcal/j.`,
-      };
-    } else if (weeklyRatePct < -1.1) {
-      adjustmentProposal = {
-        deltaKcal: +125,
-        reason: `Perte trop rapide (${weeklyRatePct.toFixed(2)} %/sem) : remonter de +125 kcal/j pour préserver la masse musculaire.`,
-      };
-    }
-  } else if (profile?.goal === 'lean_bulk' || profile?.goal === 'hypertrophy') {
-    if (weeklyRatePct < 0.1) {
-      adjustmentProposal = {
-        deltaKcal: +150,
-        reason: `Prise de poids insuffisante (${ewmaDeltaKg} kg sur ${spanDays} j) : ajouter +150 kcal/j (glucides péri-séance).`,
-      };
-    } else if (weeklyRatePct > 0.55) {
-      adjustmentProposal = {
-        deltaKcal: -100,
-        reason: `Prise trop rapide (${weeklyRatePct.toFixed(2)} %/sem) : ajuster de -100 kcal/j pour limiter le gras.`,
-      };
+  if (!overrideLocked) {
+    if (profile?.goal === 'fat_loss') {
+      if (weeklyRatePct > -0.25 && currentAdaptiveAdj > ADAPTIVE_KCAL_MIN) {
+        const delta = Math.max(ADAPTIVE_KCAL_MIN - currentAdaptiveAdj, -150);
+        if (delta !== 0) {
+          adjustmentProposal = {
+            deltaKcal: delta,
+            reason: `Plateau détecté (tendance EWMA ${ewmaDeltaKg >= 0 ? '+' : ''}${ewmaDeltaKg} kg sur ${spanDays} j) : réduire de ${Math.abs(delta)} kcal/j.`,
+          };
+        }
+      } else if (weeklyRatePct < -1.1 && currentAdaptiveAdj < ADAPTIVE_KCAL_MAX) {
+        const delta = Math.min(ADAPTIVE_KCAL_MAX - currentAdaptiveAdj, +125);
+        if (delta !== 0) {
+          adjustmentProposal = {
+            deltaKcal: delta,
+            reason: `Perte trop rapide (${weeklyRatePct.toFixed(2)} %/sem) : remonter de +${delta} kcal/j pour préserver la masse musculaire.`,
+          };
+        }
+      }
+    } else if (profile?.goal === 'lean_bulk' || profile?.goal === 'hypertrophy') {
+      if (weeklyRatePct < 0.1 && currentAdaptiveAdj < ADAPTIVE_KCAL_MAX) {
+        const delta = Math.min(ADAPTIVE_KCAL_MAX - currentAdaptiveAdj, +150);
+        if (delta !== 0) {
+          adjustmentProposal = {
+            deltaKcal: delta,
+            reason: `Prise de poids insuffisante (${ewmaDeltaKg} kg sur ${spanDays} j) : ajouter +${delta} kcal/j (glucides péri-séance).`,
+          };
+        }
+      } else if (weeklyRatePct > 0.55 && currentAdaptiveAdj > ADAPTIVE_KCAL_MIN) {
+        const delta = Math.max(ADAPTIVE_KCAL_MIN - currentAdaptiveAdj, -100);
+        if (delta !== 0) {
+          adjustmentProposal = {
+            deltaKcal: delta,
+            reason: `Prise trop rapide (${weeklyRatePct.toFixed(2)} %/sem) : ajuster de ${delta} kcal/j pour limiter le gras.`,
+          };
+        }
+      }
     }
   }
 
@@ -471,19 +571,152 @@ export function computeAdaptiveTDEE({ biometrics = [], nutritionLogs = [], profi
     avgLoggedKcal,
     estimatedTdeeKcal,
     adjustmentProposal,
+    skippedOutliersCount: ewmaInfo.skippedOutliers.length,
     note: `TDEE réel calibré sur ${loggedDays.length} jours d’apports et tendance EWMA (${spanDays} j).`,
   };
 }
 
 /* ==========================================================================
-   5. CIBLES MACROS & HYDRATATION (PROTÉINES SUR MASSE MAIGRE + PLANCHER LIPIDES)
+   5. CIBLES MACROS & HYDRATATION COHÉRENTES (MASSE MAIGRE + PLANCHER SÛR)
    ========================================================================== */
 
-export function calculateMacroTargets(profile, { bodyFatPct = null, adaptiveTdeeKcal = null, manualKcalOffset = 0 } = {}) {
+export function computeCoherentMacrosForCalories(targetKcal, { leanMassKg = 62, goal = 'recomp', proteinOverride = null, fatOverride = null, carbsOverride = null } = {}) {
+  const safeKcal = Math.max(1200, Math.round(Number(targetKcal) || 2000));
+  const lbm = Math.max(35, Number(leanMassKg) || 62);
+
+  // Protéines sur masse maigre (2.0 à 2.3 g/kg LBM), plafonnées entre 130 g et 210 g
+  const proteinPerKgLbm = goal === 'fat_loss' || goal === 'recomp' ? 2.2 : 2.05;
+  let proteinG =
+    proteinOverride !== null && proteinOverride !== undefined && Number(proteinOverride) > 0
+      ? Math.round(Number(proteinOverride))
+      : Math.max(130, Math.min(210, Math.round(lbm * proteinPerKgLbm)));
+
+  // Plancher lipidique sain sur masse maigre (0.8 à 1.0 g/kg LBM, ~60-85 g)
+  const fatPerKgLbm = goal === 'fat_loss' ? 0.85 : 0.95;
+  let fatG =
+    fatOverride !== null && fatOverride !== undefined && Number(fatOverride) > 0
+      ? Math.round(Number(fatOverride))
+      : Math.max(55, Math.min(88, Math.round(lbm * fatPerKgLbm)));
+
+  // Si les 3 macros ont été explicitement fournies par l'utilisateur/Coach, on recalcule kcal si incohérent ou on garde la cohérence exacte
+  if (
+    proteinOverride !== null &&
+    proteinOverride !== undefined &&
+    fatOverride !== null &&
+    fatOverride !== undefined &&
+    carbsOverride !== null &&
+    carbsOverride !== undefined
+  ) {
+    const carbsG = Math.max(0, Math.round(Number(carbsOverride) || 0));
+    const computedKcal = proteinG * 4 + carbsG * 4 + fatG * 9;
+    return {
+      kcal: Math.abs(computedKcal - safeKcal) <= 15 ? safeKcal : computedKcal,
+      proteinG,
+      carbsG,
+      fatG,
+    };
+  }
+
+  // Assure qu'il reste au moins 160 kcal (40 g) pour les glucides si budget calorique très bas
+  let remainingKcal = safeKcal - proteinG * 4 - fatG * 9;
+  if (remainingKcal < 160) {
+    if (fatOverride === null || fatOverride === undefined) {
+      const fatNeeded = Math.ceil((160 - remainingKcal) / 9);
+      fatG = Math.max(45, fatG - fatNeeded);
+      remainingKcal = safeKcal - proteinG * 4 - fatG * 9;
+    }
+    if (remainingKcal < 160 && (proteinOverride === null || proteinOverride === undefined)) {
+      const protNeeded = Math.ceil((160 - remainingKcal) / 4);
+      proteinG = Math.max(115, proteinG - protNeeded);
+      remainingKcal = safeKcal - proteinG * 4 - fatG * 9;
+    }
+  }
+
+  let carbsG =
+    carbsOverride !== null && carbsOverride !== undefined && Number(carbsOverride) >= 0
+      ? Math.round(Number(carbsOverride))
+      : Math.max(0, Math.round(remainingKcal / 4));
+
+  // Garantit mathématiquement |4*P + 4*G + 9*L - targetKcal| <= 15 kcal
+  const macroSumKcal = proteinG * 4 + carbsG * 4 + fatG * 9;
+  const diff = safeKcal - macroSumKcal;
+  if (Math.abs(diff) > 15) {
+    if (carbsOverride === null || carbsOverride === undefined) {
+      carbsG = Math.max(0, carbsG + Math.round(diff / 4));
+    } else {
+      return {
+        kcal: macroSumKcal,
+        proteinG,
+        carbsG,
+        fatG,
+      };
+    }
+  }
+
+  return {
+    kcal: safeKcal,
+    proteinG,
+    carbsG,
+    fatG,
+  };
+}
+
+export function calculateMacroTargets(
+  profile,
+  { bodyFatPct = null, adaptiveTdeeKcal = null, manualKcalOffset = null, adaptiveAdjustmentKcal = null, smoothingDeltaKcal = 0 } = {}
+) {
   const base = computeBaselineTDEE(profile, bodyFatPct);
   const tdee = Number(adaptiveTdeeKcal) || base.tdeeKcal;
   const weight = Number(profile?.weightKg) || 75;
   const lbm = base.leanMassKg;
+  const safeFloorKcal = computeSafeCalorieFloor(base.bmrKcal);
+
+  // Hydratation par défaut réaliste (2500 à 3500 ml/j selon poids & activité, surchargeable)
+  const neatMl = profile?.lifestyle?.neatLevel === 'active' ? 500 : profile?.lifestyle?.neatLevel === 'mixed' ? 250 : 100;
+  const defaultWaterMl = Math.max(2500, Math.min(3500, Math.round((weight * 33 + neatMl) / 50) * 50));
+
+  const rawAdj =
+    adaptiveAdjustmentKcal !== null && adaptiveAdjustmentKcal !== undefined
+      ? adaptiveAdjustmentKcal
+      : manualKcalOffset !== null && manualKcalOffset !== undefined
+        ? manualKcalOffset
+        : getProfileAdaptiveAdjustmentKcal(profile);
+  const clampedAdaptiveAdj = clampAdaptiveAdjustmentKcal(rawAdj);
+  const safeSmoothing = Math.max(-250, Math.min(0, Math.round(Number(smoothingDeltaKcal) || 0)));
+
+  // Mode Surcharge Manuelle / Coach IA active
+  const override = profile?.nutritionPrefs?.nutritionOverride;
+  if (override?.enabled && Number(override.kcal) > 0) {
+    const coherent = computeCoherentMacrosForCalories(override.kcal, {
+      leanMassKg: lbm,
+      goal: profile?.goal,
+      proteinOverride: override.proteinG ?? null,
+      fatOverride: override.fatG ?? null,
+      carbsOverride: override.carbsG ?? null,
+    });
+    const waterTargetMl =
+      Number(override.waterTargetMl) >= 1200
+        ? Math.min(6000, Math.round(Number(override.waterTargetMl) / 50) * 50)
+        : defaultWaterMl;
+
+    return {
+      tdeeKcal: tdee,
+      bmrKcal: base.bmrKcal,
+      safeFloorKcal,
+      formula: base.formula,
+      leanMassKg: lbm,
+      kcal: coherent.kcal,
+      proteinG: coherent.proteinG,
+      carbsG: coherent.carbsG,
+      fatG: coherent.fatG,
+      fiberG: Math.max(25, Math.round((coherent.kcal / 1000) * 14)),
+      waterTargetMl,
+      adaptiveAdjustmentKcal: clampedAdaptiveAdj,
+      isOverride: true,
+      overrideLocked: Boolean(override.locked),
+      overrideSource: override.source || 'manual',
+    };
+  }
 
   const goalOffsets = {
     recomp: -100,
@@ -495,37 +728,31 @@ export function calculateMacroTargets(profile, { bodyFatPct = null, adaptiveTdee
   };
 
   const targetKcal = Math.max(
-    1300,
-    Math.round(tdee + (goalOffsets[profile?.goal] ?? 0) + (Number(manualKcalOffset) || 0))
+    safeFloorKcal,
+    Math.round(tdee + (goalOffsets[profile?.goal] ?? 0) + clampedAdaptiveAdj + safeSmoothing)
   );
 
-  // Protéines indexées sur la masse maigre (2.0 à 2.3 g/kg LBM)
-  const proteinPerKgLbm = profile?.goal === 'fat_loss' || profile?.goal === 'recomp' ? 2.25 : 2.05;
-  const proteinG = Math.round(lbm * proteinPerKgLbm);
-
-  // Plancher lipidique hormonal garanti (>= 0.8 g/kg poids corporel et >= 23 % des kcal)
-  const fatFloorByWeight = Math.round(weight * 0.8);
-  const fatFloorByPct = Math.round((targetKcal * 0.24) / 9);
-  const fatG = Math.max(45, fatFloorByWeight, fatFloorByPct);
-
-  const remainingKcal = Math.max(120, targetKcal - proteinG * 4 - fatG * 9);
-  const carbsG = Math.round(remainingKcal / 4);
-
-  // Hydratation indexée au poids et à l'activité (35 ml/kg + bonus activité/séance)
-  const neatMl = profile?.lifestyle?.neatLevel === 'active' ? 600 : profile?.lifestyle?.neatLevel === 'mixed' ? 350 : 150;
-  const waterTargetMl = Math.round((weight * 35 + neatMl) / 50) * 50;
+  const coherent = computeCoherentMacrosForCalories(targetKcal, {
+    leanMassKg: lbm,
+    goal: profile?.goal,
+  });
 
   return {
     tdeeKcal: tdee,
     bmrKcal: base.bmrKcal,
+    safeFloorKcal,
     formula: base.formula,
     leanMassKg: lbm,
-    kcal: targetKcal,
-    proteinG,
-    carbsG,
-    fatG,
-    fiberG: Math.max(25, Math.round((targetKcal / 1000) * 14)),
-    waterTargetMl,
+    kcal: coherent.kcal,
+    proteinG: coherent.proteinG,
+    carbsG: coherent.carbsG,
+    fatG: coherent.fatG,
+    fiberG: Math.max(25, Math.round((coherent.kcal / 1000) * 14)),
+    waterTargetMl: defaultWaterMl,
+    adaptiveAdjustmentKcal: clampedAdaptiveAdj,
+    isOverride: false,
+    overrideLocked: false,
+    overrideSource: null,
   };
 }
 
