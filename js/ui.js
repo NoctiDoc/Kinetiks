@@ -107,6 +107,7 @@ import {
   PHOTO_ANGLES,
   PhysiqueCameraController,
   compressPhysiqueImage,
+  compressVisionPhoto,
   mountBeforeAfterSlider,
   runDualPhysiqueAnalysis,
   drawPoseLandmarksOverlay,
@@ -128,6 +129,10 @@ import {
   computeCoherentMacrosForCalories,
   clampAdaptiveAdjustmentKcal,
   sanitizeStoredAdaptiveAdjustmentKcal,
+  HIDDEN_FAT_SHORTCUTS,
+  scaleMealIngredientGrams,
+  createMealIngredientFromFood,
+  computeMealIngredientsTotals,
   analyzeMealPhoto,
   extractScaleMetricsOCR,
   generateMealPlanAndShoppingList,
@@ -148,6 +153,9 @@ import {
   parseCoachActionsResponse,
   parseTier0DeterministicActions,
   executeCoachActions,
+  buildPhotoUpdateProposal,
+  buildLaboProfileProposal,
+  compileSelectedProposalActions,
 } from './coach-actions.js';
 
 import {
@@ -213,6 +221,9 @@ const state = {
   foodOffTimer: null,
   aiAutosaveTimer: null,
   lastMealVisionResult: null,
+  mealPhotoHint: '',
+  mealPhotoDataUrl: null,
+  mealPhotoPortionMult: 1,
   barcodeScanner: null,
   advisorDayMode: 'auto', // 'auto' | 'training' | 'rest'
   advisorMatrixTab: 'prioritize', // 'prioritize' | 'moderate' | 'avoid'
@@ -233,6 +244,7 @@ const state = {
   showApiKey: false,
   lastProbeResult: null,
   coachBusy: false,
+  coachPendingPhoto: null,
   lastShareResult: null,
 };
 
@@ -2155,18 +2167,46 @@ function renderNutritionSubTab(slot, telemetry) {
               ? `<p class="panel-subtitle">Aucun repas enregistré aujourd’hui.</p>`
               : `<div class="stack-sm">
                   ${state.nutritionToday
-                    .map(
-                      (log) => `
-                    <div class="row-between" style="padding: 8px 0; border-bottom: 1px solid var(--border-hairline);">
-                      <div class="stack-sm" style="gap: 2px;">
-                        <strong>${esc(log.label)}</strong>
-                        <span class="meta-inline mono">
-                          ${esc(log.mealSlot || 'Repas')} · ${log.kcal} kcal · P ${log.proteinG}g / G ${log.carbsG}g / L ${log.fatG}g${log.fiberG ? ` · F ${log.fiberG}g` : ''}
-                        </span>
+                    .map((log) => {
+                      const ingList =
+                        Array.isArray(log.ingredients) && log.ingredients.length > 0
+                          ? log.ingredients
+                          : Array.isArray(log.items) && log.items.length > 0
+                            ? log.items
+                            : [];
+                      return `
+                    <div class="meal-journal-row">
+                      <div class="row-between">
+                        <div class="stack-sm" style="gap: 2px;">
+                          <strong>${esc(log.label)}</strong>
+                          <span class="meta-inline mono">
+                            ${esc(log.mealSlot || 'Repas')} · ${log.kcal} kcal · P ${log.proteinG}g / G ${log.carbsG}g / L ${log.fatG}g${log.fiberG ? ` · F ${log.fiberG}g` : ''}
+                          </span>
+                        </div>
+                        <button type="button" class="btn btn-sm btn-danger" data-del-nut="${esc(log.id)}">Suppr.</button>
                       </div>
-                      <button type="button" class="btn btn-sm btn-danger" data-del-nut="${esc(log.id)}">Suppr.</button>
-                    </div>`
-                    )
+                      ${
+                        ingList.length > 0
+                          ? `<details class="meal-journal-details">
+                              <summary class="meta-inline mono" style="cursor: pointer;">Détail (${ingList.length} ingrédient${ingList.length > 1 ? 's' : ''})</summary>
+                              <div class="meal-journal-ing-list">
+                                ${ingList
+                                  .map((ing) => {
+                                    const pVal = ing.protein ?? ing.protein_g ?? 0;
+                                    const cVal = ing.carbs ?? ing.carbs_g ?? 0;
+                                    const fVal = ing.fat ?? ing.fat_g ?? 0;
+                                    return `<div class="row-between">
+                                      <span>${esc(ing.name)}${ing.state ? ` <span class="text-muted">(${esc(ing.state)})</span>` : ''}</span>
+                                      <span class="mono">${Math.round(Number(ing.grams) || 0)} g · ${Math.round(Number(ing.kcal) || 0)} kcal · P${pVal}/G${cVal}/L${fVal}</span>
+                                    </div>`;
+                                  })
+                                  .join('')}
+                              </div>
+                            </details>`
+                          : ''
+                      }
+                    </div>`;
+                    })
                     .join('')}
                 </div>`
           }
@@ -2213,7 +2253,7 @@ function renderNutritionSubTab(slot, telemetry) {
       });
     });
 
-    renderNutritionInputMode(document.getElementById('nutrition-input-slot'), macros);
+    renderNutritionInputMode(document.getElementById('nutrition-input-slot'), macros, consumed);
     return;
   }
 
@@ -3061,7 +3101,7 @@ function openAIFoodEstimateModal(foodQuery, onDone = null) {
   );
 }
 
-function renderNutritionInputMode(slot, macros) {
+function renderNutritionInputMode(slot, macros, consumed = null) {
   if (!slot) return;
 
   // Annule toute requête OFF en cours lors d'un changement de mode
@@ -3482,6 +3522,8 @@ function renderNutritionInputMode(slot, macros) {
           proteinG: fav.proteinG,
           carbsG: fav.carbsG,
           fatG: fav.fatG,
+          fiberG: fav.fiberG || 0,
+          ingredients: Array.isArray(fav.ingredients) ? fav.ingredients : undefined,
         });
         state.nutritionAll = await listNutritionLogs(state.profile.id);
         state.nutritionToday = state.nutritionAll.filter((n) => n.date === getTodayISO());
@@ -3534,22 +3576,52 @@ function renderNutritionInputMode(slot, macros) {
 
   if (state.nutritionInputMode === 'photo') {
     const res = state.lastMealVisionResult;
+    const d = res?.data || null;
+    if (d && !Array.isArray(d.ingredients)) {
+      d.ingredients = Array.isArray(d.items) ? d.items : [];
+    }
+    const confCode = String(d?.confidence || 'medium').toLowerCase();
+    const confLabel = confCode === 'high' ? 'HAUTE' : confCode === 'low' ? 'FAIBLE' : 'MOYENNE';
+    const confClass = confCode === 'high' ? 'is-high' : confCode === 'low' ? 'is-low' : 'is-medium';
+    const initialTotals = d ? computeMealIngredientsTotals(d.ingredients, state.mealPhotoPortionMult) : null;
+
     slot.innerHTML = `
       <section class="panel">
         <div class="panel-header">
-          <h2>Analyse Photo d’Assiette (IA Vision)</h2>
+          <h2>Analyse Photo d’Assiette (Pro)</h2>
           <span class="state-tag is-muted">NIVEAU ${state.aiSettings.activeTier}</span>
         </div>
-        <div class="row-wrap">
-          <label class="btn btn-primary" style="cursor: pointer;">
-            Prendre / Choisir photo d’assiette
-            <input id="meal-photo-input" type="file" accept="image/*" capture="environment" hidden />
-          </label>
-          <span class="panel-subtitle">Estimation automatique des grammages, macros, score d’alignement et conseil repas suivant.</span>
+
+        <div class="stack-sm">
+          <div class="field">
+            <label class="field-label" for="meal-photo-hint">Précision optionnelle (avant ou après photo)</label>
+            <input
+              id="meal-photo-hint"
+              class="input"
+              type="text"
+              autocomplete="off"
+              placeholder="Précision optionnelle : ex. steak 5%, riz basmati, cuit sans huile..."
+              value="${esc(state.mealPhotoHint)}"
+            />
+          </div>
+
+          <div class="row-wrap">
+            <label class="btn btn-primary" style="cursor: pointer;">
+              Prendre / Choisir photo d’assiette
+              <input id="meal-photo-input" type="file" accept="image/*" hidden />
+            </label>
+            ${
+              state.mealPhotoDataUrl
+                ? `<button type="button" class="btn btn-sm" id="btn-meal-reanalyze">Ré-analyser avec la précision</button>`
+                : ''
+            }
+          </div>
+          <span class="panel-subtitle">Compression auto max 1024 px · Décomposition ingrédient par ingrédient éditable avant ajout au journal.</span>
         </div>
+
         <div id="meal-photo-status" class="stack-sm">
           ${
-            res
+            d
               ? `
             ${
               res.usedFallback && res.fallbackReason
@@ -3559,21 +3631,78 @@ function renderNutritionInputMode(slot, macros) {
                   </div>`
                 : ''
             }
-            <div class="panel-elevated stack-sm">
-              <div class="row-between">
-                <strong>${esc(res.data.meal_label || 'Assiette analysée')}</strong>
-                <span class="mono text-accent">${res.data.alignment_score ?? '--'}/100</span>
+            <div class="panel-elevated stack">
+              ${
+                state.mealPhotoDataUrl
+                  ? `<img class="meal-photo-preview" src="${state.mealPhotoDataUrl}" alt="Aperçu assiette analysée" />`
+                  : ''
+              }
+
+              <div class="meal-editor-header">
+                <div class="field" style="flex: 1; min-width: 180px;">
+                  <label class="field-label" for="meal-edit-dishname">Nom du plat</label>
+                  <input id="meal-edit-dishname" class="input" type="text" value="${esc(d.dishName || d.meal_label || 'Assiette analysée')}" />
+                </div>
+                <span class="meal-conf-badge ${confClass} mono">CONFIANCE ${confLabel}</span>
               </div>
-              <div class="mono metric-sm">
-                Total : ${res.data.totals.kcal} kcal · P ${res.data.totals.protein_g}g · G ${res.data.totals.carbs_g}g · L ${res.data.totals.fat_g}g
+              ${d.confidenceReason ? `<span class="panel-subtitle">${esc(d.confidenceReason)}</span>` : ''}
+
+              <div class="meal-totals-bar">
+                <div class="row-between">
+                  <span class="label-tech">TOTAL ESTIMÉ (AJUSTÉ EN DIRECT)</span>
+                  <span id="meal-tot-grams" class="mono metric-xs text-secondary">${initialTotals.grams} g</span>
+                </div>
+                <div class="row-between" style="flex-wrap: wrap; gap: 6px;">
+                  <span id="meal-tot-kcal" class="mono metric-md text-accent">${initialTotals.kcal} kcal</span>
+                  <span id="meal-tot-macros" class="mono metric-xs">P ${initialTotals.protein}g · G ${initialTotals.carbs}g · L ${initialTotals.fat}g · F ${initialTotals.fiber}g</span>
+                </div>
               </div>
+
+              <div class="stack-sm" style="gap: 4px;">
+                <span class="label-tech">Portion consommée</span>
+                <div class="meal-portion-bar" id="meal-portion-bar">
+                  ${[0.5, 0.75, 1, 1.25, 1.5]
+                    .map(
+                      (mult) =>
+                        `<button type="button" class="meal-portion-btn mono ${Number(state.mealPhotoPortionMult) === mult ? 'is-active' : ''}" data-portion-mult="${mult}">×${mult}</button>`
+                    )
+                    .join('')}
+                </div>
+              </div>
+
               <div class="stack-sm">
-                ${(res.data.items || [])
-                  .map((i) => `<span class="panel-subtitle mono">• ${esc(i.name)} (${i.grams} g) : ${i.kcal} kcal</span>`)
-                  .join('')}
+                <div class="row-between">
+                  <span class="label-tech">Vérification ingrédient par ingrédient</span>
+                  <button type="button" class="btn btn-xs" id="btn-meal-add-ing">+ Ajouter un ingrédient</button>
+                </div>
+                <div id="meal-ing-list" class="meal-ing-list"></div>
               </div>
-              <p class="panel-subtitle">${esc(res.data.advice || '')}</p>
-              <button type="button" class="btn btn-primary btn-block" id="btn-commit-meal-photo">Ajouter au journal du jour</button>
+
+              ${
+                d.hiddenFatsWarning
+                  ? `<div class="meal-hidden-fats">
+                      <span class="label-tech text-accent">MATIÈRES GRASSES / SAUCES CACHÉES POSSIBLES</span>
+                      <span class="panel-subtitle">${esc(d.hiddenFatsMessage || 'Pense à ajouter l’huile de cuisson, le beurre ou la sauce si présents.')}</span>
+                      <div class="row-wrap">
+                        ${HIDDEN_FAT_SHORTCUTS.map(
+                          (hf) => `<button type="button" class="btn btn-xs" data-add-hidden-fat="${esc(hf.id)}">${esc(hf.label)}</button>`
+                        ).join('')}
+                      </div>
+                    </div>`
+                  : ''
+              }
+
+              ${d.coachTip || d.advice ? `<p class="panel-subtitle">${esc(d.coachTip || d.advice)}</p>` : ''}
+
+              <label class="row" style="gap: 8px; cursor: pointer; font-size: 0.84rem;">
+                <input id="meal-save-fav" type="checkbox" style="width: 18px; height: 18px; accent-color: var(--accent);" />
+                <span>Enregistrer aussi dans mes Repas Favoris</span>
+              </label>
+
+              <div class="row" style="gap: 8px;">
+                <button type="button" class="btn btn-primary" style="flex: 1;" id="btn-commit-meal-photo">Valider et ajouter au journal</button>
+                <button type="button" class="btn" id="btn-discard-meal-photo">Annuler</button>
+              </div>
             </div>`
               : ''
           }
@@ -3581,46 +3710,382 @@ function renderNutritionInputMode(slot, macros) {
       </section>
     `;
 
+    // Mise à jour non-destructive du champ précision (aucun re-render parent)
+    document.getElementById('meal-photo-hint')?.addEventListener('input', (e) => {
+      state.mealPhotoHint = e.target.value;
+    });
+
     document.getElementById('btn-meal-open-ai')?.addEventListener('click', () => {
       state.profilSubTab = 'ai';
       navigateTo('profil');
     });
 
+    const runPhotoAnalysis = async (dataUrl) => {
+      const statusEl = document.getElementById('meal-photo-status');
+      if (statusEl) {
+        statusEl.innerHTML = `<p class="panel-subtitle mono">Analyse IA Vision en cours (décomposition ingrédient par ingrédient)...</p>`;
+      }
+      try {
+        state.mealPhotoPortionMult = 1;
+        state.lastMealVisionResult = await analyzeMealPhoto(dataUrl, state.profile, state.aiSettings, {
+          userHint: state.mealPhotoHint,
+          consumed,
+          targets: macros,
+        });
+        renderNutritionInputMode(slot, macros, consumed);
+      } catch (err) {
+        showToast(err.message || 'Erreur lors de l’analyse photo.');
+        renderNutritionInputMode(slot, macros, consumed);
+      }
+    };
+
     document.getElementById('meal-photo-input')?.addEventListener('change', async (e) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      document.getElementById('meal-photo-status').innerHTML = `<p class="panel-subtitle">Compression & analyse IA Vision en cours...</p>`;
+      const statusEl = document.getElementById('meal-photo-status');
+      if (statusEl) {
+        statusEl.innerHTML = `<p class="panel-subtitle mono">Compression rapide (max 1024 px)...</p>`;
+      }
       try {
-        const compressed = await compressPhysiqueImage(file, { maxWidth: 960, targetBytes: 180000 });
-        state.lastMealVisionResult = await analyzeMealPhoto(compressed.dataUrl, state.profile, state.aiSettings);
-        renderNutritionInputMode(slot, macros);
+        const compressed = await compressVisionPhoto(file);
+        state.mealPhotoDataUrl = compressed.dataUrl;
+        await runPhotoAnalysis(compressed.dataUrl);
       } catch (err) {
-        showToast(err.message);
+        showToast(err.message || 'Impossible de lire cette image.');
       }
     });
 
-    document.getElementById('btn-commit-meal-photo')?.addEventListener('click', async () => {
-      const d = state.lastMealVisionResult?.data;
-      if (!d) return;
-      await saveNutritionLog(state.profile.id, {
-        date: getTodayISO(),
-        mealSlot: 'Photo Vision',
-        source: 'photo',
-        label: d.meal_label || (d.items || []).map((i) => i.name).join(' + '),
-        kcal: Math.round(d.totals.kcal),
-        proteinG: Number(d.totals.protein_g),
-        carbsG: Number(d.totals.carbs_g),
-        fatG: Number(d.totals.fat_g),
-        items: d.items,
-        aiScore: d.alignment_score,
-        aiAdvice: d.advice,
-      });
-      state.lastMealVisionResult = null;
-      state.nutritionAll = await listNutritionLogs(state.profile.id);
-      state.nutritionToday = state.nutritionAll.filter((n) => n.date === getTodayISO());
-      renderApp();
-      showToast('Assiette ajoutée au journal.');
+    document.getElementById('btn-meal-reanalyze')?.addEventListener('click', async () => {
+      if (!state.mealPhotoDataUrl) return;
+      await runPhotoAnalysis(state.mealPhotoDataUrl);
     });
+
+    if (d) {
+      const refreshMealTotalsDOM = () => {
+        const tot = computeMealIngredientsTotals(d.ingredients, state.mealPhotoPortionMult);
+        d.totals = {
+          kcal: tot.kcal,
+          protein_g: tot.protein,
+          carbs_g: tot.carbs,
+          fat_g: tot.fat,
+          fiber_g: tot.fiber,
+        };
+        d.estimatedTotalGrams = tot.grams;
+        const kcalEl = document.getElementById('meal-tot-kcal');
+        const macrosEl = document.getElementById('meal-tot-macros');
+        const gramsEl = document.getElementById('meal-tot-grams');
+        if (kcalEl) kcalEl.textContent = `${tot.kcal} kcal`;
+        if (macrosEl) macrosEl.textContent = `P ${tot.protein}g · G ${tot.carbs}g · L ${tot.fat}g · F ${tot.fiber}g`;
+        if (gramsEl) gramsEl.textContent = `${tot.grams} g`;
+      };
+
+      const renderMealIngredientsList = () => {
+        const listEl = document.getElementById('meal-ing-list');
+        if (!listEl) return;
+        if (!Array.isArray(d.ingredients) || d.ingredients.length === 0) {
+          listEl.innerHTML = `<p class="panel-subtitle">Aucun ingrédient. Cliquez sur « + Ajouter un ingrédient ».</p>`;
+          refreshMealTotalsDOM();
+          return;
+        }
+        listEl.innerHTML = d.ingredients
+          .map((ing, idx) => {
+            const step = Number(ing.grams) <= 50 ? 10 : 25;
+            return `
+              <div class="meal-ing-row" data-ing-row="${idx}">
+                <div class="row-between" style="align-items: flex-start; gap: 8px;">
+                  <div class="stack-sm" style="gap: 2px; min-width: 0; flex: 1;">
+                    <div class="row-wrap" style="gap: 6px; align-items: center;">
+                      <strong>${esc(ing.name)}</strong>
+                      <span class="state-tag is-muted">${esc(ing.state || 'cuit')}</span>
+                    </div>
+                    <span id="meal-ing-macros-${idx}" class="mono metric-xs text-secondary">${Math.round(ing.kcal || 0)} kcal · P ${ing.protein ?? 0}g · G ${ing.carbs ?? 0}g · L ${ing.fat ?? 0}g</span>
+                    ${ing.note ? `<span class="panel-subtitle" style="font-size: 0.72rem;">${esc(ing.note)}</span>` : ''}
+                  </div>
+                  <button type="button" class="btn btn-xs btn-ghost" data-remove-ing="${idx}" title="Retirer">×</button>
+                </div>
+                <div class="meal-ing-controls">
+                  <button type="button" class="meal-step-btn mono" data-step-ing="${idx}" data-step-delta="${-step}">-${step}g</button>
+                  <input
+                    type="number"
+                    inputmode="numeric"
+                    min="0"
+                    max="2500"
+                    class="meal-grams-input mono"
+                    data-ing-grams="${idx}"
+                    value="${Math.round(Number(ing.grams) || 0)}"
+                    aria-label="Grammes pour ${esc(ing.name)}"
+                  />
+                  <button type="button" class="meal-step-btn mono" data-step-ing="${idx}" data-step-delta="${step}">+${step}g</button>
+                </div>
+              </div>
+            `;
+          })
+          .join('');
+        refreshMealTotalsDOM();
+      };
+
+      renderMealIngredientsList();
+
+      // Nom du plat éditable sans re-render
+      document.getElementById('meal-edit-dishname')?.addEventListener('input', (e) => {
+        d.dishName = e.target.value;
+        d.meal_label = e.target.value;
+      });
+
+      // Sélecteur multiplicateur de portion consommée (mise à jour DOM ciblée)
+      document.getElementById('meal-portion-bar')?.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-portion-mult]');
+        if (!btn) return;
+        state.mealPhotoPortionMult = Number(btn.dataset.portionMult) || 1;
+        document.querySelectorAll('#meal-portion-bar [data-portion-mult]').forEach((b) => {
+          b.classList.toggle('is-active', Number(b.dataset.portionMult) === state.mealPhotoPortionMult);
+        });
+        refreshMealTotalsDOM();
+      });
+
+      // Édition directe des grammages SANS re-render parent (zéro perte de focus iOS)
+      const ingListEl = document.getElementById('meal-ing-list');
+      ingListEl?.addEventListener('input', (e) => {
+        const inp = e.target.closest('[data-ing-grams]');
+        if (!inp) return;
+        const idx = Number(inp.dataset.ingGrams);
+        const cur = d.ingredients[idx];
+        if (!cur) return;
+        const raw = inp.value === '' ? 0 : Number(inp.value);
+        const nextGrams = Number.isFinite(raw) ? Math.max(0, Math.min(2500, Math.round(raw))) : 0;
+        const updated = scaleMealIngredientGrams(cur, nextGrams);
+        d.ingredients[idx] = updated;
+        const lineMacros = document.getElementById(`meal-ing-macros-${idx}`);
+        if (lineMacros) {
+          lineMacros.textContent = `${Math.round(updated.kcal)} kcal · P ${updated.protein}g · G ${updated.carbs}g · L ${updated.fat}g`;
+        }
+        refreshMealTotalsDOM();
+      });
+
+      ingListEl?.addEventListener('click', (e) => {
+        const stepBtn = e.target.closest('[data-step-ing]');
+        if (stepBtn) {
+          const idx = Number(stepBtn.dataset.stepIng);
+          const delta = Number(stepBtn.dataset.stepDelta) || 0;
+          const cur = d.ingredients[idx];
+          if (!cur) return;
+          const nextGrams = Math.max(0, Math.min(2500, Math.round((Number(cur.grams) || 0) + delta)));
+          const updated = scaleMealIngredientGrams(cur, nextGrams);
+          d.ingredients[idx] = updated;
+          const inp = ingListEl.querySelector(`[data-ing-grams="${idx}"]`);
+          if (inp) inp.value = String(updated.grams);
+          const lineMacros = document.getElementById(`meal-ing-macros-${idx}`);
+          if (lineMacros) {
+            lineMacros.textContent = `${Math.round(updated.kcal)} kcal · P ${updated.protein}g · G ${updated.carbs}g · L ${updated.fat}g`;
+          }
+          refreshMealTotalsDOM();
+          return;
+        }
+        const remBtn = e.target.closest('[data-remove-ing]');
+        if (remBtn) {
+          const idx = Number(remBtn.dataset.removeIng);
+          d.ingredients.splice(idx, 1);
+          renderMealIngredientsList();
+        }
+      });
+
+      // Raccourcis 1-clic matières grasses cachées
+      slot.querySelectorAll('[data-add-hidden-fat]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const hf = HIDDEN_FAT_SHORTCUTS.find((x) => x.id === btn.dataset.addHiddenFat);
+          if (!hf) return;
+          const ratio100 = 100 / Math.max(1, hf.grams);
+          const ing = createMealIngredientFromFood(
+            {
+              id: hf.id,
+              name: hf.name,
+              kcal: hf.kcal * ratio100,
+              proteinG: hf.protein * ratio100,
+              carbsG: hf.carbs * ratio100,
+              fatG: hf.fat * ratio100,
+              fiberG: (hf.fiber || 0) * ratio100,
+            },
+            hf.grams,
+            hf.state
+          );
+          d.ingredients.push(ing);
+          renderMealIngredientsList();
+          showToast(`Ajouté : ${hf.name} (${hf.grams} g).`);
+        });
+      });
+
+      // Modale "+ Ajouter un ingrédient manquant" (Ciqual + Perso + Manuel)
+      document.getElementById('btn-meal-add-ing')?.addEventListener('click', () => {
+        openModal(
+          'Ajouter un ingrédient manquant',
+          `
+          <div class="stack">
+            <div class="grid-3">
+              <div class="field" style="grid-column: span 2;">
+                <label class="field-label" for="add-ing-search">Rechercher (Perso & Ciqual)</label>
+                <input id="add-ing-search" class="input" type="search" autocomplete="off" placeholder="Ex. Huile d’olive, avocat, riz..." />
+              </div>
+              <div class="field">
+                <label class="field-label" for="add-ing-grams">Grammes</label>
+                <input id="add-ing-grams" class="input mono" type="number" inputmode="numeric" min="1" max="2000" value="100" />
+              </div>
+            </div>
+            <div id="add-ing-results" class="stack-sm" style="max-height: 220px; overflow-y: auto;"></div>
+
+            <details class="panel-elevated" style="padding: 9px 11px;">
+              <summary style="cursor: pointer; font-size: 0.82rem; font-weight: 600;">Saisie manuelle rapide (valeurs pour la portion)</summary>
+              <form id="add-ing-manual-form" class="stack-sm" style="margin-top: 8px;">
+                <div class="grid-2">
+                  <input id="ming-name" class="input" type="text" required placeholder="Nom (ex. Sauce soja)" />
+                  <input id="ming-grams" class="input mono" type="number" inputmode="numeric" required value="30" placeholder="Grammes" />
+                </div>
+                <div class="grid-4">
+                  <input id="ming-kcal" class="input mono" type="number" inputmode="numeric" required placeholder="Kcal" value="60" />
+                  <input id="ming-p" class="input mono" type="number" step="0.5" inputmode="decimal" placeholder="P (g)" value="2" />
+                  <input id="ming-c" class="input mono" type="number" step="0.5" inputmode="decimal" placeholder="G (g)" value="8" />
+                  <input id="ming-f" class="input mono" type="number" step="0.5" inputmode="decimal" placeholder="L (g)" value="2" />
+                </div>
+                <button type="submit" class="btn btn-sm btn-primary">Ajouter cet ingrédient</button>
+              </form>
+            </details>
+          </div>
+          `,
+          ({ close }) => {
+            const searchInp = document.getElementById('add-ing-search');
+            const gramsInp = document.getElementById('add-ing-grams');
+            const resultsBox = document.getElementById('add-ing-results');
+            let currentMatches = [];
+
+            const renderMatches = () => {
+              const q = (searchInp?.value || '').trim();
+              const g = Math.max(1, Math.min(2000, Number(gramsInp?.value) || 100));
+              currentMatches = searchHybridLocalFoods(q, state.customFoods, 10);
+              if (!resultsBox) return;
+              resultsBox.innerHTML = currentMatches
+                .map((food, idx) => {
+                  const sc = scaleFoodMacros(food, g);
+                  return `
+                    <div class="row-between panel-elevated" style="padding: 8px 10px;">
+                      <div class="stack-sm" style="gap: 2px; min-width: 0; flex: 1;">
+                        <strong>${esc(food.name)}</strong>
+                        <span class="meta-inline mono">${g} g · ${sc.kcal} kcal · P ${sc.proteinG}g / G ${sc.carbsG}g / L ${sc.fatG}g</span>
+                      </div>
+                      <button type="button" class="btn btn-xs btn-primary" data-pick-ing="${idx}">+ Ajouter</button>
+                    </div>
+                  `;
+                })
+                .join('');
+            };
+
+            renderMatches();
+            searchInp?.addEventListener('input', renderMatches);
+            gramsInp?.addEventListener('input', renderMatches);
+
+            resultsBox?.addEventListener('click', (ev) => {
+              const btn = ev.target.closest('[data-pick-ing]');
+              if (!btn) return;
+              const food = currentMatches[Number(btn.dataset.pickIng)];
+              if (!food) return;
+              const g = Math.max(1, Math.min(2000, Number(gramsInp?.value) || 100));
+              d.ingredients.push(createMealIngredientFromFood(food, g, 'prêt'));
+              renderMealIngredientsList();
+              close();
+              showToast(`Ingrédient ajouté : ${food.name} (${g} g).`);
+            });
+
+            document.getElementById('add-ing-manual-form')?.addEventListener('submit', (ev) => {
+              ev.preventDefault();
+              const name = document.getElementById('ming-name').value.trim();
+              const g = Math.max(1, Math.round(Number(document.getElementById('ming-grams').value) || 50));
+              const kcal = Math.max(0, Number(document.getElementById('ming-kcal').value) || 0);
+              const p = Math.max(0, Number(document.getElementById('ming-p').value) || 0);
+              const c = Math.max(0, Number(document.getElementById('ming-c').value) || 0);
+              const f = Math.max(0, Number(document.getElementById('ming-f').value) || 0);
+              const r100 = 100 / g;
+              d.ingredients.push(
+                createMealIngredientFromFood(
+                  { name, kcal: kcal * r100, proteinG: p * r100, carbsG: c * r100, fatG: f * r100, fiberG: 0 },
+                  g,
+                  'prêt'
+                )
+              );
+              renderMealIngredientsList();
+              close();
+              showToast(`Ingrédient manuel ajouté : ${name}.`);
+            });
+          }
+        );
+      });
+
+      document.getElementById('btn-discard-meal-photo')?.addEventListener('click', () => {
+        state.lastMealVisionResult = null;
+        state.mealPhotoDataUrl = null;
+        state.mealPhotoPortionMult = 1;
+        renderNutritionInputMode(slot, macros, consumed);
+      });
+
+      document.getElementById('btn-commit-meal-photo')?.addEventListener('click', async () => {
+        const mult = Math.max(0.1, Math.min(3, Number(state.mealPhotoPortionMult) || 1));
+        const finalTotals = computeMealIngredientsTotals(d.ingredients, mult);
+        const scaledIngredients = d.ingredients
+          .filter((ing) => (Number(ing.grams) || 0) > 0)
+          .map((ing) => {
+            const scaled = scaleMealIngredientGrams(ing, Math.round((Number(ing.grams) || 0) * mult));
+            return {
+              name: scaled.name,
+              state: scaled.state || 'cuit',
+              grams: scaled.grams,
+              kcal: scaled.kcal,
+              protein: scaled.protein,
+              carbs: scaled.carbs,
+              fat: scaled.fat,
+              fiber: scaled.fiber,
+              note: scaled.note || '',
+            };
+          });
+        const dishTitle = (d.dishName || d.meal_label || '').trim() || scaledIngredients.map((i) => i.name).join(' + ') || 'Assiette Vision';
+        const finalLabel = mult !== 1 ? `${dishTitle} (×${mult})` : dishTitle;
+
+        await saveNutritionLog(state.profile.id, {
+          date: getTodayISO(),
+          mealSlot: 'Photo Vision',
+          source: 'photo',
+          label: finalLabel,
+          kcal: finalTotals.kcal,
+          proteinG: finalTotals.protein,
+          carbsG: finalTotals.carbs,
+          fatG: finalTotals.fat,
+          fiberG: finalTotals.fiber,
+          ingredients: scaledIngredients,
+          items: scaledIngredients,
+          aiScore: d.alignment_score,
+          aiAdvice: d.coachTip || d.advice || '',
+        });
+
+        const saveFavChecked = Boolean(document.getElementById('meal-save-fav')?.checked);
+        if (saveFavChecked) {
+          await saveFavorite(state.profile.id, {
+            name: dishTitle,
+            kcal: finalTotals.kcal,
+            proteinG: finalTotals.protein,
+            carbsG: finalTotals.carbs,
+            fatG: finalTotals.fat,
+            fiberG: finalTotals.fiber,
+            ingredients: scaledIngredients,
+          });
+          state.favorites = await listFavorites(state.profile.id);
+        }
+
+        state.lastMealVisionResult = null;
+        state.mealPhotoDataUrl = null;
+        state.mealPhotoPortionMult = 1;
+        state.mealPhotoHint = '';
+        state.nutritionAll = await listNutritionLogs(state.profile.id);
+        state.nutritionToday = state.nutritionAll.filter((n) => n.date === getTodayISO());
+        renderApp();
+        showToast(saveFavChecked ? 'Assiette ajoutée au journal + Repas Favoris.' : 'Assiette vérifiée ajoutée au journal.');
+      });
+    }
     return;
   }
 
@@ -4341,6 +4806,101 @@ async function renderLabo(container) {
     );
   });
 
+  // Passerelle Labo Physique -> Profil (confirmation sélective des champs détectés)
+  document.getElementById('btn-labo-update-profile')?.addEventListener('click', () => {
+    if (!state.lastPhysiqueAnalysis) return;
+    const proposal = buildLaboProfileProposal(state.lastPhysiqueAnalysis, state.profile, latestBio);
+    if (!proposal || !proposal.items.length) {
+      showToast('Ton profil est déjà à jour avec les données de cette analyse.');
+      return;
+    }
+
+    openModal(
+      proposal.title,
+      `
+      <div class="stack">
+        <p class="panel-subtitle">Sélectionne uniquement les champs à synchroniser avec ton profil et ton suivi biométrique :</p>
+        <div class="stack-sm" id="labo-proposal-checklist">
+          ${proposal.items
+            .map(
+              (it) => `
+            <label class="photo-proposal-item">
+              <input type="checkbox" data-labo-prop-id="${esc(it.id)}" checked />
+              <div class="stack-sm" style="gap: 2px; flex: 1; min-width: 0;">
+                <div class="row-wrap" style="gap: 6px; align-items: center;">
+                  <strong style="font-size: 0.82rem;">${esc(it.label)}</strong>
+                  ${it.isNew ? `<span class="tag-new-field mono">[NOUVEAU]</span>` : ''}
+                </div>
+                <div class="photo-proposal-diff mono">
+                  <span class="old-val">${esc(it.oldValue)}</span>
+                  <span>→</span>
+                  <span class="new-val">${esc(it.newValue)}</span>
+                </div>
+              </div>
+            </label>`
+            )
+            .join('')}
+        </div>
+        <button type="button" class="btn btn-primary btn-block" id="btn-commit-labo-profile">Appliquer la sélection</button>
+      </div>
+      `,
+      ({ close }) => {
+        document.getElementById('btn-commit-labo-profile')?.addEventListener('click', async () => {
+          const checkedIds = Array.from(document.querySelectorAll('[data-labo-prop-id]:checked')).map(
+            (cb) => cb.dataset.laboPropId
+          );
+          if (checkedIds.length === 0) {
+            showToast('Coche au moins un champ à mettre à jour.');
+            return;
+          }
+          const actions = compileSelectedProposalActions(proposal, checkedIds);
+          const execResult = await executeCoachActions(actions, {
+            profile: state.profile,
+            program: state.program,
+            biometrics: state.biometrics,
+            nutritionToday: state.nutritionToday,
+            todayISO: getTodayISO(),
+            db: {
+              updateProfile,
+              saveProgram,
+              resetBiometricsBaseline,
+              restoreBiometricsForProfile,
+              saveBiometric,
+              saveNutritionLog,
+              deleteNutritionLog,
+              saveCustomFood,
+              deleteCustomFood,
+            },
+          });
+
+          const pid = state.profile.id;
+          state.profile = (await getActiveProfile()) || execResult.profile;
+          state.profiles = await listProfiles();
+          state.biometrics = await listBiometrics(pid);
+          if (execResult.changedModules.includes('program')) {
+            state.program = (await getActiveProgram(pid)) || execResult.program;
+            state.activeSession = null;
+          }
+          close();
+          renderApp();
+
+          if (execResult.executedBadges.length > 0 && typeof execResult.undo === 'function') {
+            showToast(`Profil synchronisé (${checkedIds.length} champ${checkedIds.length > 1 ? 's' : ''}).`, {
+              undoAction: async () => {
+                await execResult.undo();
+                state.profile = await getActiveProfile();
+                state.profiles = await listProfiles();
+                state.biometrics = await listBiometrics(pid);
+                state.program = await getActiveProgram(pid);
+                renderApp();
+              },
+            });
+          }
+        });
+      }
+    );
+  });
+
   // Si landmarks présents, dessiner l'aperçu clinique
   const lmCanvas = document.getElementById('mediapipe-landmarks-canvas');
   const firstLandmarks = state.lastPhysiqueAnalysis?.mediapipe?.landmarksByAngle?.front;
@@ -4358,12 +4918,15 @@ function renderPhysiqueAnalysisHTML() {
 
   return `
     <hr class="divider" />
-    <div class="row-between">
+    <div class="row-between" style="flex-wrap: wrap; gap: 8px;">
       <div>
         <h3>Bilan Forces / Faiblesses & Posture</h3>
-        <span class="meta-inline mono">Source : ${esc(a.meta?.provider || 'local')} · ${a.meta?.latencyMs ?? 0} ms</span>
+        <span class="meta-inline mono">Source : ${esc(a.meta?.provider || 'local')} · ${a.meta?.latencyMs ?? 0} ms${typeof a.estimated_body_fat_pct === 'number' ? ` · %MG est. ${a.estimated_body_fat_pct}%` : ''}</span>
       </div>
-      <button type="button" class="btn btn-primary" id="btn-preview-mutation">Adapter mon programme</button>
+      <div class="row-wrap" style="gap: 6px;">
+        <button type="button" class="btn btn-sm" id="btn-labo-update-profile">Mettre à jour mon profil (morpho / posture / %MG)</button>
+        <button type="button" class="btn btn-sm btn-primary" id="btn-preview-mutation">Adapter mon programme</button>
+      </div>
     </div>
 
     <div class="grid-3">
@@ -4488,18 +5051,79 @@ function renderProfilSubTab(slot) {
           </div>
         </details>
 
-        <div class="stack-sm" id="coach-thread" style="max-height: 390px; overflow-y: auto; padding-right: 2px;">
+        <div class="stack-sm" id="coach-thread" style="max-height: 410px; overflow-y: auto; padding-right: 2px;">
           ${
             state.coachMessages.length === 0
-              ? `<p class="panel-subtitle">Demandez un changement de split (Full Body, Upper/Lower, PPL, Arnold, Split classique), une méthode (Pyramidal inversé RPT, Top Set + Back-off, Myo-Reps, DUP), ou signalez une douleur : le Coach s’appuie sur vos dernières séances et adapte votre programme en 1 clic.</p>`
+              ? `<p class="panel-subtitle">Demandez un changement de split (Full Body, Upper/Lower, PPL, Arnold), une méthode (Pyramidal inversé RPT, Top Set + Back-off), ou envoyez une photo (balance, physique, plat, étiquette nutritionnelle, machine) : le Coach détecte les mises à jour et vous demande confirmation avant d’écrire.</p>`
               : state.coachMessages
-                  .map(
-                    (m) => `
+                  .map((m) => {
+                    const prop = m.photoUpdateProposal;
+                    const propHtml =
+                      prop && Array.isArray(prop.items) && prop.items.length > 0
+                        ? prop.status === 'applied'
+                          ? `<div class="photo-proposal-card">
+                              <div class="row-between">
+                                <span class="label-tech text-ok">MISES À JOUR PHOTO APPLIQUÉES</span>
+                                ${
+                                  prop.mealPreview
+                                    ? `<button type="button" class="btn btn-xs" data-open-meal-editor="${esc(m.id)}">Ouvrir éditeur Nutrition</button>`
+                                    : ''
+                                }
+                              </div>
+                            </div>`
+                          : prop.status === 'ignored'
+                            ? `<div class="photo-proposal-card">
+                                <span class="meta-inline mono">Mises à jour photo ignorées.</span>
+                              </div>`
+                            : `<div class="photo-proposal-card" data-proposal-card="${esc(m.id)}">
+                                <div class="row-between">
+                                  <span class="label-tech text-accent">${esc(prop.title || 'Mises à jour détectées depuis ta photo')}</span>
+                                  <span class="mono metric-xs text-muted">${prop.items.length} champ${prop.items.length > 1 ? 's' : ''}</span>
+                                </div>
+                                <div class="stack-sm" style="gap: 6px;">
+                                  ${prop.items
+                                    .map(
+                                      (it) => `
+                                    <label class="photo-proposal-item">
+                                      <input type="checkbox" data-prop-check="${esc(it.id)}" ${it.checked !== false ? 'checked' : ''} />
+                                      <div class="stack-sm" style="gap: 2px; flex: 1; min-width: 0;">
+                                        <div class="row-wrap" style="gap: 6px; align-items: center;">
+                                          <strong style="font-size: 0.8rem;">${esc(it.label)}</strong>
+                                          ${it.isNew ? `<span class="tag-new-field mono">[NOUVEAU]</span>` : ''}
+                                        </div>
+                                        <div class="photo-proposal-diff mono">
+                                          <span class="old-val">${esc(it.oldValue)}</span>
+                                          <span>→</span>
+                                          <span class="new-val">${esc(it.newValue)}</span>
+                                        </div>
+                                      </div>
+                                    </label>`
+                                    )
+                                    .join('')}
+                                </div>
+                                <div class="row-wrap" style="gap: 6px;">
+                                  <button type="button" class="btn btn-sm btn-primary" data-apply-photo-proposal="${esc(m.id)}">Appliquer la sélection</button>
+                                  <button type="button" class="btn btn-sm" data-ignore-photo-proposal="${esc(m.id)}">Ignorer</button>
+                                  ${
+                                    prop.mealPreview
+                                      ? `<button type="button" class="btn btn-sm" data-open-meal-editor="${esc(m.id)}">Ouvrir dans l’éditeur Nutrition</button>`
+                                      : ''
+                                  }
+                                </div>
+                              </div>`
+                        : '';
+
+                    return `
                   <div class="chat-bubble ${m.role === 'user' ? 'is-user' : ''}">
                     <div class="row-between">
                       <span class="label-tech ${m.role === 'user' ? 'text-accent' : ''}">${m.role === 'user' ? esc(state.profile.name) : 'Coach Kinetix'}</span>
                       ${m.tierUsed !== null && m.tierUsed !== undefined ? `<span class="mono metric-xs text-muted">Niv. ${m.tierUsed}${m.provider ? ` · ${esc(m.provider)}` : ''}</span>` : ''}
                     </div>
+                    ${
+                      m.photoDataUrl
+                        ? `<img class="coach-msg-photo" src="${m.photoDataUrl}" alt="Photo partagée" />`
+                        : ''
+                    }
                     ${
                       m.role === 'user'
                         ? `<p>${esc(m.content)}</p>`
@@ -4512,8 +5136,9 @@ function renderProfilSubTab(slot) {
                           </div>`
                         : ''
                     }
+                    ${propHtml}
                     ${
-                      m.actionProposal && (!Array.isArray(m.executedBadges) || m.executedBadges.length === 0)
+                      m.actionProposal && !prop && (!Array.isArray(m.executedBadges) || m.executedBadges.length === 0)
                         ? `<div class="coach-action-card ${m.actionApplied ? 'is-applied' : ''}">
                             <div class="row-between">
                               <span class="label-tech ${m.actionApplied ? 'text-ok' : 'text-accent'}">${m.actionApplied ? 'ADAPTATION APPLIQUÉE' : esc(m.actionProposal.title)}</span>
@@ -4535,8 +5160,8 @@ function renderProfilSubTab(slot) {
                           </div>`
                         : ''
                     }
-                  </div>`
-                  )
+                  </div>`;
+                  })
                   .join('')
           }
           ${state.coachBusy ? `<div class="chat-bubble"><span class="mono metric-xs text-accent">Coach en cours d'analyse (${esc(activeLabel)})...</span></div>` : ''}
@@ -4549,9 +5174,32 @@ function renderProfilSubTab(slot) {
           <button type="button" class="btn btn-xs" data-quick-prompt="Réinitialise ma nutrition en mode auto (0 kcal d'ajustement EWMA) et vérifie mes macros">Reset nutrition auto</button>
         </div>
 
-        <form id="coach-chat-form" class="input-action-row">
-          <input id="coach-input" class="input" type="text" required placeholder="Ex. Passe à 2450 kcal P 185g, ou passe en Full Body 3j..." ${state.coachBusy ? 'disabled' : ''} />
-          <button type="submit" class="btn btn-primary" ${state.coachBusy ? 'disabled' : ''}>Envoyer</button>
+        <form id="coach-chat-form" class="coach-composer-wrap">
+          <div id="coach-photo-preview-slot">
+            ${
+              state.coachPendingPhoto
+                ? `<div class="coach-photo-preview-bar">
+                    <img class="coach-photo-thumb" src="${state.coachPendingPhoto.thumbDataUrl}" alt="Photo prête" />
+                    <div class="stack-sm" style="gap: 2px; flex: 1; min-width: 0;">
+                      <strong style="font-size: 0.8rem;">Photo prête pour analyse Vision</strong>
+                      <span class="mono metric-xs text-secondary">${Math.round((state.coachPendingPhoto.sizeBytes || 0) / 1024)} Ko · Ajoute une précision ou envoie directement</span>
+                    </div>
+                    <button type="button" class="btn btn-xs btn-ghost" id="btn-remove-coach-photo" title="Retirer">×</button>
+                  </div>`
+                : ''
+            }
+          </div>
+          <div class="coach-composer-row">
+            <label class="coach-photo-btn ${state.coachBusy ? 'is-disabled' : ''}" title="Joindre une photo (balance, physique, plat, étiquette, machine)" aria-label="Joindre une photo">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                <circle cx="12" cy="13" r="4"></circle>
+              </svg>
+              <input id="coach-photo-input" type="file" accept="image/*" hidden ${state.coachBusy ? 'disabled' : ''} />
+            </label>
+            <input id="coach-input" class="input" type="text" placeholder="Message ou précision sur ta photo..." ${state.coachBusy ? 'disabled' : ''} />
+            <button type="submit" class="btn btn-primary" ${state.coachBusy ? 'disabled' : ''}>Envoyer</button>
+          </div>
         </form>
       </section>
     `;
@@ -4574,6 +5222,7 @@ function renderProfilSubTab(slot) {
     document.getElementById('btn-clear-chat')?.addEventListener('click', async () => {
       await clearCoachMessages(state.profile.id);
       state.coachMessages = [];
+      state.coachPendingPhoto = null;
       renderProfilSubTab(slot);
     });
 
@@ -4598,6 +5247,55 @@ function renderProfilSubTab(slot) {
         renderProfilSubTab(slot);
         showToast('Repère retiré de la mémoire du Coach.');
       });
+    });
+
+    // Mise à jour ciblée de la barre d'aperçu photo sans détruire la saisie texte du Coach
+    const refreshCoachPhotoPreview = () => {
+      const previewSlot = document.getElementById('coach-photo-preview-slot');
+      if (!previewSlot) return;
+      if (!state.coachPendingPhoto) {
+        previewSlot.innerHTML = '';
+        return;
+      }
+      previewSlot.innerHTML = `
+        <div class="coach-photo-preview-bar">
+          <img class="coach-photo-thumb" src="${state.coachPendingPhoto.thumbDataUrl}" alt="Photo prête" />
+          <div class="stack-sm" style="gap: 2px; flex: 1; min-width: 0;">
+            <strong style="font-size: 0.8rem;">Photo prête pour analyse Vision</strong>
+            <span class="mono metric-xs text-secondary">${Math.round((state.coachPendingPhoto.sizeBytes || 0) / 1024)} Ko · Ajoute une précision ou envoie directement</span>
+          </div>
+          <button type="button" class="btn btn-xs btn-ghost" id="btn-remove-coach-photo" title="Retirer">×</button>
+        </div>
+      `;
+      document.getElementById('btn-remove-coach-photo')?.addEventListener('click', () => {
+        state.coachPendingPhoto = null;
+        refreshCoachPhotoPreview();
+      });
+    };
+
+    document.getElementById('btn-remove-coach-photo')?.addEventListener('click', () => {
+      state.coachPendingPhoto = null;
+      refreshCoachPhotoPreview();
+    });
+
+    document.getElementById('coach-photo-input')?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const [compressed, thumb] = await Promise.all([
+          compressVisionPhoto(file),
+          compressVisionPhoto(file, { maxWidth: 320, maxHeight: 320, initialQuality: 0.72, targetBytes: 35000 }),
+        ]);
+        state.coachPendingPhoto = {
+          dataUrl: compressed.dataUrl,
+          thumbDataUrl: thumb.dataUrl,
+          sizeBytes: compressed.sizeBytes,
+        };
+        refreshCoachPhotoPreview();
+        e.target.value = '';
+      } catch (err) {
+        showToast(err.message || 'Impossible de charger cette photo.');
+      }
     });
 
     // Application 1-tap d'une adaptation proposée par le Coach (avec Toast Annuler 5s)
@@ -4649,13 +5347,15 @@ function renderProfilSubTab(slot) {
     const refreshAllProfileDataFromDB = async () => {
       const pid = state.profile.id;
       const today = getTodayISO();
-      const [freshProfile, freshProg, freshBio, freshNutAll, freshHyd, freshMsgs] = await Promise.all([
+      const [freshProfile, freshProg, freshBio, freshNutAll, freshHyd, freshMsgs, freshCustom, freshFavs] = await Promise.all([
         getActiveProfile(),
         getActiveProgram(pid),
         listBiometrics(pid),
         listNutritionLogs(pid),
         getHydrationForDate(pid, today),
         listCoachMessages(pid),
+        listCustomFoods(pid),
+        listFavorites(pid),
       ]);
       if (freshProfile && freshProfile.id === pid) {
         state.profile = freshProfile;
@@ -4667,6 +5367,8 @@ function renderProfilSubTab(slot) {
       state.nutritionToday = freshNutAll.filter((n) => n.date === today);
       state.hydration = freshHyd;
       state.coachMessages = freshMsgs;
+      state.customFoods = freshCustom;
+      state.favorites = freshFavs;
       state.manualKcalOffset = clampAdaptiveAdjustmentKcal(
         state.profile?.nutritionPrefs?.adaptiveAdjustmentKcal ??
           state.profile?.nutritionPrefs?.manualKcalOffset ??
@@ -4674,9 +5376,127 @@ function renderProfilSubTab(slot) {
       );
     };
 
-    const submitCoachQuestion = async (text) => {
-      if (!text || state.coachBusy) return;
+    // Délégation des cartes "Aperçu & Confirmation sélective" dans le fil Coach
+    thread?.addEventListener('click', async (e) => {
+      const applyBtn = e.target.closest('[data-apply-photo-proposal]');
+      if (applyBtn) {
+        const msgId = applyBtn.dataset.applyPhotoProposal;
+        const msg = state.coachMessages.find((m) => m.id === msgId);
+        if (!msg?.photoUpdateProposal || msg.photoUpdateProposal.status !== 'pending') return;
+
+        const card = thread.querySelector(`[data-proposal-card="${CSS.escape(msgId)}"]`);
+        const selectedIds = card
+          ? Array.from(card.querySelectorAll('[data-prop-check]:checked')).map((cb) => cb.dataset.propCheck)
+          : msg.photoUpdateProposal.items.map((it) => it.id);
+
+        if (selectedIds.length === 0) {
+          showToast('Coche au moins une mise à jour à appliquer.');
+          return;
+        }
+
+        const actions = compileSelectedProposalActions(msg.photoUpdateProposal, selectedIds);
+        const execResult = await executeCoachActions(actions, {
+          profile: state.profile,
+          program: state.program,
+          biometrics: state.biometrics,
+          nutritionToday: state.nutritionToday,
+          todayISO: getTodayISO(),
+          db: {
+            updateProfile,
+            saveProgram,
+            resetBiometricsBaseline,
+            restoreBiometricsForProfile,
+            saveBiometric,
+            saveNutritionLog,
+            deleteNutritionLog,
+            saveCustomFood,
+            deleteCustomFood,
+          },
+        });
+
+        if (execResult.changedModules.includes('program')) {
+          state.activeSession = null;
+          state.selectedDayIdx = 0;
+        }
+
+        const prevBadges = Array.isArray(msg.executedBadges) ? [...msg.executedBadges] : [];
+        msg.photoUpdateProposal = { ...msg.photoUpdateProposal, status: 'applied' };
+        msg.executedBadges = [...prevBadges, ...execResult.executedBadges];
+        await updateCoachMessage(msg);
+        await refreshAllProfileDataFromDB();
+        renderApp();
+
+        if (execResult.executedBadges.length > 0 && typeof execResult.undo === 'function') {
+          showToast(`Photo appliquée : ${execResult.executedBadges[0].replace(/^EXÉCUTÉ · /, '')}`, {
+            undoAction: async () => {
+              await execResult.undo();
+              msg.photoUpdateProposal = { ...msg.photoUpdateProposal, status: 'pending' };
+              msg.executedBadges = prevBadges;
+              await updateCoachMessage(msg);
+              if (execResult.changedModules.includes('program')) {
+                state.activeSession = null;
+              }
+              await refreshAllProfileDataFromDB();
+              renderApp();
+            },
+          });
+        }
+        return;
+      }
+
+      const ignoreBtn = e.target.closest('[data-ignore-photo-proposal]');
+      if (ignoreBtn) {
+        const msgId = ignoreBtn.dataset.ignorePhotoProposal;
+        const msg = state.coachMessages.find((m) => m.id === msgId);
+        if (!msg?.photoUpdateProposal) return;
+        msg.photoUpdateProposal = { ...msg.photoUpdateProposal, status: 'ignored' };
+        await updateCoachMessage(msg);
+        state.coachMessages = await listCoachMessages(state.profile.id);
+        renderProfilSubTab(slot);
+        showToast('Proposition photo ignorée.');
+        return;
+      }
+
+      const openMealBtn = e.target.closest('[data-open-meal-editor]');
+      if (openMealBtn) {
+        const msgId = openMealBtn.dataset.openMealEditor;
+        const msgIdx = state.coachMessages.findIndex((m) => m.id === msgId);
+        const msg = msgIdx >= 0 ? state.coachMessages[msgIdx] : null;
+        const mealPreview = msg?.photoUpdateProposal?.mealPreview;
+        if (!mealPreview) return;
+
+        // Récupère la miniature photo du message utilisateur précédent si présente
+        let prevPhoto = null;
+        for (let i = msgIdx - 1; i >= 0; i--) {
+          if (state.coachMessages[i].role === 'user' && state.coachMessages[i].photoDataUrl) {
+            prevPhoto = state.coachMessages[i].photoDataUrl;
+            break;
+          }
+        }
+        state.lastMealVisionResult = {
+          ok: true,
+          usedFallback: false,
+          tierUsed: msg.tierUsed ?? state.aiSettings.activeTier,
+          data: structuredClone(mealPreview),
+        };
+        state.mealPhotoDataUrl = prevPhoto;
+        state.mealPhotoPortionMult = 1;
+        state.route = 'nutrition';
+        state.nutritionSubTab = 'journal';
+        state.nutritionInputMode = 'photo';
+        renderApp();
+        showToast('Plat ouvert dans l’éditeur ingrédient par ingrédient.');
+      }
+    });
+
+    const submitCoachQuestion = async (rawText, pendingPhoto = null) => {
+      const cleanText = String(rawText || '').trim();
+      const effectiveText =
+        cleanText ||
+        (pendingPhoto ? 'Analyse cette photo et propose les mises à jour pertinentes pour mon profil ou mon suivi.' : '');
+      if (!effectiveText || state.coachBusy) return;
       state.coachBusy = true;
+      state.coachPendingPhoto = null;
 
       const priorHistory = state.coachMessages.slice(-8).map((m) => ({
         role: m.role,
@@ -4684,9 +5504,13 @@ function renderProfilSubTab(slot) {
       }));
 
       // Analyse déterministe de secours (proposition 1-clic & mémoire terrain)
-      const { actionProposal, memoryNote } = analyzeCoachFeedbackAndProposeAction(text, state.profile, state.program);
+      const { actionProposal, memoryNote } = analyzeCoachFeedbackAndProposeAction(effectiveText, state.profile, state.program);
 
-      await addCoachMessage(state.profile.id, { role: 'user', content: text });
+      await addCoachMessage(state.profile.id, {
+        role: 'user',
+        content: effectiveText,
+        photoDataUrl: pendingPhoto?.thumbDataUrl || null,
+      });
       state.coachMessages = await listCoachMessages(state.profile.id);
       renderProfilSubTab(slot);
 
@@ -4705,13 +5529,15 @@ function renderProfilSubTab(slot) {
       let executedBadges = [];
       let undoFn = null;
       let changedModules = [];
+      let photoUpdateProposal = null;
 
       try {
         const res = await routeAIRequest({
           taskType: 'coach_chat',
-          prompt: text,
+          prompt: effectiveText,
           systemPrompt,
           history: priorHistory,
+          images: pendingPhoto ? [pendingPhoto.dataUrl] : [],
           context: {
             profile: state.profile,
             program: state.program,
@@ -4727,8 +5553,8 @@ function renderProfilSubTab(slot) {
         let actionsToExecute = parsed.actions;
 
         // Repli Niveau 0 déterministe pour les commandes directes sans modèle cloud/Ollama
-        if (actionsToExecute.length === 0 && res.tierUsed === 0) {
-          actionsToExecute = parseTier0DeterministicActions(text, {
+        if (actionsToExecute.length === 0 && res.tierUsed === 0 && !pendingPhoto) {
+          actionsToExecute = parseTier0DeterministicActions(effectiveText, {
             profile: state.profile,
             program: state.program,
             telemetry,
@@ -4738,6 +5564,7 @@ function renderProfilSubTab(slot) {
         // Si une note mémoire terrain a été détectée et que le modèle n'a pas déjà émis SAVE_COACH_MEMORY
         if (
           memoryNote &&
+          !pendingPhoto &&
           !actionsToExecute.some((a) => a.type === 'SAVE_COACH_MEMORY')
         ) {
           const existingMem = Array.isArray(state.profile.coachMemory) ? state.profile.coachMemory : [];
@@ -4750,37 +5577,49 @@ function renderProfilSubTab(slot) {
         }
 
         if (actionsToExecute.length > 0) {
-          const execResult = await executeCoachActions(actionsToExecute, {
-            profile: state.profile,
-            program: state.program,
-            biometrics: state.biometrics,
-            nutritionToday: state.nutritionToday,
-            todayISO: getTodayISO(),
-            db: {
-              updateProfile,
-              saveProgram,
-              resetBiometricsBaseline,
-              restoreBiometricsForProfile,
-              saveBiometric,
-              saveNutritionLog,
-              deleteNutritionLog,
-            },
-          });
-          executedBadges = execResult.executedBadges;
-          changedModules = execResult.changedModules;
-          undoFn = execResult.undo;
+          if (pendingPhoto) {
+            // GARDE-FOU PHOTO : zéro écrasement silencieux, aperçu & confirmation sélective
+            photoUpdateProposal = buildPhotoUpdateProposal(actionsToExecute, {
+              profile: state.profile,
+              latestBiometrics: state.biometrics.at(-1) || null,
+            });
+          } else {
+            const execResult = await executeCoachActions(actionsToExecute, {
+              profile: state.profile,
+              program: state.program,
+              biometrics: state.biometrics,
+              nutritionToday: state.nutritionToday,
+              todayISO: getTodayISO(),
+              db: {
+                updateProfile,
+                saveProgram,
+                resetBiometricsBaseline,
+                restoreBiometricsForProfile,
+                saveBiometric,
+                saveNutritionLog,
+                deleteNutritionLog,
+                saveCustomFood,
+                deleteCustomFood,
+              },
+            });
+            executedBadges = execResult.executedBadges;
+            changedModules = execResult.changedModules;
+            undoFn = execResult.undo;
 
-          if (changedModules.includes('program')) {
-            state.activeSession = null;
-            state.selectedDayIdx = 0;
+            if (changedModules.includes('program')) {
+              state.activeSession = null;
+              state.selectedDayIdx = 0;
+            }
           }
         }
 
         const displayContent =
           parsed.cleanText ||
-          (executedBadges.length > 0
-            ? 'Modifications enregistrées et appliquées dans votre espace Kinetix Lab.'
-            : rawResponse);
+          (photoUpdateProposal
+            ? 'Analyse terminée. Vérifie les champs détectés ci-dessous avant de les appliquer.'
+            : executedBadges.length > 0
+              ? 'Modifications enregistrées et appliquées dans votre espace Kinetix Lab.'
+              : rawResponse);
 
         await addCoachMessage(state.profile.id, {
           role: 'assistant',
@@ -4788,9 +5627,10 @@ function renderProfilSubTab(slot) {
           tierUsed: res.tierUsed,
           provider: res.provider || null,
           fallbackReason: res.usedFallback ? res.fallbackReason : null,
-          actionProposal: executedBadges.length === 0 ? actionProposal || null : null,
+          actionProposal: !photoUpdateProposal && executedBadges.length === 0 ? actionProposal || null : null,
           actionApplied: false,
           executedBadges,
+          photoUpdateProposal,
         });
       } finally {
         state.coachBusy = false;
@@ -4820,8 +5660,10 @@ function renderProfilSubTab(slot) {
       e.preventDefault();
       const input = document.getElementById('coach-input');
       const text = input.value.trim();
+      const photo = state.coachPendingPhoto;
+      if (!text && !photo) return;
       input.value = '';
-      await submitCoachQuestion(text);
+      await submitCoachQuestion(text, photo);
     });
     return;
   }

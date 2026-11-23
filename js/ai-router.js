@@ -375,6 +375,163 @@ export function repairAndParseJSON(rawText) {
 
 const MUSCLE_STATUS_VALUES = new Set(['LAG', 'BALANCED', 'DOMINANT']);
 
+const VALID_ING_STATES = new Set(['cuit', 'cru', 'prêt']);
+
+function parseLooseNumber(val, fallback = 0) {
+  if (typeof val === 'number' && Number.isFinite(val)) return val;
+  if (typeof val === 'string') {
+    const cleaned = val.replace(',', '.').match(/-?\d+(?:\.\d+)?/);
+    if (cleaned) {
+      const n = Number(cleaned[0]);
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return fallback;
+}
+
+function normalizeIngredientState(rawState) {
+  const s = String(rawState || '').trim().toLowerCase();
+  if (s.includes('cru') || s === 'raw') return 'cru';
+  if (s.includes('pret') || s.includes('prêt') || s.includes('ready') || s.includes('frais')) return 'prêt';
+  if (s.includes('cuit') || s.includes('grill') || s.includes('rôti') || s.includes('cooked')) return 'cuit';
+  return VALID_ING_STATES.has(s) ? s : 'cuit';
+}
+
+/**
+ * Normalise de façon tolérante la sortie JSON d'une analyse photo repas
+ * (supporte les petits modèles type gemini-flash-lite-latest, Ollama, Puter.js
+ * et les variantes de clés legacy items/protein_g ou Pro ingredients/protein).
+ */
+export function normalizeMealVisionPayload(raw = {}) {
+  const data = raw && typeof raw === 'object' ? raw : {};
+  const rawList = Array.isArray(data.ingredients)
+    ? data.ingredients
+    : Array.isArray(data.items)
+      ? data.items
+      : [];
+
+  const ingredients = rawList
+    .filter((entry) => entry && typeof entry === 'object' && String(entry.name || entry.label || '').trim())
+    .map((entry, idx) => {
+      const grams = Math.max(1, Math.round(parseLooseNumber(entry.grams ?? entry.weight_g ?? entry.weightGrams, 100)));
+      const protein = Math.max(0, Math.round(parseLooseNumber(entry.protein ?? entry.protein_g ?? entry.proteinG, 0) * 10) / 10);
+      const carbs = Math.max(0, Math.round(parseLooseNumber(entry.carbs ?? entry.carbs_g ?? entry.carbsG, 0) * 10) / 10);
+      const fat = Math.max(0, Math.round(parseLooseNumber(entry.fat ?? entry.fat_g ?? entry.fatG, 0) * 10) / 10);
+      const fiber = Math.max(0, Math.round(parseLooseNumber(entry.fiber ?? entry.fiber_g ?? entry.fiberG, 0) * 10) / 10);
+      const rawKcal = parseLooseNumber(entry.kcal ?? entry.calories, -1);
+      const kcal = rawKcal >= 0 ? Math.round(rawKcal) : Math.round(protein * 4 + carbs * 4 + fat * 9);
+
+      // Ancrage pour 100 g afin de permettre un redimensionnement sans perte lors de l'édition temps réel
+      const to100 = 100 / grams;
+      return {
+        id: String(entry.id || `ing_${idx}_${Date.now().toString(36)}`),
+        name: String(entry.name || entry.label).trim(),
+        state: normalizeIngredientState(entry.state),
+        grams,
+        kcal,
+        protein,
+        carbs,
+        fat,
+        fiber,
+        note: String(entry.note || '').trim(),
+        per100: {
+          kcal: Number((kcal * to100).toFixed(2)),
+          protein: Number((protein * to100).toFixed(2)),
+          carbs: Number((carbs * to100).toFixed(2)),
+          fat: Number((fat * to100).toFixed(2)),
+          fiber: Number((fiber * to100).toFixed(2)),
+        },
+      };
+    });
+
+  const totals = ingredients.reduce(
+    (acc, item) => ({
+      grams: acc.grams + item.grams,
+      kcal: acc.kcal + item.kcal,
+      protein: Math.round((acc.protein + item.protein) * 10) / 10,
+      carbs: Math.round((acc.carbs + item.carbs) * 10) / 10,
+      fat: Math.round((acc.fat + item.fat) * 10) / 10,
+      fiber: Math.round((acc.fiber + item.fiber) * 10) / 10,
+    }),
+    { grams: 0, kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 }
+  );
+
+  const rawConf = String(data.confidence || 'medium').trim().toLowerCase();
+  const confidence = rawConf.includes('high') || rawConf.includes('haut')
+    ? 'high'
+    : rawConf.includes('low') || rawConf.includes('faib')
+      ? 'low'
+      : 'medium';
+
+  const confidenceReason = String(
+    data.confidenceReason || data.confidence_reason || (confidence === 'low' ? 'Grammages ou sauces à vérifier visuellement' : '')
+  ).trim();
+
+  let hiddenFatsWarning = false;
+  let hiddenFatsMessage = '';
+  if (typeof data.hiddenFatsWarning === 'boolean') {
+    hiddenFatsWarning = data.hiddenFatsWarning;
+    hiddenFatsMessage = String(data.hiddenFatsMessage || data.hidden_fats_message || '').trim();
+  } else if (data.hiddenFatsWarning && typeof data.hiddenFatsWarning === 'object') {
+    hiddenFatsWarning = Boolean(data.hiddenFatsWarning.warning ?? data.hiddenFatsWarning.active ?? data.hiddenFatsWarning.detected ?? true);
+    hiddenFatsMessage = String(data.hiddenFatsWarning.message || data.hiddenFatsWarning.note || '').trim();
+  } else if (typeof data.hiddenFatsWarning === 'string' && data.hiddenFatsWarning.trim()) {
+    hiddenFatsWarning = true;
+    hiddenFatsMessage = data.hiddenFatsWarning.trim();
+  } else if (data.hidden_fats_warning) {
+    hiddenFatsWarning = Boolean(data.hidden_fats_warning);
+    hiddenFatsMessage = String(data.hidden_fats_message || '').trim();
+  }
+  if (hiddenFatsWarning && !hiddenFatsMessage) {
+    hiddenFatsMessage = 'Huile de cuisson, vinaigrette ou sauce dense probable — pense à l’ajouter si nécessaire.';
+  }
+
+  const dishName = String(
+    data.dishName ||
+      data.dish_name ||
+      data.meal_label ||
+      (ingredients.length > 0 ? ingredients.slice(0, 3).map((i) => i.name).join(' & ') : 'Assiette analysée')
+  ).trim();
+
+  const coachTip = String(data.coachTip || data.coach_tip || data.advice || '').trim();
+  const estimatedTotalGrams = totals.grams || Math.round(parseLooseNumber(data.estimatedTotalGrams ?? data.estimated_total_grams, 0));
+  const rawScore = parseLooseNumber(data.alignment_score ?? data.alignmentScore, 80);
+  const alignment_score = Math.max(0, Math.min(100, Math.round(rawScore)));
+
+  return {
+    dishName,
+    meal_label: dishName,
+    confidence,
+    confidenceReason,
+    estimatedTotalGrams,
+    ingredients,
+    // Compatibilité descendante
+    items: ingredients.map((i) => ({
+      name: i.name,
+      state: i.state,
+      grams: i.grams,
+      kcal: i.kcal,
+      protein_g: i.protein,
+      carbs_g: i.carbs,
+      fat_g: i.fat,
+      fiber_g: i.fiber,
+      note: i.note,
+    })),
+    totals: {
+      kcal: totals.kcal,
+      protein_g: totals.protein,
+      carbs_g: totals.carbs,
+      fat_g: totals.fat,
+      fiber_g: totals.fiber,
+    },
+    hiddenFatsWarning,
+    hiddenFatsMessage,
+    coachTip,
+    advice: coachTip,
+    alignment_score,
+  };
+}
+
 export function validateStructuredOutput(taskType, data, customValidIds = null) {
   if (!data || typeof data !== 'object') {
     return { valid: false, errors: ['Payload JSON nul ou non-objet.'] };
@@ -405,14 +562,9 @@ export function validateStructuredOutput(taskType, data, customValidIds = null) 
       errors.push('posture doit être un objet.');
     }
   } else if (taskType === 'meal_analysis') {
-    if (!Array.isArray(data.items) || data.items.length === 0) {
-      errors.push('items doit contenir au moins un aliment détecté.');
-    }
-    const totals = data.totals || {};
-    for (const key of ['kcal', 'protein_g', 'carbs_g', 'fat_g']) {
-      if (typeof totals[key] !== 'number' || Number.isNaN(totals[key]) || totals[key] < 0) {
-        errors.push(`totals.${key} doit être un nombre positif.`);
-      }
+    const normalized = normalizeMealVisionPayload(data);
+    if (!Array.isArray(normalized.ingredients) || normalized.ingredients.length === 0) {
+      errors.push('ingredients doit contenir au moins un ingrédient détecté.');
     }
   } else if (taskType === 'scale_ocr') {
     if (typeof data.weight_kg !== 'number' || data.weight_kg < 25 || data.weight_kg > 300) {
@@ -628,13 +780,21 @@ export function runTier0Fallback(taskType, prompt, context = {}) {
     case 'program_mutation':
       return runTier0ProgramMutation(context);
     case 'meal_analysis':
-      return {
+      return normalizeMealVisionPayload({
         source: 'tier0_local_fallback',
-        items: [{ name: 'Assiette à confirmer manuellement (hors-ligne)', grams: 350, kcal: 520, protein_g: 36, carbs_g: 52, fat_g: 16 }],
-        totals: { kcal: 520, protein_g: 36, carbs_g: 52, fat_g: 16 },
+        dishName: 'Assiette à vérifier (hors-ligne)',
+        confidence: 'low',
+        confidenceReason: 'Mode hors-ligne Niveau 0 : ajustez les ingrédients et grammages manuellement.',
+        ingredients: [
+          { name: 'Protéine principale (ex. poulet)', state: 'cuit', grams: 150, kcal: 248, protein: 46.5, carbs: 0, fat: 5.4, fiber: 0, note: 'à ajuster' },
+          { name: 'Féculent (ex. riz basmati)', state: 'cuit', grams: 180, kcal: 234, protein: 4.9, carbs: 50.4, fat: 0.7, fiber: 1.1, note: 'à ajuster' },
+          { name: 'Légumes verts', state: 'cuit', grams: 150, kcal: 48, protein: 3.6, carbs: 7.5, fat: 0.5, fiber: 4.5, note: 'à ajuster' },
+        ],
+        hiddenFatsWarning: true,
+        hiddenFatsMessage: 'Pensez à ajouter l’huile de cuisson ou la sauce éventuelle (+1 c.à.s = 90 kcal).',
+        coachTip: 'Mode hors-ligne actif : ajustez directement les grammages ci-dessous ou ajoutez un aliment Ciqual.',
         alignment_score: 75,
-        advice: 'Mode hors-ligne actif : utilisez la base Ciqual embarquée ou le scanner code-barres pour un grammage exact.',
-      };
+      });
     case 'scale_ocr':
       return {
         source: 'tier0_local_fallback',
@@ -1762,6 +1922,8 @@ export async function routeAIRequest({
     return buildFallback(`Schéma invalide (${validation.errors.join(' ; ')}) — repli silencieux Niveau 0.`);
   }
 
+  const finalData = taskType === 'meal_analysis' ? normalizeMealVisionPayload(parsed.data) : parsed.data;
+
   return {
     ok: true,
     usedFallback: false,
@@ -1770,6 +1932,6 @@ export async function routeAIRequest({
     tierUsed: settings.activeTier,
     provider: rawResult.provider,
     latencyMs: Math.round(performance.now() - startedAt),
-    data: parsed.data,
+    data: finalData,
   };
 }

@@ -48,7 +48,7 @@ export function blobToDataUrl(blob) {
 
 export async function compressPhysiqueImage(
   source,
-  { maxWidth = 1080, maxHeight = 1440, targetBytes = 180000 } = {}
+  { maxWidth = 1024, maxHeight = 1440, initialQuality = 0.78, targetBytes = 180000 } = {}
 ) {
   let drawable = source;
   let tempObjectUrl = null;
@@ -79,7 +79,7 @@ export async function compressPhysiqueImage(
 
     // Test support WebP natif (Safari iOS ancien bascule proprement en JPEG)
     let mimeType = 'image/webp';
-    let quality = 0.84;
+    let quality = Number(initialQuality) || 0.78;
     let blob = await canvasToBlob(canvas, mimeType, quality);
 
     if (!blob || blob.type !== 'image/webp') {
@@ -87,10 +87,10 @@ export async function compressPhysiqueImage(
       blob = await canvasToBlob(canvas, mimeType, quality);
     }
 
-    // Réduction progressive de qualité pour rester proche de ~180 Ko
+    // Réduction progressive de qualité pour limiter la RAM iOS et la latence réseau
     let attempts = 0;
     while (blob && blob.size > targetBytes && quality > 0.42 && attempts < 6) {
-      quality -= 0.08;
+      quality -= 0.07;
       blob = await canvasToBlob(canvas, mimeType, Number(quality.toFixed(2)));
       attempts += 1;
     }
@@ -111,6 +111,20 @@ export async function compressPhysiqueImage(
   } finally {
     if (tempObjectUrl) URL.revokeObjectURL(tempObjectUrl);
   }
+}
+
+/**
+ * Compression dédiée aux photos envoyées au routeur IA (Repas & Chat Coach) :
+ * max 1024 px, qualité ~0.78 JPEG/WebP, rapide et sûre sur iOS.
+ */
+export async function compressVisionPhoto(source, options = {}) {
+  return compressPhysiqueImage(source, {
+    maxWidth: 1024,
+    maxHeight: 1024,
+    initialQuality: 0.78,
+    targetBytes: 220000,
+    ...options,
+  });
 }
 
 /* ==========================================================================
@@ -581,7 +595,16 @@ Renvoie EXACTEMENT ce schéma JSON :
     "shoulder_tilt_deg": 0.0,
     "pelvic_tilt_deg": 0.0,
     "forward_head_deg": 0.0,
-    "flags": ["<observation posturale ou levier segmentaire>"]
+    "flags": ["<observation posturale ou levier segmentaire>"],
+    "flag_codes": ["anterior_pelvic_tilt" | "kyphosis" | "forward_head" | "protracted_shoulders"]
+  },
+  "estimated_body_fat_pct": 16.5,
+  "morphotype": "ectomorph | mesomorph | endomorph | ecto_meso | meso_endo",
+  "segment_proportions": {
+    "femurTorsoRatio": "long_femur | balanced | short_femur",
+    "armSpanRatio": "long_arms | balanced | short_arms",
+    "claviclePelvisRatio": "broad_shoulders | balanced | narrow_shoulders",
+    "ribcageType": "narrow | medium | wide"
   },
   "visual_evolution_summary": "<synthèse concise croisée avec la balance et les mensurations>"
 }`;
@@ -600,9 +623,47 @@ Renvoie EXACTEMENT ce schéma JSON :
     expectJson: true,
   });
 
+  // Inférence de repli locale à partir de MediaPipe si le modèle Vision n'a pas renvoyé les proportions
+  const derivedSegments = {};
+  if (typeof mergedRatios.femurToTibiaRatio === 'number') {
+    derivedSegments.femurTorsoRatio =
+      mergedRatios.femurToTibiaRatio > 1.12 ? 'long_femur' : mergedRatios.femurToTibiaRatio < 0.94 ? 'short_femur' : 'balanced';
+  }
+  if (typeof mergedRatios.armSpanToHeightRatio === 'number') {
+    derivedSegments.armSpanRatio =
+      mergedRatios.armSpanToHeightRatio > 1.04 ? 'long_arms' : mergedRatios.armSpanToHeightRatio < 0.96 ? 'short_arms' : 'balanced';
+  }
+  if (typeof mergedRatios.shoulderToHipRatio === 'number') {
+    derivedSegments.claviclePelvisRatio =
+      mergedRatios.shoulderToHipRatio >= 1.42 ? 'broad_shoulders' : mergedRatios.shoulderToHipRatio <= 1.24 ? 'narrow_shoulders' : 'balanced';
+  }
+
+  const derivedPostureCodes = [];
+  if (Number(mergedPosture.pelvicTiltDeg) > 10) derivedPostureCodes.push('anterior_pelvic_tilt');
+  if (Number(mergedPosture.forwardHeadDeg) > 12) derivedPostureCodes.push('forward_head');
+  if (Number(mergedPosture.thoracicLeanDeg) > 12) derivedPostureCodes.push('kyphosis');
+
+  const rawEstBf = Number(routed.data?.estimated_body_fat_pct ?? routed.data?.estimatedBodyFatPct);
+  const estimatedBodyFatPct =
+    Number.isFinite(rawEstBf) && rawEstBf >= 4 && rawEstBf <= 55 ? Number(rawEstBf.toFixed(1)) : null;
+
   // Normalisation des statuts & enrichissement systématique avec la géométrie MediaPipe locale
   const normalizedData = {
     ...routed.data,
+    estimated_body_fat_pct: estimatedBodyFatPct,
+    morphotype: typeof routed.data?.morphotype === 'string' ? routed.data.morphotype.trim() : null,
+    segment_proportions: {
+      ...derivedSegments,
+      ...(routed.data?.segment_proportions && typeof routed.data.segment_proportions === 'object'
+        ? routed.data.segment_proportions
+        : {}),
+    },
+    posture: {
+      ...(routed.data?.posture || {}),
+      flag_codes: Array.isArray(routed.data?.posture?.flag_codes) && routed.data.posture.flag_codes.length > 0
+        ? routed.data.posture.flag_codes
+        : derivedPostureCodes,
+    },
     muscle_scores: (routed.data?.muscle_scores || []).map((m) => ({
       group: m.group,
       label: m.label || MUSCLE_GROUPS[m.group]?.label || m.group,

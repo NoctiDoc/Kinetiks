@@ -1989,4 +1989,340 @@ input[type="range"].range-tech::-webkit-slider-thumb {
   gap: 8px;
 }
 
+/* ==========================================================================
+   ANALYSE PHOTO NUTRITION PRO & COACH VISION (CARBONE TECHNIQUE MOBILE)
+   ========================================================================== */
+
+.meal-photo-preview {
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-input);
+}
+
+.meal-editor-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.meal-conf-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-input);
+  color: var(--text-secondary);
+}
+
+.meal-conf-badge.is-high {
+  border-color: var(--ok-border);
+  color: var(--ok);
+}
+
+.meal-conf-badge.is-medium {
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.meal-conf-badge.is-low {
+  border-color: var(--danger-border);
+  color: var(--danger);
+}
+
+.meal-totals-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-border);
+  background-color: var(--bg-base);
+}
+
+.meal-portion-bar {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.meal-portion-btn {
+  min-height: 44px;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-input);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.meal-portion-btn.is-active {
+  border-color: var(--accent);
+  background-color: var(--accent-subtle);
+  color: var(--accent);
+}
+
+.meal-ing-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.meal-ing-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-hairline);
+  background-color: var(--bg-input);
+}
+
+.meal-ing-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.meal-ing-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.meal-ing-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.meal-ing-state {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  padding: 2px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  background-color: var(--bg-surface);
+}
+
+.meal-ing-controls {
+  display: grid;
+  grid-template-columns: auto minmax(78px, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.meal-step-btn {
+  min-width: 58px;
+  min-height: 44px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.meal-step-btn:active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.meal-grams-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 8px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  background-color: var(--bg-base);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.meal-grams-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.meal-hidden-fats {
+  padding: 10px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-border);
+  background-color: var(--accent-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.meal-journal-row {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-hairline);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.meal-journal-ing-list {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-hairline);
+  background-color: var(--bg-input);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Coach Chat Photo Composer & Selective Confirmation Card */
+.coach-composer-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.coach-photo-preview-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-border);
+  background-color: var(--bg-elevated);
+}
+
+.coach-photo-thumb {
+  width: 48px;
+  height: 48px;
+  border-radius: 3px;
+  object-fit: cover;
+  border: 1px solid var(--border-strong);
+  flex-shrink: 0;
+}
+
+.coach-composer-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.coach-photo-btn {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.coach-photo-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.coach-msg-photo {
+  max-width: 180px;
+  max-height: 180px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  border: 1px solid var(--border-strong);
+}
+
+.photo-proposal-card {
+  margin-top: 6px;
+  padding: 10px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-border);
+  background-color: var(--bg-base);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.photo-proposal-card.is-applied {
+  border-color: var(--ok-border);
+}
+
+.photo-proposal-card.is-ignored {
+  border-color: var(--border-hairline);
+  opacity: 0.72;
+}
+
+.photo-proposal-item {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-hairline);
+  background-color: var(--bg-surface);
+  cursor: pointer;
+}
+
+.photo-proposal-item input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.photo-proposal-diff {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 0.73rem;
+  color: var(--text-secondary);
+}
+
+.tag-new-field {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  font-weight: 700;
+  border: 1px solid var(--accent-border);
+  background-color: var(--accent-subtle);
+  color: var(--accent);
+}
+
 

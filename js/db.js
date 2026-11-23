@@ -648,6 +648,8 @@ export async function addCoachMessage(profileId, message) {
     actionProposal: message.actionProposal || null,
     actionApplied: Boolean(message.actionApplied),
     executedBadges: Array.isArray(message.executedBadges) ? message.executedBadges : [],
+    photoDataUrl: message.photoDataUrl || null,
+    photoUpdateProposal: message.photoUpdateProposal || null,
     meta: message.meta || {},
   };
   await putRecord(STORES.COACH_MESSAGES, record);

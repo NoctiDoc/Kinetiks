@@ -8,7 +8,7 @@
  * - Générateur de plans types & liste de courses interactive classée par rayon
  */
 
-import { routeAIRequest } from './ai-router.js';
+import { routeAIRequest, normalizeMealVisionPayload } from './ai-router.js';
 
 /* ==========================================================================
    1. BASE FRANÇAISE CIQUAL (ANSES) ENRICHIE (~175 ALIMENTS COURANTS + PORTIONS)
@@ -1034,33 +1034,151 @@ export function calculateMacroTargets(
    6. ANALYSE PHOTO D'ASSIETTE & OCR BALANCE (IA VISION VIA ROUTEUR)
    ========================================================================== */
 
-export async function analyzeMealPhoto(imageDataUrl, profile, aiSettings) {
-  const targets = calculateMacroTargets(profile);
-  const systemPrompt =
-    'Tu es un nutritionniste sportif certifié. Analyse la photo du repas et renvoie STRICTEMENT un JSON valide sans texte parasite.';
-  const prompt = `Identifie chaque aliment visible sur cette assiette, estime son grammage réaliste et ses macros.
-Objectif utilisateur : ${profile?.goal || 'recomp'} (cible jour : ${targets.kcal} kcal, P ${targets.proteinG}g / G ${targets.carbsG}g / L ${targets.fatG}g).
+export const HIDDEN_FAT_SHORTCUTS = Object.freeze([
+  { id: 'hf_oil', label: '+1 c.à.s huile (10g · 90 kcal)', name: 'Huile d’olive (cuisson)', state: 'prêt', grams: 10, kcal: 90, protein: 0, carbs: 0, fat: 10, fiber: 0 },
+  { id: 'hf_butter', label: '+Beurre (10g · 74 kcal)', name: 'Beurre doux', state: 'prêt', grams: 10, kcal: 74, protein: 0.1, carbs: 0.1, fat: 8.2, fiber: 0 },
+  { id: 'hf_vinaigrette', label: '+Vinaigrette (15g · 68 kcal)', name: 'Vinaigrette classique', state: 'prêt', grams: 15, kcal: 68, protein: 0.1, carbs: 0.8, fat: 7.2, fiber: 0 },
+  { id: 'hf_sauce', label: '+Sauce (20g · 45 kcal)', name: 'Sauce / crème d’accompagnement', state: 'prêt', grams: 20, kcal: 45, protein: 0.6, carbs: 3.0, fat: 3.4, fiber: 0.1 },
+]);
 
-Schéma JSON strict :
+/**
+ * Recalcule instantanément et sans perte de précision les macros d'un ingrédient
+ * lors d'une modification de grammage (ancrage per100 ou ratio nouveau/ancien).
+ */
+export function scaleMealIngredientGrams(ingredient, nextGrams) {
+  const grams = Math.max(0, Math.min(2500, Math.round(Number(nextGrams) || 0)));
+  const prevGrams = Math.max(1, Number(ingredient?.grams) || 100);
+  const per100 = ingredient?.per100 || {
+    kcal: ((Number(ingredient?.kcal) || 0) / prevGrams) * 100,
+    protein: ((Number(ingredient?.protein) || 0) / prevGrams) * 100,
+    carbs: ((Number(ingredient?.carbs) || 0) / prevGrams) * 100,
+    fat: ((Number(ingredient?.fat) || 0) / prevGrams) * 100,
+    fiber: ((Number(ingredient?.fiber) || 0) / prevGrams) * 100,
+  };
+  const f = grams / 100;
+  return {
+    ...ingredient,
+    grams,
+    kcal: Math.round(per100.kcal * f),
+    protein: Math.round(per100.protein * f * 10) / 10,
+    carbs: Math.round(per100.carbs * f * 10) / 10,
+    fat: Math.round(per100.fat * f * 10) / 10,
+    fiber: Math.round(per100.fiber * f * 10) / 10,
+    per100,
+  };
+}
+
+/**
+ * Crée une ligne d'ingrédient normalisée depuis un aliment Ciqual / Perso ou une saisie manuelle.
+ */
+export function createMealIngredientFromFood(food, grams = 100, state = 'cuit') {
+  const g = Math.max(1, Math.min(2500, Math.round(Number(grams) || 100)));
+  const per100 = {
+    kcal: Number(food?.kcal) || 0,
+    protein: Number(food?.proteinG ?? food?.protein) || 0,
+    carbs: Number(food?.carbsG ?? food?.carbs) || 0,
+    fat: Number(food?.fatG ?? food?.fat) || 0,
+    fiber: Number(food?.fiberG ?? food?.fiber) || 0,
+  };
+  return scaleMealIngredientGrams(
+    {
+      id: `ing_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      name: String(food?.name || 'Ingrédient').trim(),
+      state,
+      grams: g,
+      note: food?.source === 'custom' ? 'aliment perso' : food?.id?.startsWith('hf_') ? 'ajout rapide' : 'ajout manuel',
+      per100,
+    },
+    g
+  );
+}
+
+/**
+ * Calcule les totaux d'une liste d'ingrédients en tenant compte d'un multiplicateur de portion consommée.
+ */
+export function computeMealIngredientsTotals(ingredients = [], portionMultiplier = 1) {
+  const mult = Math.max(0.1, Math.min(3, Number(portionMultiplier) || 1));
+  const raw = (ingredients || []).reduce(
+    (acc, item) => ({
+      grams: acc.grams + (Number(item.grams) || 0),
+      kcal: acc.kcal + (Number(item.kcal) || 0),
+      protein: acc.protein + (Number(item.protein) || 0),
+      carbs: acc.carbs + (Number(item.carbs) || 0),
+      fat: acc.fat + (Number(item.fat) || 0),
+      fiber: acc.fiber + (Number(item.fiber) || 0),
+    }),
+    { grams: 0, kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 }
+  );
+
+  return {
+    grams: Math.round(raw.grams * mult),
+    kcal: Math.round(raw.kcal * mult),
+    protein: Math.round(raw.protein * mult * 10) / 10,
+    carbs: Math.round(raw.carbs * mult * 10) / 10,
+    fat: Math.round(raw.fat * mult * 10) / 10,
+    fiber: Math.round(raw.fiber * mult * 10) / 10,
+  };
+}
+
+export async function analyzeMealPhoto(imageDataUrl, profile, aiSettings, options = {}) {
+  const targets = options.targets || calculateMacroTargets(profile);
+  const consumed = options.consumed || null;
+  const userHint = String(options.userHint || '').trim();
+
+  const remainingLine = consumed
+    ? `Reste à manger aujourd'hui : ${Math.max(0, Math.round(targets.kcal - consumed.kcal))} kcal (P ${Math.max(0, Math.round(targets.proteinG - consumed.proteinG))}g · G ${Math.max(0, Math.round(targets.carbsG - consumed.carbsG))}g · L ${Math.max(0, Math.round(targets.fatG - consumed.fatG))}g).`
+    : `Cible journalière : ${targets.kcal} kcal (P ${targets.proteinG}g / G ${targets.carbsG}g / L ${targets.fatG}g).`;
+
+  const hintBlock = userHint
+    ? `\nPRÉCISION IMPORTANTE DE L'UTILISATEUR (à respecter en priorité) : "${userHint}".`
+    : '';
+
+  const systemPrompt =
+    'Tu es un diététicien du sport français (référentiel Ciqual / ANSES). Analyse la photo d’assiette avec précision ingrédient par ingrédient et renvoie STRICTEMENT un objet JSON valide, sans texte ni balises markdown autour.';
+
+  const prompt = `Identifie le plat global et décompose CHAQUE ingrédient visible sur la photo avec son état (cuit, cru ou prêt), son grammage réaliste et ses macros exactes pour ce grammage.
+Objectif utilisateur : ${profile?.goal || 'recomp'}.
+${remainingLine}${hintBlock}
+
+Schéma JSON STRICT à respecter :
 {
-  "meal_label": "<titre court du repas>",
-  "items": [
-    { "name": "<aliment>", "grams": 150, "kcal": 200, "protein_g": 28, "carbs_g": 0, "fat_g": 8 }
+  "dishName": "Poulet curry & riz basmati",
+  "confidence": "high | medium | low",
+  "confidenceReason": "Courte justification (ex. Sauce partiellement masquée)",
+  "estimatedTotalGrams": 420,
+  "ingredients": [
+    {
+      "name": "Blanc de poulet grillé",
+      "state": "cuit",
+      "grams": 160,
+      "kcal": 264,
+      "protein": 49.6,
+      "carbs": 0,
+      "fat": 5.8,
+      "fiber": 0,
+      "note": "estimation visuelle"
+    }
   ],
-  "totals": { "kcal": 550, "protein_g": 42, "carbs_g": 55, "fat_g": 16 },
-  "alignment_score": 85,
-  "advice": "<conseil concret d'ajustement pour le repas suivant>"
+  "hiddenFatsWarning": true,
+  "hiddenFatsMessage": "Sauce brillante ou huile de cuisson probable (+10 g).",
+  "coachTip": "Conseil court d'alignement avec les macros restantes du jour.",
+  "alignment_score": 84
 }`;
 
-  return routeAIRequest({
+  const routed = await routeAIRequest({
     taskType: 'meal_analysis',
     prompt,
     systemPrompt,
     images: imageDataUrl ? [imageDataUrl] : [],
-    context: { profile, targets },
+    context: { profile, targets, userHint },
     settings: aiSettings,
     expectJson: true,
   });
+
+  return {
+    ...routed,
+    data: normalizeMealVisionPayload(routed.data),
+  };
 }
 
 export async function extractScaleMetricsOCR(imageDataUrl, profile, aiSettings) {
