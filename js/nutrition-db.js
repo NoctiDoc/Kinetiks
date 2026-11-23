@@ -11,85 +11,332 @@
 import { routeAIRequest } from './ai-router.js';
 
 /* ==========================================================================
-   1. BASE FRANÇAISE CIQUAL (ANSES) EMBARQUÉE HORS-LIGNE (VALEURS POUR 100 G)
+   1. BASE FRANÇAISE CIQUAL (ANSES) ENRICHIE (~175 ALIMENTS COURANTS + PORTIONS)
    ========================================================================== */
 
+const ALL_DIETS = ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'];
+const ALL_DIETS_GLUTEN = ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal'];
+const DAIRY_DIETS = ['omnivore', 'vegetarian', 'pescatarian', 'halal', 'gluten_free'];
+const FISH_DIETS = ['omnivore', 'pescatarian', 'halal', 'gluten_free'];
+const MEAT_HALAL = ['omnivore', 'halal', 'gluten_free'];
+const PORK_DIETS = ['omnivore', 'gluten_free'];
+
 export const CIQUAL_DB = Object.freeze([
-  // Protéines animales & œufs
-  { id: 'ciq_poulet_filet', name: 'Blanc de poulet (filet, cru)', kcal: 114, proteinG: 23.2, carbsG: 0, fatG: 1.9, fiberG: 0, aisle: 'Boucherie & Poissonnerie', diets: ['omnivore', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_dinde_escalope', name: 'Escalope de dinde', kcal: 109, proteinG: 23.6, carbsG: 0, fatG: 1.4, fiberG: 0, aisle: 'Boucherie & Poissonnerie', diets: ['omnivore', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_boeuf_5', name: 'Steak haché bœuf 5 % MG', kcal: 127, proteinG: 21.0, carbsG: 0, fatG: 4.8, fiberG: 0, aisle: 'Boucherie & Poissonnerie', diets: ['omnivore', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_saumon', name: 'Pavé de saumon frais', kcal: 205, proteinG: 20.4, carbsG: 0, fatG: 13.6, fiberG: 0, aisle: 'Boucherie & Poissonnerie', diets: ['omnivore', 'pescatarian', 'halal', 'gluten_free'], allergens: ['fish'] },
-  { id: 'ciq_cabillaud', name: 'Dos de cabillaud', kcal: 82, proteinG: 18.0, carbsG: 0, fatG: 0.7, fiberG: 0, aisle: 'Boucherie & Poissonnerie', diets: ['omnivore', 'pescatarian', 'halal', 'gluten_free'], allergens: ['fish'] },
-  { id: 'ciq_thon_nat', name: 'Thon au naturel (égoutté)', kcal: 112, proteinG: 25.5, carbsG: 0, fatG: 1.0, fiberG: 0, aisle: 'Épicerie & Conserves', diets: ['omnivore', 'pescatarian', 'halal', 'gluten_free'], allergens: ['fish'] },
-  { id: 'ciq_sardines', name: 'Sardines au naturel', kcal: 158, proteinG: 21.2, carbsG: 0, fatG: 8.1, fiberG: 0, aisle: 'Épicerie & Conserves', diets: ['omnivore', 'pescatarian', 'halal', 'gluten_free'], allergens: ['fish'] },
-  { id: 'ciq_crevettes', name: 'Crevettes cuites décortiquées', kcal: 94, proteinG: 20.8, carbsG: 0.5, fatG: 0.9, fiberG: 0, aisle: 'Boucherie & Poissonnerie', diets: ['omnivore', 'pescatarian', 'gluten_free'], allergens: ['shellfish'] },
-  { id: 'ciq_oeuf', name: 'Œuf entier (calibre M ≈ 60 g)', kcal: 145, proteinG: 12.7, carbsG: 0.7, fatG: 10.1, fiberG: 0, aisle: 'Crèmerie & Œufs', diets: ['omnivore', 'vegetarian', 'pescatarian', 'halal', 'gluten_free'], allergens: ['eggs'] },
-  { id: 'ciq_blanc_oeuf', name: 'Blanc d’œuf liquide', kcal: 48, proteinG: 10.8, carbsG: 0.7, fatG: 0.2, fiberG: 0, aisle: 'Crèmerie & Œufs', diets: ['omnivore', 'vegetarian', 'pescatarian', 'halal', 'gluten_free'], allergens: ['eggs'] },
+  // --- VIANDES & VOLAILLES (CRU & CUIT) ---
+  { id: 'ciq_poulet_filet', name: 'Blanc de poulet (filet, cru)', kcal: 114, proteinG: 23.2, carbsG: 0, fatG: 1.9, fiberG: 0, portion: { label: '1 filet', grams: 150 }, aisle: 'Boucherie & Poissonnerie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_poulet_filet_cuit', name: 'Blanc de poulet cuit (poêlé / grillé)', kcal: 156, proteinG: 31.0, carbsG: 0, fatG: 3.2, fiberG: 0, portion: { label: '1 filet cuit', grams: 130 }, aisle: 'Boucherie & Poissonnerie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_poulet_cuisse', name: 'Cuisse de poulet rôtie (sans peau)', kcal: 174, proteinG: 25.5, carbsG: 0, fatG: 7.8, fiberG: 0, portion: { label: '1 cuisse', grams: 140 }, aisle: 'Boucherie & Poissonnerie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_poulet_roti', name: 'Poulet rôti (chair et peau)', kcal: 215, proteinG: 26.2, carbsG: 0, fatG: 12.1, fiberG: 0, portion: { label: '1 portion', grams: 150 }, aisle: 'Boucherie & Poissonnerie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_poulet_tranche', name: 'Blanc de poulet en tranches (charcuterie)', kcal: 108, proteinG: 21.5, carbsG: 1.5, fatG: 1.6, fiberG: 0, portion: { label: '1 tranche', grams: 40 }, aisle: 'Charcuterie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_dinde_escalope', name: 'Escalope de dinde (crue)', kcal: 109, proteinG: 23.6, carbsG: 0, fatG: 1.4, fiberG: 0, portion: { label: '1 escalope', grams: 140 }, aisle: 'Boucherie & Poissonnerie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_dinde_cuite', name: 'Escalope de dinde cuite', kcal: 148, proteinG: 30.2, carbsG: 0, fatG: 2.6, fiberG: 0, portion: { label: '1 escalope cuite', grams: 120 }, aisle: 'Boucherie & Poissonnerie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_dinde_tranche', name: 'Blanc de dinde en tranches', kcal: 104, proteinG: 20.8, carbsG: 1.4, fatG: 1.5, fiberG: 0, portion: { label: '1 tranche', grams: 40 }, aisle: 'Charcuterie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_boeuf_5', name: 'Steak haché bœuf 5 % MG (cru)', kcal: 127, proteinG: 21.0, carbsG: 0, fatG: 4.8, fiberG: 0, portion: { label: '1 steak', grams: 125 }, aisle: 'Boucherie & Poissonnerie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_boeuf_5_cuit', name: 'Steak haché bœuf 5 % MG (cuit)', kcal: 162, proteinG: 26.8, carbsG: 0, fatG: 6.1, fiberG: 0, portion: { label: '1 steak cuit', grams: 100 }, aisle: 'Boucherie & Poissonnerie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_boeuf_10', name: 'Steak haché bœuf 10 % MG', kcal: 174, proteinG: 20.2, carbsG: 0, fatG: 10.2, fiberG: 0, portion: { label: '1 steak', grams: 125 }, aisle: 'Boucherie & Poissonnerie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_boeuf_15', name: 'Steak haché bœuf 15 % MG', kcal: 218, proteinG: 19.4, carbsG: 0, fatG: 15.2, fiberG: 0, portion: { label: '1 steak', grams: 125 }, aisle: 'Boucherie & Poissonnerie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_boeuf_bavette', name: 'Bavette de bœuf grillée', kcal: 178, proteinG: 27.4, carbsG: 0, fatG: 7.4, fiberG: 0, portion: { label: '1 bavette', grams: 150 }, aisle: 'Boucherie & Poissonnerie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_boeuf_faux_filet', name: 'Faux-filet de bœuf grillé', kcal: 204, proteinG: 26.8, carbsG: 0, fatG: 10.6, fiberG: 0, portion: { label: '1 pièce', grams: 160 }, aisle: 'Boucherie & Poissonnerie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_boeuf_roti', name: 'Rôti de bœuf cuit (tranche)', kcal: 155, proteinG: 28.0, carbsG: 0, fatG: 4.5, fiberG: 0, portion: { label: '1 tranche', grams: 80 }, aisle: 'Boucherie & Poissonnerie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_viande_grisons', name: 'Viande des Grisons / Bresaola', kcal: 172, proteinG: 36.5, carbsG: 0.5, fatG: 2.6, fiberG: 0, portion: { label: '4 tranches', grams: 50 }, aisle: 'Charcuterie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_veau_escalope', name: 'Escalope de veau cuite', kcal: 168, proteinG: 29.5, carbsG: 0, fatG: 5.2, fiberG: 0, portion: { label: '1 escalope', grams: 130 }, aisle: 'Boucherie & Poissonnerie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_porc_filet_mignon', name: 'Filet mignon de porc cuit', kcal: 149, proteinG: 27.6, carbsG: 0, fatG: 4.1, fiberG: 0, portion: { label: '1 portion', grams: 140 }, aisle: 'Boucherie & Poissonnerie', diets: PORK_DIETS, allergens: [] },
+  { id: 'ciq_porc_cote', name: 'Côte de porc grillée', kcal: 224, proteinG: 25.1, carbsG: 0, fatG: 13.8, fiberG: 0, portion: { label: '1 côte', grams: 150 }, aisle: 'Boucherie & Poissonnerie', diets: PORK_DIETS, allergens: [] },
+  { id: 'ciq_jambon_blanc', name: 'Jambon blanc découenné dégraissé', kcal: 112, proteinG: 21.0, carbsG: 1.0, fatG: 2.6, fiberG: 0, portion: { label: '1 tranche', grams: 45 }, aisle: 'Charcuterie', diets: PORK_DIETS, allergens: [] },
+  { id: 'ciq_jambon_cru', name: 'Jambon cru / Serrano / Bayonne', kcal: 238, proteinG: 29.0, carbsG: 0.5, fatG: 13.4, fiberG: 0, portion: { label: '2 tranches', grams: 40 }, aisle: 'Charcuterie', diets: PORK_DIETS, allergens: [] },
+  { id: 'ciq_bacon_filet', name: 'Filet de bacon fumé (maigre)', kcal: 136, proteinG: 22.8, carbsG: 0.8, fatG: 4.5, fiberG: 0, portion: { label: '3 tranches', grams: 50 }, aisle: 'Charcuterie', diets: PORK_DIETS, allergens: [] },
+  { id: 'ciq_lardons', name: 'Lardons fumés nature', kcal: 295, proteinG: 16.5, carbsG: 0.8, fatG: 25.2, fiberG: 0, portion: { label: '1/2 barquette', grams: 75 }, aisle: 'Charcuterie', diets: PORK_DIETS, allergens: [] },
+  { id: 'ciq_merguez', name: 'Merguez grillée', kcal: 286, proteinG: 16.8, carbsG: 1.5, fatG: 23.8, fiberG: 0, portion: { label: '1 merguez', grams: 55 }, aisle: 'Boucherie & Poissonnerie', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_canard_magret', name: 'Magret de canard (sans peau, cuit)', kcal: 194, proteinG: 26.8, carbsG: 0, fatG: 9.6, fiberG: 0, portion: { label: '1/2 magret', grams: 150 }, aisle: 'Boucherie & Poissonnerie', diets: MEAT_HALAL, allergens: [] },
 
-  // Produits laitiers & Protéines
-  { id: 'ciq_skyr', name: 'Skyr nature 0 % MG', kcal: 62, proteinG: 10.0, carbsG: 4.0, fatG: 0.2, fiberG: 0, aisle: 'Crèmerie & Œufs', diets: ['omnivore', 'vegetarian', 'pescatarian', 'halal', 'gluten_free'], allergens: ['dairy'] },
-  { id: 'ciq_fromage_blanc_0', name: 'Fromage blanc 0 % MG', kcal: 47, proteinG: 7.8, carbsG: 3.8, fatG: 0.1, fiberG: 0, aisle: 'Crèmerie & Œufs', diets: ['omnivore', 'vegetarian', 'pescatarian', 'halal', 'gluten_free'], allergens: ['dairy'] },
-  { id: 'ciq_fromage_blanc_3', name: 'Fromage blanc 3 % MG', kcal: 73, proteinG: 7.4, carbsG: 3.6, fatG: 3.2, fiberG: 0, aisle: 'Crèmerie & Œufs', diets: ['omnivore', 'vegetarian', 'pescatarian', 'halal', 'gluten_free'], allergens: ['dairy'] },
-  { id: 'ciq_cottage', name: 'Cottage cheese nature', kcal: 98, proteinG: 12.2, carbsG: 2.7, fatG: 4.2, fiberG: 0, aisle: 'Crèmerie & Œufs', diets: ['omnivore', 'vegetarian', 'pescatarian', 'halal', 'gluten_free'], allergens: ['dairy'] },
-  { id: 'ciq_whey_iso', name: 'Whey Isolate nature', kcal: 372, proteinG: 86.0, carbsG: 2.5, fatG: 1.5, fiberG: 0, aisle: 'Nutrition Sportive', diets: ['omnivore', 'vegetarian', 'pescatarian', 'halal', 'gluten_free'], allergens: ['dairy'] },
-  { id: 'ciq_prot_pois', name: 'Protéine végétale (pois/riz)', kcal: 380, proteinG: 78.0, carbsG: 6.0, fatG: 4.5, fiberG: 3.5, aisle: 'Nutrition Sportive', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
+  // --- POISSONS & FRUITS DE MER ---
+  { id: 'ciq_saumon', name: 'Pavé de saumon frais (cru)', kcal: 205, proteinG: 20.4, carbsG: 0, fatG: 13.6, fiberG: 0, portion: { label: '1 pavé', grams: 140 }, aisle: 'Boucherie & Poissonnerie', diets: FISH_DIETS, allergens: ['fish'] },
+  { id: 'ciq_saumon_cuit', name: 'Pavé de saumon cuit au four', kcal: 228, proteinG: 23.8, carbsG: 0, fatG: 14.5, fiberG: 0, portion: { label: '1 pavé cuit', grams: 130 }, aisle: 'Boucherie & Poissonnerie', diets: FISH_DIETS, allergens: ['fish'] },
+  { id: 'ciq_saumon_fume', name: 'Saumon fumé (tranches)', kcal: 185, proteinG: 22.5, carbsG: 0.5, fatG: 10.4, fiberG: 0, portion: { label: '2 tranches', grams: 70 }, aisle: 'Boucherie & Poissonnerie', diets: FISH_DIETS, allergens: ['fish'] },
+  { id: 'ciq_truite', name: 'Pavé de truite frais', kcal: 146, proteinG: 20.5, carbsG: 0, fatG: 6.9, fiberG: 0, portion: { label: '1 pavé', grams: 140 }, aisle: 'Boucherie & Poissonnerie', diets: FISH_DIETS, allergens: ['fish'] },
+  { id: 'ciq_cabillaud', name: 'Dos de cabillaud', kcal: 82, proteinG: 18.0, carbsG: 0, fatG: 0.7, fiberG: 0, portion: { label: '1 dos', grams: 150 }, aisle: 'Boucherie & Poissonnerie', diets: FISH_DIETS, allergens: ['fish'] },
+  { id: 'ciq_colin', name: 'Filet de colin / lieu noir', kcal: 88, proteinG: 19.2, carbsG: 0, fatG: 0.9, fiberG: 0, portion: { label: '1 filet', grams: 140 }, aisle: 'Boucherie & Poissonnerie', diets: FISH_DIETS, allergens: ['fish'] },
+  { id: 'ciq_dorade', name: 'Filet de dorade royale', kcal: 118, proteinG: 20.4, carbsG: 0, fatG: 3.9, fiberG: 0, portion: { label: '1 filet', grams: 140 }, aisle: 'Boucherie & Poissonnerie', diets: FISH_DIETS, allergens: ['fish'] },
+  { id: 'ciq_thon_nat', name: 'Thon au naturel (égoutté)', kcal: 112, proteinG: 25.5, carbsG: 0, fatG: 1.0, fiberG: 0, portion: { label: '1 boîte', grams: 130 }, aisle: 'Épicerie & Conserves', diets: FISH_DIETS, allergens: ['fish'] },
+  { id: 'ciq_thon_huile', name: 'Thon à l’huile d’olive (égoutté)', kcal: 198, proteinG: 24.5, carbsG: 0, fatG: 11.0, fiberG: 0, portion: { label: '1 boîte', grams: 112 }, aisle: 'Épicerie & Conserves', diets: FISH_DIETS, allergens: ['fish'] },
+  { id: 'ciq_sardines', name: 'Sardines au naturel', kcal: 158, proteinG: 21.2, carbsG: 0, fatG: 8.1, fiberG: 0, portion: { label: '1 boîte', grams: 95 }, aisle: 'Épicerie & Conserves', diets: FISH_DIETS, allergens: ['fish'] },
+  { id: 'ciq_sardines_huile', name: 'Sardines à l’huile d’olive (égouttées)', kcal: 215, proteinG: 22.8, carbsG: 0, fatG: 13.8, fiberG: 0, portion: { label: '1 boîte', grams: 90 }, aisle: 'Épicerie & Conserves', diets: FISH_DIETS, allergens: ['fish'] },
+  { id: 'ciq_maquereau', name: 'Filets de maquereau nature / grillés', kcal: 224, proteinG: 21.0, carbsG: 0, fatG: 15.5, fiberG: 0, portion: { label: '1 boîte', grams: 110 }, aisle: 'Épicerie & Conserves', diets: FISH_DIETS, allergens: ['fish'] },
+  { id: 'ciq_crevettes', name: 'Crevettes cuites décortiquées', kcal: 94, proteinG: 20.8, carbsG: 0.5, fatG: 0.9, fiberG: 0, portion: { label: '1 portion', grams: 120 }, aisle: 'Boucherie & Poissonnerie', diets: ['omnivore', 'pescatarian', 'gluten_free'], allergens: ['shellfish'] },
+  { id: 'ciq_moules', name: 'Moules cuites (chair)', kcal: 118, proteinG: 17.5, carbsG: 4.2, fatG: 3.1, fiberG: 0, portion: { label: '1 portion', grams: 150 }, aisle: 'Boucherie & Poissonnerie', diets: ['omnivore', 'pescatarian', 'gluten_free'], allergens: ['shellfish'] },
+  { id: 'ciq_calamar', name: 'Calamars / Encornets cuits', kcal: 96, proteinG: 18.2, carbsG: 1.8, fatG: 1.6, fiberG: 0, portion: { label: '1 portion', grams: 140 }, aisle: 'Boucherie & Poissonnerie', diets: ['omnivore', 'pescatarian', 'gluten_free'], allergens: ['shellfish'] },
+  { id: 'ciq_surimi', name: 'Bâtonnets de surimi', kcal: 98, proteinG: 8.5, carbsG: 11.2, fatG: 2.0, fiberG: 0, portion: { label: '4 bâtonnets', grams: 70 }, aisle: 'Boucherie & Poissonnerie', diets: ['omnivore', 'pescatarian'], allergens: ['fish', 'gluten'] },
 
-  // Protéines végétales
-  { id: 'ciq_tofu_ferme', name: 'Tofu ferme nature', kcal: 138, proteinG: 14.5, carbsG: 1.8, fatG: 8.2, fiberG: 1.2, aisle: 'Protéines Végétales', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: ['soy'] },
-  { id: 'ciq_tempeh', name: 'Tempeh nature', kcal: 193, proteinG: 19.5, carbsG: 7.6, fatG: 10.8, fiberG: 4.5, aisle: 'Protéines Végétales', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: ['soy'] },
-  { id: 'ciq_lentilles_cuites', name: 'Lentilles vertes cuites', kcal: 116, proteinG: 9.0, carbsG: 16.5, fatG: 0.4, fiberG: 7.9, aisle: 'Épicerie & Féculents', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_pois_chiches', name: 'Pois chiches cuits', kcal: 148, proteinG: 8.3, carbsG: 21.0, fatG: 2.6, fiberG: 7.2, aisle: 'Épicerie & Féculents', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_edamame', name: 'Edamame (fèves de soja cuites)', kcal: 122, proteinG: 11.9, carbsG: 8.9, fatG: 5.2, fiberG: 5.2, aisle: 'Surgelés & Légumes', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: ['soy'] },
-  { id: 'ciq_seitan', name: 'Seitan nature', kcal: 148, proteinG: 24.5, carbsG: 6.5, fatG: 2.1, fiberG: 1.2, aisle: 'Protéines Végétales', diets: ['omnivore', 'vegetarian', 'vegan', 'halal'], allergens: ['gluten'] },
+  // --- ŒUFS & PRODUITS LAITIERS ---
+  { id: 'ciq_oeuf', name: 'Œuf entier (calibre M)', kcal: 145, proteinG: 12.7, carbsG: 0.7, fatG: 10.1, fiberG: 0, portion: { label: '1 œuf', grams: 60 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['eggs'] },
+  { id: 'ciq_oeuf_dur', name: 'Œuf dur', kcal: 147, proteinG: 12.9, carbsG: 0.8, fatG: 10.2, fiberG: 0, portion: { label: '1 œuf dur', grams: 60 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['eggs'] },
+  { id: 'ciq_blanc_oeuf', name: 'Blanc d’œuf liquide', kcal: 48, proteinG: 10.8, carbsG: 0.7, fatG: 0.2, fiberG: 0, portion: { label: '1 blanc', grams: 35 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['eggs'] },
+  { id: 'ciq_skyr', name: 'Skyr nature 0 % MG', kcal: 62, proteinG: 10.0, carbsG: 4.0, fatG: 0.2, fiberG: 0, portion: { label: '1 pot', grams: 150 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_fromage_blanc_0', name: 'Fromage blanc 0 % MG', kcal: 47, proteinG: 7.8, carbsG: 3.8, fatG: 0.1, fiberG: 0, portion: { label: '1 bol', grams: 200 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_fromage_blanc_3', name: 'Fromage blanc 3 % MG', kcal: 73, proteinG: 7.4, carbsG: 3.6, fatG: 3.2, fiberG: 0, portion: { label: '1 bol', grams: 200 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_yaourt_grec', name: 'Yaourt grec nature', kcal: 118, proteinG: 6.2, carbsG: 4.2, fatG: 8.5, fiberG: 0, portion: { label: '1 pot', grams: 150 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_yaourt_nature', name: 'Yaourt nature brassé', kcal: 58, proteinG: 4.1, carbsG: 4.8, fatG: 2.3, fiberG: 0, portion: { label: '1 pot', grams: 125 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_petit_suisse', name: 'Petit-suisse nature (3,8 % MG)', kcal: 96, proteinG: 9.2, carbsG: 3.6, fatG: 4.8, fiberG: 0, portion: { label: '1 pot', grams: 60 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_cottage', name: 'Cottage cheese nature', kcal: 98, proteinG: 12.2, carbsG: 2.7, fatG: 4.2, fiberG: 0, portion: { label: '1 pot', grams: 200 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_carre_frais', name: 'Carré frais 0 % MG', kcal: 72, proteinG: 12.8, carbsG: 3.8, fatG: 0.4, fiberG: 0, portion: { label: '1 carré', grams: 25 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_lait_demi', name: 'Lait demi-écrémé', kcal: 46, proteinG: 3.3, carbsG: 4.8, fatG: 1.6, fiberG: 0, portion: { label: '1 verre', grams: 250 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_lait_ecreme', name: 'Lait écrémé', kcal: 34, proteinG: 3.4, carbsG: 4.9, fatG: 0.1, fiberG: 0, portion: { label: '1 verre', grams: 250 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_lait_entier', name: 'Lait entier', kcal: 64, proteinG: 3.3, carbsG: 4.7, fatG: 3.6, fiberG: 0, portion: { label: '1 verre', grams: 250 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_lait_amande', name: 'Boisson / Lait d’amande sans sucre', kcal: 15, proteinG: 0.5, carbsG: 0.3, fatG: 1.2, fiberG: 0.3, portion: { label: '1 verre', grams: 250 }, aisle: 'Boissons Végétales', diets: ALL_DIETS, allergens: ['nuts'] },
+  { id: 'ciq_lait_avoine', name: 'Boisson / Lait d’avoine sans sucre', kcal: 42, proteinG: 0.8, carbsG: 6.8, fatG: 1.2, fiberG: 0.8, portion: { label: '1 verre', grams: 250 }, aisle: 'Boissons Végétales', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_lait_soja', name: 'Boisson / Lait de soja nature', kcal: 36, proteinG: 3.4, carbsG: 1.2, fatG: 1.9, fiberG: 0.6, portion: { label: '1 verre', grams: 250 }, aisle: 'Boissons Végétales', diets: ALL_DIETS, allergens: ['soy'] },
+  { id: 'ciq_emmental', name: 'Emmental râpé', kcal: 382, proteinG: 28.5, carbsG: 0.5, fatG: 29.5, fiberG: 0, portion: { label: '1 poignée', grams: 30 }, aisle: 'Fromagerie', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_mozzarella', name: 'Mozzarella boule', kcal: 255, proteinG: 18.5, carbsG: 1.5, fatG: 19.5, fiberG: 0, portion: { label: '1 boule', grams: 125 }, aisle: 'Fromagerie', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_comte', name: 'Comté affiné', kcal: 412, proteinG: 27.2, carbsG: 0.5, fatG: 33.8, fiberG: 0, portion: { label: '1 portion', grams: 30 }, aisle: 'Fromagerie', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_parmesan', name: 'Parmesan râpé', kcal: 402, proteinG: 35.8, carbsG: 0.4, fatG: 28.4, fiberG: 0, portion: { label: '1 c.à.s', grams: 15 }, aisle: 'Fromagerie', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_feta', name: 'Feta grecque', kcal: 276, proteinG: 15.2, carbsG: 1.2, fatG: 23.4, fiberG: 0, portion: { label: '1 portion', grams: 40 }, aisle: 'Fromagerie', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_chevre_frais', name: 'Fromage de chèvre frais', kcal: 215, proteinG: 11.5, carbsG: 2.2, fatG: 17.8, fiberG: 0, portion: { label: '1 portion', grams: 30 }, aisle: 'Fromagerie', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_ricotta', name: 'Ricotta nature', kcal: 152, proteinG: 9.8, carbsG: 3.4, fatG: 11.0, fiberG: 0, portion: { label: '2 c.à.s', grams: 60 }, aisle: 'Fromagerie', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_beurre', name: 'Beurre doux / demi-sel', kcal: 742, proteinG: 0.7, carbsG: 0.6, fatG: 82.0, fiberG: 0, portion: { label: '1 noisette', grams: 10 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['dairy'] },
 
-  // Glucides complexes & Féculents
-  { id: 'ciq_riz_basmati_cru', name: 'Riz basmati (poids cru)', kcal: 354, proteinG: 8.2, carbsG: 77.5, fatG: 0.7, fiberG: 1.4, aisle: 'Épicerie & Féculents', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_riz_basmati_cuit', name: 'Riz basmati cuit', kcal: 126, proteinG: 2.9, carbsG: 27.6, fatG: 0.3, fiberG: 0.5, aisle: 'Épicerie & Féculents', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_flocons_avoine', name: 'Flocons d’avoine complets', kcal: 368, proteinG: 13.5, carbsG: 58.7, fatG: 7.0, fiberG: 10.1, aisle: 'Épicerie & Féculents', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal'], allergens: ['gluten'] },
-  { id: 'ciq_patate_douce', name: 'Patate douce cuite vapeur', kcal: 86, proteinG: 1.6, carbsG: 18.2, fatG: 0.2, fiberG: 3.0, aisle: 'Fruits & Légumes', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_pomme_terre', name: 'Pomme de terre vapeur', kcal: 80, proteinG: 2.0, carbsG: 16.7, fatG: 0.1, fiberG: 1.8, aisle: 'Fruits & Légumes', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_pates_completes_cru', name: 'Pâtes complètes (poids cru)', kcal: 348, proteinG: 13.2, carbsG: 66.0, fatG: 2.1, fiberG: 7.5, aisle: 'Épicerie & Féculents', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal'], allergens: ['gluten'] },
-  { id: 'ciq_quinoa_cuit', name: 'Quinoa cuit', kcal: 120, proteinG: 4.4, carbsG: 20.3, fatG: 1.9, fiberG: 2.8, aisle: 'Épicerie & Féculents', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_pain_complet', name: 'Pain complet au levain', kcal: 247, proteinG: 9.2, carbsG: 45.8, fatG: 1.8, fiberG: 6.8, aisle: 'Boulangerie', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal'], allergens: ['gluten'] },
-  { id: 'ciq_sarrasin_cuit', name: 'Sarrasin (kasha) cuit', kcal: 108, proteinG: 3.8, carbsG: 21.0, fatG: 0.8, fiberG: 2.7, aisle: 'Épicerie & Féculents', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
+  // --- PROTÉINES & COMPLÉMENTS ---
+  { id: 'ciq_whey_iso', name: 'Whey Isolate nature', kcal: 372, proteinG: 86.0, carbsG: 2.5, fatG: 1.5, fiberG: 0, portion: { label: '1 scoop', grams: 30 }, aisle: 'Nutrition Sportive', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_whey_conc', name: 'Whey Concentrée (vanille/choco)', kcal: 392, proteinG: 76.0, carbsG: 7.5, fatG: 6.2, fiberG: 1.0, portion: { label: '1 scoop', grams: 30 }, aisle: 'Nutrition Sportive', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_caseine', name: 'Caséine micellaire', kcal: 365, proteinG: 80.0, carbsG: 4.5, fatG: 2.2, fiberG: 0.5, portion: { label: '1 scoop', grams: 30 }, aisle: 'Nutrition Sportive', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_prot_pois', name: 'Protéine végétale (pois/riz)', kcal: 380, proteinG: 78.0, carbsG: 6.0, fatG: 4.5, fiberG: 3.5, portion: { label: '1 scoop', grams: 30 }, aisle: 'Nutrition Sportive', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_barre_prot', name: 'Barre protéinée (standard)', kcal: 365, proteinG: 33.0, carbsG: 32.0, fatG: 12.0, fiberG: 7.5, portion: { label: '1 barre', grams: 60 }, aisle: 'Nutrition Sportive', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_boisson_prot', name: 'Boisson lactée hyperprotéinée (HiPRO / YoPRO)', kcal: 62, proteinG: 8.5, carbsG: 5.5, fatG: 0.5, fiberG: 0, portion: { label: '1 bouteille', grams: 300 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['dairy'] },
 
-  // Légumes & Fibres
-  { id: 'ciq_brocoli', name: 'Brocoli vapeur', kcal: 34, proteinG: 2.8, carbsG: 4.0, fatG: 0.4, fiberG: 3.0, aisle: 'Fruits & Légumes', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_haricots_verts', name: 'Haricots verts cuits', kcal: 31, proteinG: 1.9, carbsG: 4.5, fatG: 0.2, fiberG: 3.4, aisle: 'Fruits & Légumes', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_epinards', name: 'Épinards frais / cuits', kcal: 23, proteinG: 2.9, carbsG: 1.4, fatG: 0.4, fiberG: 2.6, aisle: 'Fruits & Légumes', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_courgette', name: 'Courgette cuite', kcal: 17, proteinG: 1.2, carbsG: 2.4, fatG: 0.2, fiberG: 1.1, aisle: 'Fruits & Légumes', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_poivron', name: 'Poivron rouge cru', kcal: 31, proteinG: 1.0, carbsG: 5.5, fatG: 0.3, fiberG: 2.1, aisle: 'Fruits & Légumes', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_tomate', name: 'Tomate fraîche', kcal: 19, proteinG: 0.9, carbsG: 3.2, fatG: 0.2, fiberG: 1.2, aisle: 'Fruits & Légumes', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
+  // --- PROTÉINES VÉGÉTALES & LÉGUMINEUSES ---
+  { id: 'ciq_tofu_ferme', name: 'Tofu ferme nature', kcal: 138, proteinG: 14.5, carbsG: 1.8, fatG: 8.2, fiberG: 1.2, portion: { label: '1 bloc', grams: 125 }, aisle: 'Protéines Végétales', diets: ALL_DIETS, allergens: ['soy'] },
+  { id: 'ciq_tofu_soyeux', name: 'Tofu soyeux', kcal: 56, proteinG: 5.4, carbsG: 1.4, fatG: 3.1, fiberG: 0.5, portion: { label: '1 portion', grams: 150 }, aisle: 'Protéines Végétales', diets: ALL_DIETS, allergens: ['soy'] },
+  { id: 'ciq_tempeh', name: 'Tempeh nature', kcal: 193, proteinG: 19.5, carbsG: 7.6, fatG: 10.8, fiberG: 4.5, portion: { label: '1 portion', grams: 100 }, aisle: 'Protéines Végétales', diets: ALL_DIETS, allergens: ['soy'] },
+  { id: 'ciq_seitan', name: 'Seitan nature', kcal: 148, proteinG: 24.5, carbsG: 6.5, fatG: 2.1, fiberG: 1.2, portion: { label: '1 portion', grams: 100 }, aisle: 'Protéines Végétales', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_edamame', name: 'Edamame (fèves de soja cuites)', kcal: 122, proteinG: 11.9, carbsG: 8.9, fatG: 5.2, fiberG: 5.2, portion: { label: '1 bol', grams: 100 }, aisle: 'Surgelés & Légumes', diets: ALL_DIETS, allergens: ['soy'] },
+  { id: 'ciq_pst', name: 'Protéines de soja texturées (sèches)', kcal: 335, proteinG: 51.0, carbsG: 22.0, fatG: 1.5, fiberG: 14.0, portion: { label: '1 portion sèche', grams: 50 }, aisle: 'Protéines Végétales', diets: ALL_DIETS, allergens: ['soy'] },
+  { id: 'ciq_lentilles_cuites', name: 'Lentilles vertes cuites', kcal: 116, proteinG: 9.0, carbsG: 16.5, fatG: 0.4, fiberG: 7.9, portion: { label: '1 portion', grams: 180 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_lentilles_corail', name: 'Lentilles corail cuites', kcal: 114, proteinG: 8.6, carbsG: 17.8, fatG: 0.5, fiberG: 4.6, portion: { label: '1 portion', grams: 180 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_pois_chiches', name: 'Pois chiches cuits', kcal: 148, proteinG: 8.3, carbsG: 21.0, fatG: 2.6, fiberG: 7.2, portion: { label: '1 portion', grams: 150 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_haricots_rouges', name: 'Haricots rouges cuits', kcal: 124, proteinG: 8.7, carbsG: 18.6, fatG: 0.6, fiberG: 6.8, portion: { label: '1 portion', grams: 150 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_haricots_blancs', name: 'Haricots blancs cuits', kcal: 128, proteinG: 8.5, carbsG: 19.5, fatG: 0.5, fiberG: 7.0, portion: { label: '1 portion', grams: 150 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_houmous', name: 'Houmous nature', kcal: 235, proteinG: 7.2, carbsG: 14.5, fatG: 15.8, fiberG: 4.8, portion: { label: '2 c.à.s', grams: 50 }, aisle: 'Traiteur', diets: ALL_DIETS, allergens: [] },
 
-  // Fruits
-  { id: 'ciq_banane', name: 'Banane fraîche', kcal: 90, proteinG: 1.1, carbsG: 20.5, fatG: 0.3, fiberG: 2.6, aisle: 'Fruits & Légumes', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_pomme', name: 'Pomme fraîche', kcal: 54, proteinG: 0.3, carbsG: 12.5, fatG: 0.2, fiberG: 2.4, aisle: 'Fruits & Légumes', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_myrtilles', name: 'Myrtilles / Fruits rouges', kcal: 57, proteinG: 0.7, carbsG: 12.2, fatG: 0.3, fiberG: 2.4, aisle: 'Fruits & Légumes', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_kiwi', name: 'Kiwi frais', kcal: 61, proteinG: 1.1, carbsG: 12.0, fatG: 0.5, fiberG: 3.0, aisle: 'Fruits & Légumes', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
+  // --- FÉCULENTS, PAINS & CÉRÉALES (CRU & CUIT) ---
+  { id: 'ciq_riz_basmati_cru', name: 'Riz basmati (poids cru)', kcal: 354, proteinG: 8.2, carbsG: 77.5, fatG: 0.7, fiberG: 1.4, portion: { label: '1 portion crue', grams: 80 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_riz_basmati_cuit', name: 'Riz basmati cuit', kcal: 126, proteinG: 2.9, carbsG: 27.6, fatG: 0.3, fiberG: 0.5, portion: { label: '1 bol cuit', grams: 200 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_riz_complet_cru', name: 'Riz complet (poids cru)', kcal: 358, proteinG: 7.6, carbsG: 73.5, fatG: 2.7, fiberG: 3.8, portion: { label: '1 portion crue', grams: 80 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_riz_complet_cuit', name: 'Riz complet cuit', kcal: 124, proteinG: 2.7, carbsG: 25.2, fatG: 1.0, fiberG: 1.6, portion: { label: '1 bol cuit', grams: 200 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_pates_blanches_cru', name: 'Pâtes blanches (poids cru)', kcal: 358, proteinG: 12.2, carbsG: 72.5, fatG: 1.5, fiberG: 3.0, portion: { label: '1 portion crue', grams: 90 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_pates_blanches_cuit', name: 'Pâtes blanches cuites', kcal: 138, proteinG: 4.8, carbsG: 27.6, fatG: 0.6, fiberG: 1.3, portion: { label: '1 assiette', grams: 220 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_pates_completes_cru', name: 'Pâtes complètes (poids cru)', kcal: 348, proteinG: 13.2, carbsG: 66.0, fatG: 2.1, fiberG: 7.5, portion: { label: '1 portion crue', grams: 90 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_pates_completes_cuit', name: 'Pâtes complètes cuites', kcal: 131, proteinG: 5.2, carbsG: 24.4, fatG: 0.9, fiberG: 3.2, portion: { label: '1 assiette', grams: 220 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_flocons_avoine', name: 'Flocons d’avoine complets', kcal: 368, proteinG: 13.5, carbsG: 58.7, fatG: 7.0, fiberG: 10.1, portion: { label: '1 bol', grams: 60 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_muesli', name: 'Muesli floconneux sans sucre ajouté', kcal: 362, proteinG: 10.8, carbsG: 62.5, fatG: 6.2, fiberG: 8.8, portion: { label: '1 bol', grams: 60 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_granola', name: 'Granola / Muesli croustillant', kcal: 445, proteinG: 8.6, carbsG: 62.0, fatG: 16.5, fiberG: 6.5, portion: { label: '1 portion', grams: 45 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_patate_douce', name: 'Patate douce cuite vapeur / four', kcal: 86, proteinG: 1.6, carbsG: 18.2, fatG: 0.2, fiberG: 3.0, portion: { label: '1 patate moy.', grams: 200 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_pomme_terre', name: 'Pomme de terre vapeur / eau', kcal: 80, proteinG: 2.0, carbsG: 16.7, fatG: 0.1, fiberG: 1.8, portion: { label: '2 pommes moy.', grams: 220 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_puree_pdt', name: 'Purée de pommes de terre (maison)', kcal: 96, proteinG: 2.2, carbsG: 14.5, fatG: 3.2, fiberG: 1.5, portion: { label: '1 portion', grams: 200 }, aisle: 'Épicerie & Féculents', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_semoule_cuite', name: 'Semoule de blé / Couscous cuit', kcal: 122, proteinG: 4.1, carbsG: 24.5, fatG: 0.4, fiberG: 1.5, portion: { label: '1 bol cuit', grams: 200 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_boulgour_cuit', name: 'Boulgour cuit', kcal: 105, proteinG: 3.6, carbsG: 20.5, fatG: 0.4, fiberG: 3.8, portion: { label: '1 bol cuit', grams: 200 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_quinoa_cuit', name: 'Quinoa cuit', kcal: 120, proteinG: 4.4, carbsG: 20.3, fatG: 1.9, fiberG: 2.8, portion: { label: '1 bol cuit', grams: 180 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_sarrasin_cuit', name: 'Sarrasin (kasha) cuit', kcal: 108, proteinG: 3.8, carbsG: 21.0, fatG: 0.8, fiberG: 2.7, portion: { label: '1 bol cuit', grams: 180 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_pain_complet', name: 'Pain complet au levain', kcal: 247, proteinG: 9.2, carbsG: 45.8, fatG: 1.8, fiberG: 6.8, portion: { label: '1 tranche', grams: 35 }, aisle: 'Boulangerie', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_baguette', name: 'Baguette tradition française', kcal: 274, proteinG: 8.6, carbsG: 56.2, fatG: 1.1, fiberG: 3.2, portion: { label: '1/4 baguette', grams: 60 }, aisle: 'Boulangerie', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_pain_mie_complet', name: 'Pain de mie complet', kcal: 256, proteinG: 8.8, carbsG: 44.5, fatG: 4.1, fiberG: 5.5, portion: { label: '1 tranche', grams: 38 }, aisle: 'Boulangerie', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_pain_mie_blanc', name: 'Pain de mie blanc', kcal: 268, proteinG: 7.8, carbsG: 49.5, fatG: 4.0, fiberG: 2.8, portion: { label: '1 tranche', grams: 35 }, aisle: 'Boulangerie', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_biscotte', name: 'Biscotte / Pain grillé complet', kcal: 392, proteinG: 11.5, carbsG: 70.0, fatG: 6.2, fiberG: 7.2, portion: { label: '2 biscottes', grams: 20 }, aisle: 'Boulangerie', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_galette_riz', name: 'Galettes de riz soufflé / maïs', kcal: 382, proteinG: 7.8, carbsG: 80.5, fatG: 2.8, fiberG: 3.4, portion: { label: '2 galettes', grams: 16 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_wrap_tortilla', name: 'Wrap / Tortilla de blé', kcal: 306, proteinG: 8.4, carbsG: 52.0, fatG: 6.8, fiberG: 3.2, portion: { label: '1 wrap', grams: 60 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_gnocchi', name: 'Gnocchis de pomme de terre (poêlés)', kcal: 178, proteinG: 4.2, carbsG: 34.5, fatG: 2.4, fiberG: 1.8, portion: { label: '1 portion', grams: 180 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_mais_doux', name: 'Maïs doux en grains (égoutté)', kcal: 96, proteinG: 3.2, carbsG: 17.5, fatG: 1.4, fiberG: 2.8, portion: { label: '1 petite boîte', grams: 140 }, aisle: 'Épicerie & Conserves', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_petits_pois', name: 'Petits pois cuits', kcal: 78, proteinG: 5.2, carbsG: 11.2, fatG: 0.4, fiberG: 5.5, portion: { label: '1 portion', grams: 150 }, aisle: 'Surgelés & Légumes', diets: ALL_DIETS, allergens: [] },
 
-  // Lipides de qualité & Oléagineux
-  { id: 'ciq_huile_olive', name: 'Huile d’olive vierge extra', kcal: 900, proteinG: 0, carbsG: 0, fatG: 100.0, fiberG: 0, aisle: 'Oléagineux & Huiles', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_avocat', name: 'Avocat frais (pulpe)', kcal: 169, proteinG: 1.8, carbsG: 1.8, fatG: 15.8, fiberG: 6.7, aisle: 'Fruits & Légumes', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_amandes', name: 'Amandes naturelles', kcal: 598, proteinG: 21.4, carbsG: 9.5, fatG: 51.5, fiberG: 12.2, aisle: 'Oléagineux & Huiles', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: ['nuts'] },
-  { id: 'ciq_noix', name: 'Cerneaux de noix (Oméga-3)', kcal: 673, proteinG: 15.2, carbsG: 7.0, fatG: 65.2, fiberG: 6.7, aisle: 'Oléagineux & Huiles', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: ['nuts'] },
-  { id: 'ciq_beurre_cacahuete', name: 'Purée de cacahuète 100 %', kcal: 604, proteinG: 25.8, carbsG: 12.0, fatG: 49.6, fiberG: 8.0, aisle: 'Oléagineux & Huiles', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: ['peanuts'] },
-  { id: 'ciq_graines_chia', name: 'Graines de chia', kcal: 486, proteinG: 16.5, carbsG: 8.0, fatG: 30.7, fiberG: 34.4, aisle: 'Oléagineux & Huiles', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
-  { id: 'ciq_chocolat_85', name: 'Chocolat noir 85 % cacao', kcal: 584, proteinG: 10.5, carbsG: 21.0, fatG: 48.0, fiberG: 12.0, aisle: 'Épicerie & Féculents', diets: ['omnivore', 'vegetarian', 'vegan', 'pescatarian', 'halal', 'gluten_free'], allergens: [] },
+  // --- LÉGUMES & FIBRES ---
+  { id: 'ciq_brocoli', name: 'Brocoli vapeur', kcal: 34, proteinG: 2.8, carbsG: 4.0, fatG: 0.4, fiberG: 3.0, portion: { label: '1 portion', grams: 180 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_haricots_verts', name: 'Haricots verts cuits', kcal: 31, proteinG: 1.9, carbsG: 4.5, fatG: 0.2, fiberG: 3.4, portion: { label: '1 portion', grams: 180 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_epinards', name: 'Épinards frais / cuits', kcal: 23, proteinG: 2.9, carbsG: 1.4, fatG: 0.4, fiberG: 2.6, portion: { label: '1 portion', grams: 150 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_courgette', name: 'Courgette cuite', kcal: 17, proteinG: 1.2, carbsG: 2.4, fatG: 0.2, fiberG: 1.1, portion: { label: '1 courgette', grams: 200 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_poivron', name: 'Poivron rouge / vert', kcal: 31, proteinG: 1.0, carbsG: 5.5, fatG: 0.3, fiberG: 2.1, portion: { label: '1 poivron', grams: 150 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_tomate', name: 'Tomate fraîche', kcal: 19, proteinG: 0.9, carbsG: 3.2, fatG: 0.2, fiberG: 1.2, portion: { label: '1 tomate', grams: 120 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_tomates_cerises', name: 'Tomates cerises', kcal: 24, proteinG: 1.0, carbsG: 4.1, fatG: 0.3, fiberG: 1.4, portion: { label: '1 poignée', grams: 100 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_concombre', name: 'Concombre frais', kcal: 14, proteinG: 0.7, carbsG: 2.3, fatG: 0.1, fiberG: 0.8, portion: { label: '1/2 concombre', grams: 150 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_salade_verte', name: 'Salade verte / Laitue / Mâche', kcal: 16, proteinG: 1.4, carbsG: 1.8, fatG: 0.2, fiberG: 1.5, portion: { label: '1 bol', grams: 80 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_carotte', name: 'Carotte crue / râpée', kcal: 38, proteinG: 0.8, carbsG: 7.6, fatG: 0.2, fiberG: 2.8, portion: { label: '1 carotte', grams: 100 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_champignons', name: 'Champignons de Paris', kcal: 24, proteinG: 2.8, carbsG: 1.6, fatG: 0.4, fiberG: 1.8, portion: { label: '1 portion', grams: 120 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_aubergine', name: 'Aubergine cuite / grillée', kcal: 28, proteinG: 1.0, carbsG: 4.5, fatG: 0.2, fiberG: 2.8, portion: { label: '1 portion', grams: 180 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_chou_fleur', name: 'Chou-fleur vapeur', kcal: 25, proteinG: 2.0, carbsG: 3.1, fatG: 0.3, fiberG: 2.4, portion: { label: '1 portion', grams: 180 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_asperges', name: 'Asperges vertes cuites', kcal: 24, proteinG: 2.4, carbsG: 2.2, fatG: 0.2, fiberG: 2.1, portion: { label: '1 portion', grams: 150 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_poireau', name: 'Poireau cuit', kcal: 27, proteinG: 1.4, carbsG: 4.1, fatG: 0.2, fiberG: 2.6, portion: { label: '1 poireau', grams: 150 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_oignon', name: 'Oignon jaune / rouge', kcal: 38, proteinG: 1.1, carbsG: 7.4, fatG: 0.2, fiberG: 1.7, portion: { label: '1 oignon moy.', grams: 90 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_ratatouille', name: 'Ratatouille cuisinée', kcal: 62, proteinG: 1.4, carbsG: 5.5, fatG: 3.5, fiberG: 2.2, portion: { label: '1 portion', grams: 200 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_soupe_legumes', name: 'Soupe / Velouté de légumes', kcal: 38, proteinG: 1.1, carbsG: 5.4, fatG: 1.1, fiberG: 1.6, portion: { label: '1 bol', grams: 250 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+
+  // --- FRUITS ---
+  { id: 'ciq_banane', name: 'Banane fraîche', kcal: 90, proteinG: 1.1, carbsG: 20.5, fatG: 0.3, fiberG: 2.6, portion: { label: '1 banane', grams: 120 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_pomme', name: 'Pomme fraîche', kcal: 54, proteinG: 0.3, carbsG: 12.5, fatG: 0.2, fiberG: 2.4, portion: { label: '1 pomme', grams: 150 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_poire', name: 'Poire fraîche', kcal: 56, proteinG: 0.4, carbsG: 12.6, fatG: 0.2, fiberG: 3.1, portion: { label: '1 poire', grams: 160 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_myrtilles', name: 'Myrtilles / Fruits rouges', kcal: 57, proteinG: 0.7, carbsG: 12.2, fatG: 0.3, fiberG: 2.4, portion: { label: '1 poignée', grams: 100 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_fraises', name: 'Fraises fraîches', kcal: 35, proteinG: 0.7, carbsG: 6.5, fatG: 0.3, fiberG: 2.0, portion: { label: '1 barquette/2', grams: 125 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_framboises', name: 'Framboises fraîches', kcal: 48, proteinG: 1.2, carbsG: 6.5, fatG: 0.6, fiberG: 6.5, portion: { label: '1 barquette', grams: 125 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_kiwi', name: 'Kiwi frais', kcal: 61, proteinG: 1.1, carbsG: 12.0, fatG: 0.5, fiberG: 3.0, portion: { label: '1 kiwi', grams: 75 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_orange', name: 'Orange fraîche', kcal: 47, proteinG: 0.9, carbsG: 9.8, fatG: 0.2, fiberG: 2.2, portion: { label: '1 orange', grams: 160 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_clementine', name: 'Clémentine / Mandarine', kcal: 48, proteinG: 0.8, carbsG: 10.2, fatG: 0.2, fiberG: 1.8, portion: { label: '2 clémentines', grams: 120 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_raisin', name: 'Raisin blanc / noir', kcal: 72, proteinG: 0.7, carbsG: 16.5, fatG: 0.2, fiberG: 1.0, portion: { label: '1 grappe', grams: 120 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_mangue', name: 'Mangue fraîche', kcal: 64, proteinG: 0.8, carbsG: 14.5, fatG: 0.3, fiberG: 1.8, portion: { label: '1/2 mangue', grams: 150 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_ananas', name: 'Ananas frais', kcal: 52, proteinG: 0.5, carbsG: 11.8, fatG: 0.2, fiberG: 1.4, portion: { label: '2 tranches', grams: 150 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_pasteque', name: 'Pastèque fraîche', kcal: 32, proteinG: 0.6, carbsG: 7.2, fatG: 0.2, fiberG: 0.4, portion: { label: '1 tranche', grams: 250 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_melon', name: 'Melon charentais', kcal: 36, proteinG: 0.8, carbsG: 7.5, fatG: 0.2, fiberG: 0.9, portion: { label: '1/4 melon', grams: 200 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_peche', name: 'Pêche / Nectarine', kcal: 44, proteinG: 0.9, carbsG: 9.2, fatG: 0.2, fiberG: 1.6, portion: { label: '1 pêche', grams: 130 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_compote_ssa', name: 'Compote de pommes sans sucre ajouté', kcal: 56, proteinG: 0.3, carbsG: 12.6, fatG: 0.2, fiberG: 1.8, portion: { label: '1 gourde / pot', grams: 100 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_dattes', name: 'Dattes Medjool séchées', kcal: 282, proteinG: 2.2, carbsG: 67.5, fatG: 0.4, fiberG: 7.1, portion: { label: '2 dattes', grams: 40 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+
+  // --- LIPIDES DE QUALITÉ & OLÉAGINEUX ---
+  { id: 'ciq_huile_olive', name: 'Huile d’olive vierge extra', kcal: 900, proteinG: 0, carbsG: 0, fatG: 100.0, fiberG: 0, portion: { label: '1 c.à.s', grams: 10 }, aisle: 'Oléagineux & Huiles', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_huile_colza', name: 'Huile de colza (Oméga-3)', kcal: 900, proteinG: 0, carbsG: 0, fatG: 100.0, fiberG: 0, portion: { label: '1 c.à.s', grams: 10 }, aisle: 'Oléagineux & Huiles', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_huile_coco', name: 'Huile de coco vierge', kcal: 895, proteinG: 0, carbsG: 0, fatG: 99.5, fiberG: 0, portion: { label: '1 c.à.s', grams: 10 }, aisle: 'Oléagineux & Huiles', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_avocat', name: 'Avocat frais (pulpe)', kcal: 169, proteinG: 1.8, carbsG: 1.8, fatG: 15.8, fiberG: 6.7, portion: { label: '1/2 avocat', grams: 80 }, aisle: 'Fruits & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_amandes', name: 'Amandes naturelles', kcal: 598, proteinG: 21.4, carbsG: 9.5, fatG: 51.5, fiberG: 12.2, portion: { label: '1 poignée', grams: 25 }, aisle: 'Oléagineux & Huiles', diets: ALL_DIETS, allergens: ['nuts'] },
+  { id: 'ciq_noix', name: 'Cerneaux de noix (Oméga-3)', kcal: 673, proteinG: 15.2, carbsG: 7.0, fatG: 65.2, fiberG: 6.7, portion: { label: '1 poignée', grams: 25 }, aisle: 'Oléagineux & Huiles', diets: ALL_DIETS, allergens: ['nuts'] },
+  { id: 'ciq_noix_cajou', name: 'Noix de cajou naturelles', kcal: 582, proteinG: 18.2, carbsG: 24.5, fatG: 45.8, fiberG: 3.4, portion: { label: '1 poignée', grams: 25 }, aisle: 'Oléagineux & Huiles', diets: ALL_DIETS, allergens: ['nuts'] },
+  { id: 'ciq_noisettes', name: 'Noisettes décortiquées', kcal: 642, proteinG: 14.8, carbsG: 7.5, fatG: 61.5, fiberG: 9.5, portion: { label: '1 poignée', grams: 25 }, aisle: 'Oléagineux & Huiles', diets: ALL_DIETS, allergens: ['nuts'] },
+  { id: 'ciq_pistaches', name: 'Pistaches décortiquées', kcal: 585, proteinG: 20.4, carbsG: 18.0, fatG: 46.5, fiberG: 10.2, portion: { label: '1 poignée', grams: 25 }, aisle: 'Oléagineux & Huiles', diets: ALL_DIETS, allergens: ['nuts'] },
+  { id: 'ciq_beurre_cacahuete', name: 'Beurre / Purée de cacahuète 100 %', kcal: 604, proteinG: 25.8, carbsG: 12.0, fatG: 49.6, fiberG: 8.0, portion: { label: '1 c.à.s', grams: 15 }, aisle: 'Oléagineux & Huiles', diets: ALL_DIETS, allergens: ['peanuts'] },
+  { id: 'ciq_puree_amande', name: 'Purée d’amandes complètes 100 %', kcal: 625, proteinG: 21.5, carbsG: 8.0, fatG: 54.5, fiberG: 11.0, portion: { label: '1 c.à.s', grams: 15 }, aisle: 'Oléagineux & Huiles', diets: ALL_DIETS, allergens: ['nuts'] },
+  { id: 'ciq_graines_chia', name: 'Graines de chia', kcal: 486, proteinG: 16.5, carbsG: 8.0, fatG: 30.7, fiberG: 34.4, portion: { label: '1 c.à.s', grams: 15 }, aisle: 'Oléagineux & Huiles', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_graines_courge', name: 'Graines de courge / lin', kcal: 565, proteinG: 29.5, carbsG: 11.0, fatG: 44.5, fiberG: 6.5, portion: { label: '1 c.à.s', grams: 15 }, aisle: 'Oléagineux & Huiles', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_chocolat_85', name: 'Chocolat noir 85 % cacao', kcal: 584, proteinG: 10.5, carbsG: 21.0, fatG: 48.0, fiberG: 12.0, portion: { label: '2 carrés', grams: 20 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_chocolat_70', name: 'Chocolat noir 70 % cacao', kcal: 568, proteinG: 8.2, carbsG: 34.0, fatG: 42.5, fiberG: 9.5, portion: { label: '2 carrés', grams: 20 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+
+  // --- SAUCES, CRÈMES & CONDIMENTS ---
+  { id: 'ciq_ketchup', name: 'Ketchup tomate', kcal: 108, proteinG: 1.2, carbsG: 24.5, fatG: 0.2, fiberG: 0.6, portion: { label: '1 c.à.s', grams: 15 }, aisle: 'Sauces & Condiments', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_mayonnaise', name: 'Mayonnaise classique', kcal: 685, proteinG: 1.2, carbsG: 2.5, fatG: 74.5, fiberG: 0, portion: { label: '1 c.à.s', grams: 15 }, aisle: 'Sauces & Condiments', diets: DAIRY_DIETS, allergens: ['eggs'] },
+  { id: 'ciq_moutarde', name: 'Moutarde de Dijon', kcal: 152, proteinG: 7.2, carbsG: 4.5, fatG: 11.2, fiberG: 3.4, portion: { label: '1 c.à.c', grams: 10 }, aisle: 'Sauces & Condiments', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_sauce_soja', name: 'Sauce soja salée', kcal: 62, proteinG: 8.5, carbsG: 6.2, fatG: 0.1, fiberG: 0.5, portion: { label: '1 c.à.s', grams: 15 }, aisle: 'Sauces & Condiments', diets: ALL_DIETS_GLUTEN, allergens: ['soy', 'gluten'] },
+  { id: 'ciq_sriracha', name: 'Sauce Sriracha / Piment', kcal: 92, proteinG: 1.6, carbsG: 19.5, fatG: 0.8, fiberG: 1.2, portion: { label: '1 c.à.c', grams: 10 }, aisle: 'Sauces & Condiments', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_pesto', name: 'Pesto vert au basilic', kcal: 445, proteinG: 4.8, carbsG: 5.5, fatG: 44.0, fiberG: 1.8, portion: { label: '1 c.à.s', grams: 20 }, aisle: 'Sauces & Condiments', diets: DAIRY_DIETS, allergens: ['dairy', 'nuts'] },
+  { id: 'ciq_sauce_tomate', name: 'Sauce tomate cuisinée / Coulis', kcal: 48, proteinG: 1.6, carbsG: 6.8, fatG: 1.4, fiberG: 1.6, portion: { label: '3 c.à.s', grams: 80 }, aisle: 'Sauces & Condiments', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_creme_15', name: 'Crème fraîche légère 15 % MG', kcal: 166, proteinG: 2.8, carbsG: 4.2, fatG: 15.2, fiberG: 0, portion: { label: '1 c.à.s', grams: 20 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_creme_30', name: 'Crème fraîche entière 30 % MG', kcal: 294, proteinG: 2.2, carbsG: 3.1, fatG: 30.2, fiberG: 0, portion: { label: '1 c.à.s', grams: 20 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_creme_soja', name: 'Crème liquide soja cuisine', kcal: 175, proteinG: 3.2, carbsG: 2.5, fatG: 17.0, fiberG: 0.4, portion: { label: '1 c.à.s', grams: 20 }, aisle: 'Boissons Végétales', diets: ALL_DIETS, allergens: ['soy'] },
+  { id: 'ciq_vinaigrette', name: 'Vinaigrette classique à l’huile', kcal: 420, proteinG: 0.5, carbsG: 3.2, fatG: 44.5, fiberG: 0, portion: { label: '1 c.à.s', grams: 15 }, aisle: 'Sauces & Condiments', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_miel', name: 'Miel toutes fleurs', kcal: 318, proteinG: 0.4, carbsG: 79.0, fatG: 0, fiberG: 0, portion: { label: '1 c.à.c', grams: 10 }, aisle: 'Épicerie & Féculents', diets: DAIRY_DIETS, allergens: [] },
+  { id: 'ciq_confiture', name: 'Confiture de fruits (fraise/abricot)', kcal: 246, proteinG: 0.5, carbsG: 60.0, fatG: 0.2, fiberG: 1.2, portion: { label: '1 c.à.s', grams: 20 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_sirop_erable', name: 'Sirop d’érable pur', kcal: 265, proteinG: 0, carbsG: 66.5, fatG: 0, fiberG: 0, portion: { label: '1 c.à.s', grams: 15 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+
+  // --- CLASSIQUES DU QUOTIDIEN / RESTAURATION ---
+  { id: 'ciq_pizza_margherita', name: 'Pizza Margherita', kcal: 242, proteinG: 10.4, carbsG: 30.2, fatG: 8.6, fiberG: 2.0, portion: { label: '1/2 pizza', grams: 180 }, aisle: 'Restauration & Plats', diets: ['omnivore', 'vegetarian', 'halal'], allergens: ['gluten', 'dairy'] },
+  { id: 'ciq_pizza_reine', name: 'Pizza Reine / 4 Fromages', kcal: 258, proteinG: 11.8, carbsG: 28.5, fatG: 10.5, fiberG: 1.8, portion: { label: '1/2 pizza', grams: 190 }, aisle: 'Restauration & Plats', diets: ['omnivore'], allergens: ['gluten', 'dairy'] },
+  { id: 'ciq_burger_classique', name: 'Burger classique bœuf fromage', kcal: 256, proteinG: 13.5, carbsG: 23.0, fatG: 12.2, fiberG: 1.6, portion: { label: '1 burger', grams: 240 }, aisle: 'Restauration & Plats', diets: ['omnivore', 'halal'], allergens: ['gluten', 'dairy'] },
+  { id: 'ciq_cheeseburger', name: 'Cheeseburger (fast-food)', kcal: 268, proteinG: 13.0, carbsG: 26.5, fatG: 12.0, fiberG: 1.5, portion: { label: '1 cheeseburger', grams: 120 }, aisle: 'Restauration & Plats', diets: ['omnivore', 'halal'], allergens: ['gluten', 'dairy'] },
+  { id: 'ciq_kebab', name: 'Kebab (pain ou galette, viande + crudités)', kcal: 224, proteinG: 13.2, carbsG: 20.5, fatG: 9.8, fiberG: 1.8, portion: { label: '1 kebab', grams: 350 }, aisle: 'Restauration & Plats', diets: ['omnivore', 'halal'], allergens: ['gluten'] },
+  { id: 'ciq_tacos_fr', name: 'Tacos français (viande + frites + sauce)', kcal: 265, proteinG: 11.5, carbsG: 25.0, fatG: 13.2, fiberG: 1.6, portion: { label: '1 tacos M', grams: 380 }, aisle: 'Restauration & Plats', diets: ['omnivore', 'halal'], allergens: ['gluten', 'dairy'] },
+  { id: 'ciq_sushi_saumon', name: 'Sushi saumon (Nigiri)', kcal: 158, proteinG: 8.6, carbsG: 22.8, fatG: 3.4, fiberG: 0.6, portion: { label: '2 pièces', grams: 70 }, aisle: 'Restauration & Plats', diets: FISH_DIETS, allergens: ['fish'] },
+  { id: 'ciq_maki_saumon', name: 'Maki / California roll saumon avocat', kcal: 162, proteinG: 6.4, carbsG: 24.0, fatG: 4.2, fiberG: 1.4, portion: { label: '6 pièces', grams: 150 }, aisle: 'Restauration & Plats', diets: FISH_DIETS, allergens: ['fish'] },
+  { id: 'ciq_poke_bowl', name: 'Poke bowl saumon avocat riz', kcal: 156, proteinG: 9.2, carbsG: 17.5, fatG: 5.4, fiberG: 2.2, portion: { label: '1 bol', grams: 420 }, aisle: 'Restauration & Plats', diets: FISH_DIETS, allergens: ['fish', 'soy'] },
+  { id: 'ciq_sandwich_jb', name: 'Sandwich jambon-beurre (baguette)', kcal: 254, proteinG: 11.2, carbsG: 33.5, fatG: 8.2, fiberG: 2.0, portion: { label: '1 sandwich', grams: 200 }, aisle: 'Restauration & Plats', diets: ['omnivore'], allergens: ['gluten', 'dairy'] },
+  { id: 'ciq_sandwich_poulet', name: 'Sandwich poulet crudités', kcal: 212, proteinG: 12.6, carbsG: 25.4, fatG: 6.5, fiberG: 2.2, portion: { label: '1 sandwich', grams: 210 }, aisle: 'Restauration & Plats', diets: ['omnivore', 'halal'], allergens: ['gluten', 'eggs'] },
+  { id: 'ciq_salade_cesar', name: 'Salade César au poulet', kcal: 168, proteinG: 11.8, carbsG: 8.5, fatG: 9.6, fiberG: 1.8, portion: { label: '1 bol', grams: 300 }, aisle: 'Restauration & Plats', diets: ['omnivore', 'halal'], allergens: ['gluten', 'dairy', 'eggs'] },
+  { id: 'ciq_quiche_lorraine', name: 'Quiche lorraine', kcal: 288, proteinG: 10.6, carbsG: 18.2, fatG: 19.2, fiberG: 0.9, portion: { label: '1 part', grams: 150 }, aisle: 'Restauration & Plats', diets: ['omnivore'], allergens: ['gluten', 'dairy', 'eggs'] },
+  { id: 'ciq_crepe_nature', name: 'Crêpe nature au froment', kcal: 218, proteinG: 7.4, carbsG: 31.0, fatG: 6.8, fiberG: 1.1, portion: { label: '1 crêpe', grams: 60 }, aisle: 'Boulangerie', diets: ['omnivore', 'vegetarian', 'halal'], allergens: ['gluten', 'dairy', 'eggs'] },
+  { id: 'ciq_croissant', name: 'Croissant au beurre', kcal: 418, proteinG: 8.2, carbsG: 45.2, fatG: 22.4, fiberG: 2.1, portion: { label: '1 croissant', grams: 55 }, aisle: 'Boulangerie', diets: ['omnivore', 'vegetarian', 'halal'], allergens: ['gluten', 'dairy', 'eggs'] },
+  { id: 'ciq_pain_chocolat', name: 'Pain au chocolat / Chocolatine', kcal: 424, proteinG: 7.8, carbsG: 46.8, fatG: 22.6, fiberG: 2.6, portion: { label: '1 pièce', grams: 65 }, aisle: 'Boulangerie', diets: ['omnivore', 'vegetarian', 'halal'], allergens: ['gluten', 'dairy', 'eggs'] },
+  { id: 'ciq_frites', name: 'Frites de pomme de terre (cuites)', kcal: 288, proteinG: 3.8, carbsG: 36.5, fatG: 13.8, fiberG: 3.4, portion: { label: '1 portion moy.', grams: 140 }, aisle: 'Restauration & Plats', diets: ALL_DIETS, allergens: [] },
 ]);
 
-export function searchCiqualOffline(query = '', profile = null) {
-  const q = String(query || '').trim().toLowerCase();
+/**
+ * Normalisation tolérante aux accents, ligatures (œ -> oe, æ -> ae) et espaces
+ * pour une recherche multi-mots instantanée (ex. "pates", "oeuf", "creme", "poulet riz").
+ */
+export function normalizeFoodSearchText(str) {
+  return String(str || '')
+    .replace(/œ/gi, 'oe')
+    .replace(/æ/gi, 'ae')
+    .replace(/[’'`]/g, ' ')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9%]+/g, ' ')
+    .trim();
+}
+
+// Index pré-calculé en RAM une seule fois pour un filtrage < 1 ms sur mobile
+const CIQUAL_SEARCH_INDEX = CIQUAL_DB.map((item) => ({
+  item,
+  haystack: normalizeFoodSearchText(`${item.name} ${item.aisle}`),
+  nameNorm: normalizeFoodSearchText(item.name),
+}));
+
+function scoreFoodMatch(nameNorm, haystack, tokens, fullQuery) {
+  if (tokens.length === 0) return 1;
+  for (const tk of tokens) {
+    if (!haystack.includes(tk)) return 0;
+  }
+  let score = 10;
+  if (nameNorm === fullQuery) score += 100;
+  else if (nameNorm.startsWith(fullQuery)) score += 60;
+  else if (nameNorm.startsWith(tokens[0])) score += 30;
+  for (const tk of tokens) {
+    if (nameNorm.includes(` ${tk}`) || nameNorm.startsWith(tk)) score += 12;
+  }
+  return score;
+}
+
+export function searchCiqualOffline(query = '', profile = null, { respectDietaryFilter = true } = {}) {
+  const normQ = normalizeFoodSearchText(query);
+  const tokens = normQ ? normQ.split(' ').filter(Boolean) : [];
   const diet = profile?.nutritionPrefs?.dietType || 'omnivore';
   const allergies = new Set((profile?.nutritionPrefs?.allergies || []).map((a) => String(a).toLowerCase()));
 
-  return CIQUAL_DB.filter((item) => {
-    const dietOk = diet === 'omnivore' || item.diets.includes(diet);
-    const allergyOk = !item.allergens.some((a) => allergies.has(a));
-    if (!dietOk || !allergyOk) return false;
-    if (!q) return true;
-    return item.name.toLowerCase().includes(q) || item.aisle.toLowerCase().includes(q);
-  });
+  const matches = [];
+  for (const entry of CIQUAL_SEARCH_INDEX) {
+    const item = entry.item;
+    if (respectDietaryFilter && profile) {
+      const dietOk = diet === 'omnivore' || item.diets.includes(diet);
+      const allergyOk = !item.allergens.some((a) => allergies.has(a));
+      if (!dietOk || !allergyOk) continue;
+    }
+    if (tokens.length === 0) {
+      matches.push({ item, score: 1 });
+      continue;
+    }
+    const score = scoreFoodMatch(entry.nameNorm, entry.haystack, tokens, normQ);
+    if (score > 0) {
+      matches.push({ item, score });
+    }
+  }
+
+  if (tokens.length > 0) {
+    matches.sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name));
+  }
+  return matches.map((m) => m.item);
+}
+
+/**
+ * Recherche locale hybride instantanée (< 1 ms) :
+ * 1) Aliments perso & produits Open Food Facts mis en cache ([PERSO])
+ * 2) Base Ciqual enrichie ([CIQUAL], sans masquer un aliment explicitement tapé par l'utilisateur)
+ */
+export function searchHybridLocalFoods(query = '', customFoods = [], profile = null, { ciqualLimit = 18 } = {}) {
+  const normQ = normalizeFoodSearchText(query);
+  const tokens = normQ ? normQ.split(' ').filter(Boolean) : [];
+
+  const customScored = [];
+  for (const cf of customFoods || []) {
+    const nameNorm = normalizeFoodSearchText(cf.name);
+    const haystack = normalizeFoodSearchText(`${cf.name} ${cf.brand || ''} ${cf.aisle || ''}`);
+    const score = tokens.length === 0 ? 1 : scoreFoodMatch(nameNorm, haystack, tokens, normQ);
+    if (score > 0) {
+      customScored.push({ item: cf, score });
+    }
+  }
+  if (tokens.length > 0) {
+    customScored.sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name));
+  }
+
+  // Si requête vide : affiche les incontournables adaptés au régime ; si requête tapée : cherche toute la base Ciqual enrichie
+  const ciqualMatches = searchCiqualOffline(query, profile, {
+    respectDietaryFilter: tokens.length === 0,
+  }).slice(0, ciqualLimit);
+
+  return {
+    customMatches: customScored.slice(0, 12).map((m) => m.item),
+    ciqualMatches,
+  };
 }
 
 export function scaleFoodMacros(foodPer100g, grams = 100) {
@@ -105,10 +352,23 @@ export function scaleFoodMacros(foodPer100g, grams = 100) {
 }
 
 /* ==========================================================================
-   2. OPEN FOOD FACTS API (0 CLÉ) & SCANNER CODE-BARRES (HTML5-QRCODE)
+   2. OPEN FOOD FACTS API FRANCE (0 CLÉ + ABORTCONTROLLER) & SCANNER CODE-BARRES
    ========================================================================== */
 
 const barcodeCache = new Map();
+
+function parseServingPortion(servingSize) {
+  const raw = String(servingSize || '').trim();
+  if (!raw) return null;
+  const gMatch = raw.match(/(\d+(?:[.,]\d+)?)\s*(?:g|ml)\b/i);
+  if (!gMatch) return null;
+  const grams = Math.round(Number(gMatch[1].replace(',', '.')));
+  if (!Number.isFinite(grams) || grams < 5 || grams > 1200) return null;
+  return {
+    label: raw.length <= 24 ? raw : `1 portion`,
+    grams,
+  };
+}
 
 function normalizeOpenFoodFactsProduct(product) {
   if (!product) return null;
@@ -122,6 +382,7 @@ function normalizeOpenFoodFactsProduct(product) {
     name: product.product_name_fr || product.product_name || 'Produit scanné',
     brand: product.brands || '',
     servingSize: product.serving_size || '100 g',
+    portion: parseServingPortion(product.serving_size),
     nutriscore: product.nutriscore_grade ? String(product.nutriscore_grade).toUpperCase() : null,
     kcal: Math.round(kcal),
     proteinG: Number((Number(n.proteins_100g) || 0).toFixed(1)),
@@ -156,16 +417,29 @@ export async function lookupBarcodeOpenFoodFacts(barcode) {
   return normalized;
 }
 
-export async function searchOpenFoodFactsText(query, pageSize = 8) {
+export async function searchOpenFoodFactsText(query, options = 12) {
+  const opts = typeof options === 'number' ? { pageSize: options, signal: null } : options || {};
+  const pageSize = Number(opts.pageSize) || 12;
+  const signal = opts.signal || undefined;
+
   const q = String(query || '').trim();
   if (q.length < 2) return [];
-  const url = `https://fr.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=${pageSize}&fields=code,product_name,product_name_fr,brands,serving_size,nutriscore_grade,nutriments,image_front_small_url`;
-  const res = await fetch(url);
-  if (!res.ok) return [];
-  const json = await res.json();
-  return (json.products || [])
-    .map(normalizeOpenFoodFactsProduct)
-    .filter((p) => p && p.name && (p.kcal > 0 || p.proteinG > 0));
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return [];
+
+  const url = `https://fr.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=${pageSize}&fields=code,product_name,product_name_fr,brands,serving_size,nutriscore_grade,nutriments`;
+  try {
+    const res = await fetch(url, { signal });
+    if (!res.ok) return [];
+    const json = await res.json();
+    return (json.products || [])
+      .map(normalizeOpenFoodFactsProduct)
+      .filter((p) => p && p.name && (p.kcal > 0 || p.proteinG > 0));
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      throw err;
+    }
+    return [];
+  }
 }
 
 let html5QrcodeScriptPromise = null;
@@ -811,6 +1085,71 @@ export async function extractScaleMetricsOCR(imageDataUrl, profile, aiSettings) 
     settings: aiSettings,
     expectJson: true,
   });
+}
+
+/**
+ * Estime les valeurs nutritionnelles pour 100 g (et portion usuelle) d'un aliment
+ * ou plat introuvable en base, via le routeur IA multi-moteurs (avec repli prudent si Niveau 0).
+ */
+export async function estimateFoodMacrosWithAI(foodQuery, profile, aiSettings) {
+  const cleanQuery = String(foodQuery || '').trim();
+  if (!cleanQuery) {
+    throw new Error('Saisis le nom d’un aliment à estimer.');
+  }
+
+  const systemPrompt =
+    'Tu es un diététicien du sport français (référentiel Ciqual / ANSES). Réponds STRICTEMENT avec un objet JSON valide, sans texte ni balises markdown.';
+  const prompt = `Estime de façon réaliste les valeurs nutritionnelles POUR 100 G (et une portion usuelle réaliste en grammes) de cet aliment ou plat : "${cleanQuery}".
+Schéma JSON strict :
+{
+  "name": "<nom propre en français>",
+  "kcal": 210,
+  "protein_g": 12.5,
+  "carbs_g": 22.0,
+  "fat_g": 7.5,
+  "fiber_g": 2.0,
+  "portion_label": "1 portion",
+  "portion_grams": 150
+}`;
+
+  const res = await routeAIRequest({
+    taskType: 'food_estimate',
+    prompt,
+    systemPrompt,
+    context: { profile, foodQuery: cleanQuery },
+    settings: aiSettings,
+    expectJson: true,
+  });
+
+  const d = res?.data && typeof res.data === 'object' ? res.data : {};
+  const kcal = Math.max(0, Math.round(Number(d.kcal) || 0));
+  const proteinG = Math.max(0, Math.round((Number(d.protein_g ?? d.proteinG) || 0) * 10) / 10);
+  const carbsG = Math.max(0, Math.round((Number(d.carbs_g ?? d.carbsG) || 0) * 10) / 10);
+  const fatG = Math.max(0, Math.round((Number(d.fat_g ?? d.fatG) || 0) * 10) / 10);
+  const fiberG = Math.max(0, Math.round((Number(d.fiber_g ?? d.fiberG) || 0) * 10) / 10);
+  const portionGrams = Math.round(Number(d.portion_grams ?? d.portionGrams) || 0);
+
+  // Si Niveau 0 ou réponse incomplète, estimation prudente cohérente
+  const fallbackKcal = kcal || Math.round(proteinG * 4 + carbsG * 4 + fatG * 9) || 180;
+
+  return {
+    tierUsed: res?.tierUsed ?? 0,
+    provider: res?.provider || null,
+    usedFallback: Boolean(res?.usedFallback),
+    food: {
+      name: String(d.name || cleanQuery).trim(),
+      kcal: fallbackKcal,
+      proteinG: proteinG || (kcal ? 0 : 10),
+      carbsG: carbsG || (kcal ? 0 : 20),
+      fatG: fatG || (kcal ? 0 : 6),
+      fiberG,
+      portion:
+        portionGrams >= 5 && portionGrams <= 1000
+          ? { label: String(d.portion_label || d.portionLabel || '1 portion').trim(), grams: portionGrams }
+          : { label: '1 portion', grams: 150 },
+      source: 'ai_estimated',
+    },
+  };
 }
 
 /* ==========================================================================

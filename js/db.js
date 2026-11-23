@@ -7,7 +7,7 @@
  */
 
 export const DB_NAME = 'kinetix_lab_db';
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
 export const STORES = Object.freeze({
   META: 'meta',
@@ -18,6 +18,7 @@ export const STORES = Object.freeze({
   BIOMETRICS: 'biometrics',
   NUTRITION_LOGS: 'nutrition_logs',
   FAVORITES: 'favorites',
+  CUSTOM_FOODS: 'customFoods',
   HYDRATION_LOGS: 'hydration_logs',
   PHYSIQUE_PHOTOS: 'physique_photos',
   COACH_MESSAGES: 'coach_messages',
@@ -30,6 +31,7 @@ const PROFILE_SCOPED_STORES = [
   STORES.BIOMETRICS,
   STORES.NUTRITION_LOGS,
   STORES.FAVORITES,
+  STORES.CUSTOM_FOODS,
   STORES.HYDRATION_LOGS,
   STORES.PHYSIQUE_PHOTOS,
   STORES.COACH_MESSAGES,
@@ -124,6 +126,11 @@ export function openDB() {
 
       if (!db.objectStoreNames.contains(STORES.SHOPPING_LIST)) {
         const store = db.createObjectStore(STORES.SHOPPING_LIST, { keyPath: 'id' });
+        store.createIndex('by_profile', 'profileId', { unique: false });
+      }
+
+      if (!db.objectStoreNames.contains(STORES.CUSTOM_FOODS)) {
+        const store = db.createObjectStore(STORES.CUSTOM_FOODS, { keyPath: 'id' });
         store.createIndex('by_profile', 'profileId', { unique: false });
       }
     };
@@ -689,6 +696,56 @@ export async function listShoppingList(profileId) {
 
 export async function deleteShoppingItem(itemId) {
   return deleteRecord(STORES.SHOPPING_LIST, itemId);
+}
+
+export async function listCustomFoods(profileId) {
+  const rows = await getRecordsByIndex(STORES.CUSTOM_FOODS, 'by_profile', profileId);
+  return rows.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+}
+
+export async function saveCustomFood(profileId, food) {
+  const existing = await listCustomFoods(profileId);
+  const cleanName = String(food?.name || '').trim();
+  const cleanBarcode = String(food?.barcode || '').trim();
+
+  // Évite les doublons si même code-barres ou même nom exact
+  const duplicate = existing.find(
+    (item) =>
+      (cleanBarcode && item.barcode && item.barcode === cleanBarcode) ||
+      (cleanName && item.name.toLowerCase() === cleanName.toLowerCase() && (item.brand || '') === (food?.brand || ''))
+  );
+
+  const now = Date.now();
+  const record = {
+    id: food?.id || duplicate?.id || generateId('cfood'),
+    profileId,
+    name: cleanName || 'Aliment perso',
+    brand: String(food?.brand || '').trim(),
+    barcode: cleanBarcode,
+    source: food?.source || 'custom', // 'custom' | 'off_cached' | 'ai_estimated'
+    kcal: Math.max(0, Math.round(Number(food?.kcal) || 0)),
+    proteinG: Math.max(0, Math.round((Number(food?.proteinG) || 0) * 10) / 10),
+    carbsG: Math.max(0, Math.round((Number(food?.carbsG) || 0) * 10) / 10),
+    fatG: Math.max(0, Math.round((Number(food?.fatG) || 0) * 10) / 10),
+    fiberG: Math.max(0, Math.round((Number(food?.fiberG) || 0) * 10) / 10),
+    portion:
+      food?.portion && Number(food.portion.grams) > 0
+        ? {
+            label: String(food.portion.label || '1 portion').trim(),
+            grams: Math.round(Number(food.portion.grams)),
+          }
+        : null,
+    aisle: food?.aisle || 'Aliments Perso',
+    createdAt: duplicate?.createdAt || food?.createdAt || now,
+    updatedAt: now,
+  };
+
+  await putRecord(STORES.CUSTOM_FOODS, record);
+  return record;
+}
+
+export async function deleteCustomFood(foodId) {
+  return deleteRecord(STORES.CUSTOM_FOODS, foodId);
 }
 
 /* ==========================================================================

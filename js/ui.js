@@ -41,6 +41,9 @@ import {
   listFavorites,
   saveFavorite,
   deleteFavorite,
+  listCustomFoods,
+  saveCustomFood,
+  deleteCustomFood,
   getHydrationForDate,
   addHydration,
   listPhysiquePhotos,
@@ -111,10 +114,11 @@ import {
 } from './physique-lab.js';
 
 import {
-  searchCiqualOffline,
+  searchHybridLocalFoods,
   scaleFoodMacros,
   lookupBarcodeOpenFoodFacts,
   searchOpenFoodFactsText,
+  estimateFoodMacrosWithAI,
   BarcodeScannerController,
   computeUSNavyBodyFat,
   computeWHtR,
@@ -178,6 +182,7 @@ const state = {
   nutritionToday: [],
   nutritionAll: [],
   favorites: [],
+  customFoods: [],
   hydration: { totalMl: 0, entries: [] },
   photos: [],
   coachMessages: [],
@@ -197,7 +202,16 @@ const state = {
   nutritionSubTab: 'journal', // 'journal' | 'advisor' | 'plan'
   nutritionInputMode: 'ciqual', // 'ciqual' | 'photo' | 'barcode'
   ciqualQuery: '',
+  foodSearchGrams: 150,
   offResults: [],
+  offLiveResults: [],
+  offLiveQuery: '',
+  offLiveLoading: false,
+  offLiveOffline: false,
+  offSearchAbort: null,
+  foodLocalTimer: null,
+  foodOffTimer: null,
+  aiAutosaveTimer: null,
   lastMealVisionResult: null,
   barcodeScanner: null,
   advisorDayMode: 'auto', // 'auto' | 'training' | 'rest'
@@ -435,6 +449,7 @@ async function loadProfileWorkspace() {
     biometrics,
     nutAll,
     favorites,
+    customFoods,
     hydration,
     photos,
     coachMsgs,
@@ -446,6 +461,7 @@ async function loadProfileWorkspace() {
     listBiometrics(pid),
     listNutritionLogs(pid),
     listFavorites(pid),
+    listCustomFoods(pid),
     getHydrationForDate(pid, today),
     listPhysiquePhotos(pid),
     listCoachMessages(pid),
@@ -458,6 +474,7 @@ async function loadProfileWorkspace() {
   state.nutritionAll = nutAll;
   state.nutritionToday = nutAll.filter((n) => n.date === today);
   state.favorites = favorites;
+  state.customFoods = customFoods;
   state.hydration = hydration;
   state.photos = photos;
   state.coachMessages = coachMsgs;
@@ -1291,10 +1308,10 @@ function renderSeance(container) {
         <div class="row-between">
           <div class="stack-sm" style="gap: 2px;">
             <span class="label-tech">Readiness du jour</span>
-            <span class="panel-subtitle">${esc(readiness.summary)}</span>
+            <span id="rd-summary-text" class="panel-subtitle">${esc(readiness.summary)}</span>
           </div>
           <div class="row" style="gap: 8px; flex-shrink: 0;">
-            <span class="metric-lg ${readiness.recommendPreservation ? 'text-danger' : 'text-accent'}">${readiness.score}/100</span>
+            <span id="rd-score-badge" class="metric-lg ${readiness.recommendPreservation ? 'text-danger' : 'text-accent'}">${readiness.score}/100</span>
             <button type="button" class="btn btn-xs" id="btn-toggle-readiness">
               ${state.readinessExpanded ? 'Masquer' : 'Ajuster'}
             </button>
@@ -1306,32 +1323,34 @@ function renderSeance(container) {
             ? `
           <div class="grid-3">
             <div class="field">
-              <label class="field-label" for="rd-sleep"><span>Sommeil</span><span class="mono">${state.readinessDraft.sleep}/5</span></label>
+              <label class="field-label" for="rd-sleep"><span>Sommeil</span><span id="rd-sleep-val" class="mono">${state.readinessDraft.sleep}/5</span></label>
               <input id="rd-sleep" class="range-tech" type="range" min="1" max="5" value="${state.readinessDraft.sleep}" />
             </div>
             <div class="field">
-              <label class="field-label" for="rd-soreness"><span>Confort articulaire</span><span class="mono">${state.readinessDraft.soreness}/5</span></label>
+              <label class="field-label" for="rd-soreness"><span>Confort articulaire</span><span id="rd-soreness-val" class="mono">${state.readinessDraft.soreness}/5</span></label>
               <input id="rd-soreness" class="range-tech" type="range" min="1" max="5" value="${state.readinessDraft.soreness}" />
             </div>
             <div class="field">
-              <label class="field-label" for="rd-energy"><span>Énergie</span><span class="mono">${state.readinessDraft.energy}/5</span></label>
+              <label class="field-label" for="rd-energy"><span>Énergie</span><span id="rd-energy-val" class="mono">${state.readinessDraft.energy}/5</span></label>
               <input id="rd-energy" class="range-tech" type="range" min="1" max="5" value="${state.readinessDraft.energy}" />
             </div>
           </div>`
             : ''
         }
 
-        ${
-          readiness.recommendPreservation && !session.preservationMode
-            ? `
-          <div class="notice notice-danger">
-            <span>Readiness bas : activez le Mode Préservation (-1 série, +1 RIR).</span>
-            <button type="button" class="btn btn-sm btn-danger" id="btn-apply-preservation">Activer</button>
-          </div>`
-            : session.preservationMode
-              ? `<div class="notice notice-accent"><span>Mode Préservation actif (-1 série, +1 RIR de sécurité).</span></div>`
-              : ''
-        }
+        <div id="rd-preservation-slot">
+          ${
+            readiness.recommendPreservation && !session.preservationMode
+              ? `
+            <div class="notice notice-danger">
+              <span>Readiness bas : activez le Mode Préservation (-1 série, +1 RIR).</span>
+              <button type="button" class="btn btn-sm btn-danger" id="btn-apply-preservation">Activer</button>
+            </div>`
+              : session.preservationMode
+                ? `<div class="notice notice-accent"><span>Mode Préservation actif (-1 série, +1 RIR de sécurité).</span></div>`
+                : ''
+          }
+        </div>
       </section>
 
       <!-- Échauffement correctif ciblé -->
@@ -1517,35 +1536,59 @@ function renderSeance(container) {
     showToast(ok ? 'Écran maintenu actif pour la séance.' : 'Chrono horodaté actif même écran verrouillé.');
   });
 
+  const bindPreservationBtn = () => {
+    document.getElementById('btn-apply-preservation')?.addEventListener('click', () => {
+      const day = state.program.days[state.selectedDayIdx];
+      const preserved = applyPreservationMode(day);
+      state.activeSession = {
+        ...state.activeSession,
+        preservationMode: true,
+        exercises: preserved.exercises.map((slot) => ({
+          ...slot,
+          feedback: null,
+          progressionHint: null,
+          setsData: Array.from({ length: slot.sets }, () => ({
+            id: generateId('set'),
+            weightKg: slot.suggestedLoadKg,
+            reps: slot.repMin,
+            rir: slot.targetRir,
+            isWarmup: false,
+            done: false,
+          })),
+        })),
+      };
+      renderApp();
+      showToast('Mode Préservation appliqué (-1 série, +1 RIR).');
+    });
+  };
+  bindPreservationBtn();
+
+  // Mise à jour chirurgicale in-place sur les sliders Readiness (zéro re-render global)
   ['sleep', 'soreness', 'energy'].forEach((k) => {
     document.getElementById(`rd-${k}`)?.addEventListener('input', (e) => {
-      state.readinessDraft[k] = Number(e.target.value);
-      renderApp();
+      const val = Number(e.target.value);
+      state.readinessDraft[k] = val;
+      const valEl = document.getElementById(`rd-${k}-val`);
+      if (valEl) valEl.textContent = `${val}/5`;
+      const liveReadiness = evaluateReadiness(state.readinessDraft);
+      const badgeEl = document.getElementById('rd-score-badge');
+      if (badgeEl) {
+        badgeEl.textContent = `${liveReadiness.score}/100`;
+        badgeEl.className = `metric-lg ${liveReadiness.recommendPreservation ? 'text-danger' : 'text-accent'}`;
+      }
+      const summaryEl = document.getElementById('rd-summary-text');
+      if (summaryEl) summaryEl.textContent = liveReadiness.summary;
+      const presSlot = document.getElementById('rd-preservation-slot');
+      if (presSlot && !session.preservationMode) {
+        presSlot.innerHTML = liveReadiness.recommendPreservation
+          ? `<div class="notice notice-danger">
+              <span>Readiness bas : activez le Mode Préservation (-1 série, +1 RIR).</span>
+              <button type="button" class="btn btn-sm btn-danger" id="btn-apply-preservation">Activer</button>
+            </div>`
+          : '';
+        bindPreservationBtn();
+      }
     });
-  });
-
-  document.getElementById('btn-apply-preservation')?.addEventListener('click', () => {
-    const day = state.program.days[state.selectedDayIdx];
-    const preserved = applyPreservationMode(day);
-    state.activeSession = {
-      ...state.activeSession,
-      preservationMode: true,
-      exercises: preserved.exercises.map((slot) => ({
-        ...slot,
-        feedback: null,
-        progressionHint: null,
-        setsData: Array.from({ length: slot.sets }, () => ({
-          id: generateId('set'),
-          weightKg: slot.suggestedLoadKg,
-          reps: slot.repMin,
-          rir: slot.targetRir,
-          isWarmup: false,
-          done: false,
-        })),
-      })),
-    };
-    renderApp();
-    showToast('Mode Préservation appliqué (-1 série, +1 RIR).');
   });
 
   container.querySelectorAll('[data-drawer]').forEach((btn) => {
@@ -2077,7 +2120,7 @@ function renderNutritionSubTab(slot, telemetry) {
       <div class="stack">
         <!-- Sélecteur compact de saisie -->
         <div class="segmented" role="tablist" aria-label="Mode de saisie repas">
-          <button type="button" class="segmented-btn ${state.nutritionInputMode === 'ciqual' ? 'is-active' : ''}" data-nut-input="ciqual">Ciqual & Favoris</button>
+          <button type="button" class="segmented-btn ${state.nutritionInputMode === 'ciqual' ? 'is-active' : ''}" data-nut-input="ciqual">Recherche & Favoris</button>
           <button type="button" class="segmented-btn ${state.nutritionInputMode === 'photo' ? 'is-active' : ''}" data-nut-input="photo">Photo Assiette</button>
           <button type="button" class="segmented-btn ${state.nutritionInputMode === 'barcode' ? 'is-active' : ''}" data-nut-input="barcode">Code-Barres</button>
         </div>
@@ -2799,34 +2842,274 @@ function renderNutritionSubTab(slot, telemetry) {
   });
 }
 
+function openCreateCustomFoodModal(initialName = '', onCreated = null) {
+  const defaultGrams = Math.max(5, Math.min(2000, Number(state.foodSearchGrams) || 150));
+  openModal(
+    'Créer un aliment perso',
+    `<form id="custom-food-form" class="stack">
+      <div class="field">
+        <label class="field-label" for="cf-name">Nom de l’aliment ou plat</label>
+        <input id="cf-name" class="input" required placeholder="Ex. Pain complet boulangerie, Bowl maison..." value="${esc(initialName)}" />
+      </div>
+
+      <div class="segmented" role="tablist" aria-label="Unité de saisie macros">
+        <button type="button" class="segmented-btn is-active" data-cf-mode="per100">Valeurs pour 100 g</button>
+        <button type="button" class="segmented-btn" data-cf-mode="portion">Valeurs par portion</button>
+      </div>
+
+      <div id="cf-portion-row" class="grid-2">
+        <div class="field">
+          <label class="field-label" for="cf-portion-label">Portion usuelle (optionnel)</label>
+          <input id="cf-portion-label" class="input" placeholder="Ex. 1 tranche, 1 pot, 1 bol" value="1 portion" />
+        </div>
+        <div class="field">
+          <label class="field-label" for="cf-portion-grams">Poids portion (g)</label>
+          <input id="cf-portion-grams" class="input mono" type="number" inputmode="numeric" min="5" max="1500" value="${defaultGrams}" />
+        </div>
+      </div>
+
+      <span id="cf-macros-hint" class="panel-subtitle">Saisis les valeurs pour 100 g :</span>
+      <div class="grid-4">
+        <div class="field"><label class="field-label" for="cf-kcal">Kcal</label><input id="cf-kcal" class="input mono" type="number" inputmode="decimal" min="0" required placeholder="200" /></div>
+        <div class="field"><label class="field-label" for="cf-p">Prot (g)</label><input id="cf-p" class="input mono" type="number" inputmode="decimal" step="0.1" min="0" required placeholder="12" /></div>
+        <div class="field"><label class="field-label" for="cf-c">Gluc (g)</label><input id="cf-c" class="input mono" type="number" inputmode="decimal" step="0.1" min="0" required placeholder="20" /></div>
+        <div class="field"><label class="field-label" for="cf-f">Lip (g)</label><input id="cf-f" class="input mono" type="number" inputmode="decimal" step="0.1" min="0" required placeholder="6" /></div>
+      </div>
+
+      <label class="row" style="font-size: 0.84rem; cursor: pointer;">
+        <input id="cf-log-today" type="checkbox" checked />
+        <span>Ajouter immédiatement au journal d’aujourd’hui</span>
+      </label>
+
+      <button type="submit" class="btn btn-primary btn-block">Enregistrer cet aliment perso</button>
+    </form>`,
+    ({ close, body }) => {
+      let inputMode = 'per100';
+      const hintEl = document.getElementById('cf-macros-hint');
+      body.querySelectorAll('[data-cf-mode]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          inputMode = btn.dataset.cfMode;
+          body.querySelectorAll('[data-cf-mode]').forEach((b) => b.classList.toggle('is-active', b === btn));
+          if (hintEl) {
+            hintEl.textContent =
+              inputMode === 'portion'
+                ? 'Saisis les valeurs pour 1 portion (conversion auto pour 100 g) :'
+                : 'Saisis les valeurs pour 100 g :';
+          }
+        });
+      });
+
+      document.getElementById('custom-food-form')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const name = (document.getElementById('cf-name')?.value || '').trim();
+        if (!name) return;
+
+        const portionLabel = (document.getElementById('cf-portion-label')?.value || '').trim();
+        const portionGrams = Math.max(5, Math.min(1500, Math.round(Number(document.getElementById('cf-portion-grams')?.value) || 100)));
+        const rawKcal = Math.max(0, Number(document.getElementById('cf-kcal')?.value) || 0);
+        const rawP = Math.max(0, Number(document.getElementById('cf-p')?.value) || 0);
+        const rawC = Math.max(0, Number(document.getElementById('cf-c')?.value) || 0);
+        const rawF = Math.max(0, Number(document.getElementById('cf-f')?.value) || 0);
+
+        const factorTo100 = inputMode === 'portion' ? 100 / Math.max(5, portionGrams) : 1;
+        const foodRecord = {
+          name,
+          kcal: Math.round(rawKcal * factorTo100),
+          proteinG: Math.round(rawP * factorTo100 * 10) / 10,
+          carbsG: Math.round(rawC * factorTo100 * 10) / 10,
+          fatG: Math.round(rawF * factorTo100 * 10) / 10,
+          fiberG: 0,
+          portion: portionLabel ? { label: portionLabel, grams: portionGrams } : null,
+          source: 'custom',
+        };
+
+        const saved = await saveCustomFood(state.profile.id, foodRecord);
+        state.customFoods = await listCustomFoods(state.profile.id);
+
+        const shouldLog = Boolean(document.getElementById('cf-log-today')?.checked);
+        if (shouldLog) {
+          const gramsToLog = portionGrams || defaultGrams;
+          const scaled = scaleFoodMacros(saved, gramsToLog);
+          await saveNutritionLog(state.profile.id, {
+            date: getTodayISO(),
+            mealSlot: 'Aliment perso',
+            source: 'custom',
+            label: `${saved.name} (${scaled.grams} g)`,
+            ...scaled,
+          });
+          state.nutritionAll = await listNutritionLogs(state.profile.id);
+          state.nutritionToday = state.nutritionAll.filter((n) => n.date === getTodayISO());
+        }
+
+        close();
+        if (typeof onCreated === 'function') {
+          onCreated({ saved, logged: shouldLog });
+        } else {
+          renderApp();
+        }
+        showToast(shouldLog ? `${saved.name} enregistré et ajouté au journal.` : `${saved.name} enregistré dans tes aliments perso.`);
+      });
+    }
+  );
+}
+
+function openAIFoodEstimateModal(foodQuery, onDone = null) {
+  const cleanQ = String(foodQuery || '').trim();
+  if (!cleanQ) return;
+
+  openModal(
+    `Estimation IA · ${cleanQ}`,
+    `<div id="ai-food-est-body" class="stack">
+      <p class="panel-subtitle">Estimation des macros pour 100 g et portion usuelle en cours...</p>
+    </div>`,
+    async ({ close }) => {
+      const box = document.getElementById('ai-food-est-body');
+      try {
+        const res = await estimateFoodMacrosWithAI(cleanQ, state.profile, state.aiSettings);
+        const f = res.food;
+        const pGrams = f.portion?.grams || 150;
+        const pLabel = f.portion?.label || '1 portion';
+
+        if (!box) return;
+        box.innerHTML = `
+          ${
+            res.usedFallback || res.tierUsed === 0
+              ? `<div class="notice"><span>Estimation locale prudente (Niveau 0) — vérifie ou ajuste les chiffres ci-dessous avant d’enregistrer.</span></div>`
+              : `<div class="notice notice-accent"><span>Estimation IA (${esc(res.provider || `Niveau ${res.tierUsed}`)}) — ajustable avant validation.</span></div>`
+          }
+          <form id="ai-est-form" class="stack">
+            <div class="field">
+              <label class="field-label" for="ai-est-name">Nom retenu</label>
+              <input id="ai-est-name" class="input" required value="${esc(f.name)}" />
+            </div>
+            <div class="grid-4">
+              <div class="field"><label class="field-label" for="ai-est-kcal">Kcal/100g</label><input id="ai-est-kcal" class="input mono" type="number" inputmode="decimal" min="0" required value="${f.kcal}" /></div>
+              <div class="field"><label class="field-label" for="ai-est-p">Prot/100g</label><input id="ai-est-p" class="input mono" type="number" inputmode="decimal" step="0.1" min="0" required value="${f.proteinG}" /></div>
+              <div class="field"><label class="field-label" for="ai-est-c">Gluc/100g</label><input id="ai-est-c" class="input mono" type="number" inputmode="decimal" step="0.1" min="0" required value="${f.carbsG}" /></div>
+              <div class="field"><label class="field-label" for="ai-est-f">Lip/100g</label><input id="ai-est-f" class="input mono" type="number" inputmode="decimal" step="0.1" min="0" required value="${f.fatG}" /></div>
+            </div>
+            <div class="grid-2">
+              <div class="field">
+                <label class="field-label" for="ai-est-plabel">Portion usuelle</label>
+                <input id="ai-est-plabel" class="input" value="${esc(pLabel)}" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="ai-est-pgrams">Grammes à logger</label>
+                <input id="ai-est-pgrams" class="input mono" type="number" inputmode="numeric" min="5" max="1500" value="${pGrams}" />
+              </div>
+            </div>
+            <div class="stack-sm">
+              <button type="submit" class="btn btn-primary btn-block" data-est-action="both">Ajouter au journal + Enregistrer en perso</button>
+              <button type="button" class="btn btn-block" id="btn-est-save-only">Enregistrer en aliment perso uniquement</button>
+            </div>
+          </form>
+        `;
+
+        const readFormFood = () => {
+          const grams = Math.max(5, Math.min(1500, Math.round(Number(document.getElementById('ai-est-pgrams')?.value) || 150)));
+          const label = (document.getElementById('ai-est-plabel')?.value || '').trim() || '1 portion';
+          return {
+            food: {
+              name: (document.getElementById('ai-est-name')?.value || cleanQ).trim(),
+              kcal: Math.max(0, Math.round(Number(document.getElementById('ai-est-kcal')?.value) || 0)),
+              proteinG: Math.max(0, Math.round((Number(document.getElementById('ai-est-p')?.value) || 0) * 10) / 10),
+              carbsG: Math.max(0, Math.round((Number(document.getElementById('ai-est-c')?.value) || 0) * 10) / 10),
+              fatG: Math.max(0, Math.round((Number(document.getElementById('ai-est-f')?.value) || 0) * 10) / 10),
+              fiberG: f.fiberG || 0,
+              portion: { label, grams },
+              source: 'ai_estimated',
+            },
+            grams,
+          };
+        };
+
+        const commitEstimate = async (logToday) => {
+          const { food, grams } = readFormFood();
+          const saved = await saveCustomFood(state.profile.id, food);
+          state.customFoods = await listCustomFoods(state.profile.id);
+          if (logToday) {
+            const scaled = scaleFoodMacros(saved, grams);
+            await saveNutritionLog(state.profile.id, {
+              date: getTodayISO(),
+              mealSlot: 'Estimation IA',
+              source: 'ai_estimated',
+              label: `${saved.name} (${scaled.grams} g)`,
+              ...scaled,
+            });
+            state.nutritionAll = await listNutritionLogs(state.profile.id);
+            state.nutritionToday = state.nutritionAll.filter((n) => n.date === getTodayISO());
+          }
+          close();
+          if (typeof onDone === 'function') onDone({ saved, logged: logToday });
+          else renderApp();
+          showToast(logToday ? `${saved.name} ajouté (${grams} g) et mémorisé.` : `${saved.name} mémorisé dans tes aliments perso.`);
+        };
+
+        document.getElementById('ai-est-form')?.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          await commitEstimate(true);
+        });
+        document.getElementById('btn-est-save-only')?.addEventListener('click', async () => {
+          await commitEstimate(false);
+        });
+      } catch (err) {
+        if (box) {
+          box.innerHTML = `<div class="notice notice-danger"><span>${esc(err?.message || 'Estimation impossible.')}</span></div>`;
+        }
+      }
+    }
+  );
+}
+
 function renderNutritionInputMode(slot, macros) {
   if (!slot) return;
 
+  // Annule toute requête OFF en cours lors d'un changement de mode
+  if (state.offSearchAbort) {
+    state.offSearchAbort.abort();
+    state.offSearchAbort = null;
+  }
+  clearTimeout(state.foodLocalTimer);
+  clearTimeout(state.foodOffTimer);
+
   if (state.nutritionInputMode === 'ciqual') {
-    const foods = searchCiqualOffline(state.ciqualQuery, state.profile).slice(0, 14);
+    const initialGrams = Math.max(5, Math.min(2000, Number(state.foodSearchGrams) || 150));
     slot.innerHTML = `
       <div class="grid-2">
         <section class="panel">
           <div class="panel-header">
-            <h2>Base Ciqual (ANSES) — 100 % Hors-ligne</h2>
+            <h2>Recherche Alimentaire Hybride</h2>
+            <span class="state-tag is-muted">PERSO · CIQUAL · OFF</span>
           </div>
           <div class="input-action-row">
-            <input id="ciqual-search" class="input" type="search" placeholder="Poulet, riz, skyr, avocat..." value="${esc(state.ciqualQuery)}" />
-            <input id="ciqual-grams" class="input mono" type="number" inputmode="numeric" min="5" max="1500" step="10" value="150" style="width: 82px;" aria-label="Grammes" />
+            <input
+              id="ciqual-search"
+              class="input"
+              type="search"
+              autocomplete="off"
+              autocorrect="off"
+              spellcheck="false"
+              enterkeyhint="search"
+              placeholder="Poulet, pâtes, œuf, skyr, marque..."
+              value="${esc(state.ciqualQuery)}"
+            />
+            <input
+              id="ciqual-grams"
+              class="input mono"
+              type="number"
+              inputmode="numeric"
+              min="5"
+              max="2000"
+              step="10"
+              value="${initialGrams}"
+              style="width: 86px;"
+              aria-label="Grammes"
+            />
           </div>
-          <div class="stack-sm">
-            ${foods
-              .map(
-                (f) => `
-              <div class="row-between" style="padding: 8px 0; border-bottom: 1px solid var(--border-hairline);">
-                <div class="stack-sm" style="gap: 2px;">
-                  <span>${esc(f.name)}</span>
-                  <span class="mono metric-sm text-secondary">${f.kcal} kcal/100g · P ${f.proteinG} · G ${f.carbsG} · L ${f.fatG}</span>
-                </div>
-                <button type="button" class="btn btn-sm btn-primary" data-add-ciqual="${esc(f.id)}">+ Ajouter</button>
-              </div>`
-              )
-              .join('')}
+          <div id="nutrition-search-results" class="food-results-list" aria-live="polite">
+            <div id="nutrition-local-results" class="stack-sm"></div>
+            <div id="nutrition-off-section" class="stack-sm"></div>
+            <div id="nutrition-fallback-section"></div>
           </div>
         </section>
 
@@ -2860,28 +3143,330 @@ function renderNutritionInputMode(slot, macros) {
       </div>
     `;
 
-    document.getElementById('ciqual-search')?.addEventListener('input', (e) => {
-      state.ciqualQuery = e.target.value;
-      renderNutritionInputMode(slot, macros);
+    const searchInput = document.getElementById('ciqual-search');
+    const gramsInput = document.getElementById('ciqual-grams');
+    const resultsRoot = document.getElementById('nutrition-search-results');
+    const localContainer = document.getElementById('nutrition-local-results');
+    const offContainer = document.getElementById('nutrition-off-section');
+    const fallbackContainer = document.getElementById('nutrition-fallback-section');
+
+    // Index en mémoire des résultats locaux actuellement rendus pour ajout instantané sans re-calcul
+    let renderedLocalMap = new Map();
+
+    const getGramsValue = () => Math.max(5, Math.min(2000, Math.round(Number(gramsInput?.value) || state.foodSearchGrams || 100)));
+
+    const renderFoodRowHtml = (item, { kind, keyAttr, keyVal, removableId = null }) => {
+      const g = getGramsValue();
+      const brandTxt = item.brand ? ` · ${esc(item.brand)}` : '';
+      const nsTxt = item.nutriscore ? ` · NS ${esc(item.nutriscore)}` : '';
+      const portionBtn =
+        item.portion && item.portion.grams
+          ? `<button type="button" class="food-portion-btn" ${keyAttr}="${esc(keyVal)}" data-grams="${item.portion.grams}">+ ${esc(item.portion.label)} (${item.portion.grams}g)</button>`
+          : '';
+      const delBtn = removableId
+        ? `<button type="button" class="btn btn-sm btn-danger" data-del-custom-id="${esc(removableId)}" aria-label="Supprimer aliment perso">×</button>`
+        : '';
+
+      return `
+        <div class="food-result-row">
+          <div class="food-result-main">
+            <div class="food-result-info">
+              <span class="food-result-name">${esc(item.name)}${brandTxt}</span>
+              <span class="mono metric-xs text-secondary">${item.kcal} kcal/100g · P ${item.proteinG} · G ${item.carbsG} · L ${item.fatG}${nsTxt}</span>
+            </div>
+            ${delBtn}
+          </div>
+          <div class="food-result-actions">
+            ${portionBtn}
+            <button type="button" class="btn btn-sm btn-primary mono" ${keyAttr}="${esc(keyVal)}" data-grams-btn-label="1">+ ${g}g</button>
+          </div>
+        </div>
+      `;
+    };
+
+    const renderLocalAndFallback = () => {
+      if (!localContainer || !fallbackContainer) return;
+      const q = state.ciqualQuery || '';
+      const trimmed = q.trim();
+      const { customMatches, ciqualMatches } = searchHybridLocalFoods(q, state.customFoods, state.profile, { ciqualLimit: 18 });
+
+      renderedLocalMap = new Map();
+      const htmlParts = [];
+
+      if (customMatches.length > 0) {
+        htmlParts.push(`
+          <div class="food-section-head">
+            <span class="food-source-tag is-perso">[PERSO]</span>
+            <span class="mono metric-xs text-secondary">${customMatches.length} mémorisé${customMatches.length > 1 ? 's' : ''}</span>
+          </div>
+        `);
+        for (const cf of customMatches) {
+          const mapKey = `custom:${cf.id}`;
+          renderedLocalMap.set(mapKey, { food: cf, kind: 'custom' });
+          htmlParts.push(
+            renderFoodRowHtml(cf, {
+              kind: 'custom',
+              keyAttr: 'data-add-local-key',
+              keyVal: mapKey,
+              removableId: cf.id,
+            })
+          );
+        }
+      }
+
+      if (ciqualMatches.length > 0) {
+        htmlParts.push(`
+          <div class="food-section-head">
+            <span class="food-source-tag">[CIQUAL · HORS-LIGNE]</span>
+            <span class="mono metric-xs text-secondary">${ciqualMatches.length} résultat${ciqualMatches.length > 1 ? 's' : ''}</span>
+          </div>
+        `);
+        for (const f of ciqualMatches) {
+          const mapKey = `ciqual:${f.id}`;
+          renderedLocalMap.set(mapKey, { food: f, kind: 'ciqual' });
+          htmlParts.push(
+            renderFoodRowHtml(f, {
+              kind: 'ciqual',
+              keyAttr: 'data-add-local-key',
+              keyVal: mapKey,
+            })
+          );
+        }
+      } else if (customMatches.length === 0) {
+        htmlParts.push(`<p class="panel-subtitle">Aucun aliment local pour « ${esc(trimmed)} ».</p>`);
+      }
+
+      localContainer.innerHTML = htmlParts.join('');
+
+      // Pied de liste zéro impasse (toujours disponible)
+      const createLabel = trimmed ? `+ Créer « ${trimmed} » (aliment perso)` : '+ Créer un aliment perso';
+      const aiBtnHtml =
+        trimmed.length >= 2
+          ? `<button type="button" class="btn btn-sm" data-open-ai-estimate="1">Estimer « ${esc(trimmed)} » via IA</button>`
+          : '';
+      fallbackContainer.innerHTML = `
+        <div class="food-fallback-box">
+          <span class="label-tech">Introuvable ou plat maison ?</span>
+          <div class="food-fallback-actions">
+            <button type="button" class="btn btn-sm btn-primary" data-open-create-food="1">${esc(createLabel)}</button>
+            ${aiBtnHtml}
+          </div>
+        </div>
+      `;
+    };
+
+    const renderOffSection = () => {
+      if (!offContainer) return;
+      const trimmed = (state.ciqualQuery || '').trim();
+      if (trimmed.length < 3) {
+        offContainer.innerHTML = '';
+        return;
+      }
+
+      if (state.offLiveOffline) {
+        offContainer.innerHTML = `
+          <div class="food-section-head">
+            <span class="food-source-tag">[OPEN FOOD FACTS]</span>
+            <span class="mono metric-xs text-secondary">Hors-ligne · base locale active</span>
+          </div>
+        `;
+        return;
+      }
+
+      if (state.offLiveLoading) {
+        offContainer.innerHTML = `
+          <div class="food-section-head">
+            <span class="food-source-tag is-off">[OPEN FOOD FACTS · EN LIGNE]</span>
+            <span class="mono metric-xs text-accent">Recherche en direct...</span>
+          </div>
+        `;
+        return;
+      }
+
+      if (!state.offLiveResults || state.offLiveResults.length === 0) {
+        offContainer.innerHTML = `
+          <div class="food-section-head">
+            <span class="food-source-tag is-off">[OPEN FOOD FACTS · EN LIGNE]</span>
+            <span class="mono metric-xs text-secondary">0 produit trouvé</span>
+          </div>
+        `;
+        return;
+      }
+
+      const rowsHtml = state.offLiveResults
+        .map((prod, idx) =>
+          renderFoodRowHtml(prod, {
+            kind: 'off',
+            keyAttr: 'data-add-live-off',
+            keyVal: String(idx),
+          })
+        )
+        .join('');
+
+      offContainer.innerHTML = `
+        <div class="food-section-head">
+          <span class="food-source-tag is-off">[OPEN FOOD FACTS · EN LIGNE]</span>
+          <span class="mono metric-xs text-secondary">${state.offLiveResults.length} produit${state.offLiveResults.length > 1 ? 's' : ''}</span>
+        </div>
+        ${rowsHtml}
+      `;
+    };
+
+    const scheduleOffLookup = (rawQuery) => {
+      clearTimeout(state.foodOffTimer);
+      if (state.offSearchAbort) {
+        state.offSearchAbort.abort();
+        state.offSearchAbort = null;
+      }
+
+      const trimmed = String(rawQuery || '').trim();
+      if (trimmed.length < 3) {
+        state.offLiveResults = [];
+        state.offLiveQuery = '';
+        state.offLiveLoading = false;
+        state.offLiveOffline = false;
+        renderOffSection();
+        return;
+      }
+
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        state.offLiveResults = [];
+        state.offLiveQuery = trimmed;
+        state.offLiveLoading = false;
+        state.offLiveOffline = true;
+        renderOffSection();
+        return;
+      }
+
+      state.offLiveOffline = false;
+      state.offLiveLoading = true;
+      renderOffSection();
+
+      state.foodOffTimer = setTimeout(async () => {
+        if ((state.ciqualQuery || '').trim() !== trimmed) return;
+        const controller = new AbortController();
+        state.offSearchAbort = controller;
+        try {
+          const products = await searchOpenFoodFactsText(trimmed, { pageSize: 12, signal: controller.signal });
+          if ((state.ciqualQuery || '').trim() !== trimmed) return;
+          state.offLiveQuery = trimmed;
+          state.offLiveResults = products;
+          state.offLiveLoading = false;
+          state.offLiveOffline = false;
+          requestAnimationFrame(renderOffSection);
+        } catch (err) {
+          if (err?.name === 'AbortError') return;
+          if ((state.ciqualQuery || '').trim() !== trimmed) return;
+          state.offLiveResults = [];
+          state.offLiveLoading = false;
+          state.offLiveOffline = true;
+          requestAnimationFrame(renderOffSection);
+        }
+      }, 350);
+    };
+
+    // Rendu initial de la liste isolée (sans jamais recréer les inputs ensuite)
+    renderLocalAndFallback();
+    if ((state.ciqualQuery || '').trim().length >= 3) {
+      if (state.offLiveQuery === state.ciqualQuery.trim() && state.offLiveResults.length > 0) {
+        renderOffSection();
+      } else {
+        scheduleOffLookup(state.ciqualQuery);
+      }
+    }
+
+    // Saisie fluide 100 % isolée : ZÉRO re-render du parent, zéro perte de focus clavier mobile
+    searchInput?.addEventListener('input', (e) => {
+      const val = e.target.value;
+      state.ciqualQuery = val;
+      clearTimeout(state.foodLocalTimer);
+      state.foodLocalTimer = setTimeout(() => {
+        requestAnimationFrame(renderLocalAndFallback);
+      }, 90);
+      scheduleOffLookup(val);
     });
 
-    slot.querySelectorAll('[data-add-ciqual]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const food = foods.find((f) => f.id === btn.dataset.addCiqual);
-        const grams = Number(document.getElementById('ciqual-grams')?.value) || 100;
-        const scaled = scaleFoodMacros(food, grams);
+    // Mise à jour in-place du libellé de grammage sur les boutons (+ 150g)
+    gramsInput?.addEventListener('input', (e) => {
+      const nextG = Math.max(5, Math.min(2000, Math.round(Number(e.target.value) || 100)));
+      state.foodSearchGrams = nextG;
+      resultsRoot?.querySelectorAll('[data-grams-btn-label]').forEach((btn) => {
+        btn.textContent = `+ ${nextG}g`;
+      });
+    });
+
+    // Délégation unique de clics dans #nutrition-search-results
+    resultsRoot?.addEventListener('click', async (e) => {
+      const delBtn = e.target.closest('[data-del-custom-id]');
+      if (delBtn) {
+        const id = delBtn.dataset.delCustomId;
+        await deleteCustomFood(id);
+        state.customFoods = await listCustomFoods(state.profile.id);
+        requestAnimationFrame(renderLocalAndFallback);
+        showToast('Aliment perso supprimé.');
+        return;
+      }
+
+      const addLocalBtn = e.target.closest('[data-add-local-key]');
+      if (addLocalBtn) {
+        const entry = renderedLocalMap.get(addLocalBtn.dataset.addLocalKey);
+        if (!entry) return;
+        const grams = Number(addLocalBtn.dataset.grams) || getGramsValue();
+        const scaled = scaleFoodMacros(entry.food, grams);
         await saveNutritionLog(state.profile.id, {
           date: getTodayISO(),
-          mealSlot: 'Ciqual',
-          source: 'ciqual',
-          label: `${food.name} (${scaled.grams} g)`,
+          mealSlot: entry.kind === 'custom' ? 'Perso' : 'Ciqual',
+          source: entry.kind === 'custom' ? 'custom' : 'ciqual',
+          label: `${entry.food.name} (${scaled.grams} g)`,
           ...scaled,
         });
         state.nutritionAll = await listNutritionLogs(state.profile.id);
         state.nutritionToday = state.nutritionAll.filter((n) => n.date === getTodayISO());
         renderApp();
-        showToast(`Ajouté : ${food.name} (${scaled.kcal} kcal).`);
-      });
+        showToast(`Ajouté : ${entry.food.name} (${scaled.kcal} kcal).`);
+        return;
+      }
+
+      const addOffBtn = e.target.closest('[data-add-live-off]');
+      if (addOffBtn) {
+        const prod = state.offLiveResults[Number(addOffBtn.dataset.addLiveOff)];
+        if (!prod) return;
+        const grams = Number(addOffBtn.dataset.grams) || getGramsValue();
+        const scaled = scaleFoodMacros(prod, grams);
+        await saveNutritionLog(state.profile.id, {
+          date: getTodayISO(),
+          mealSlot: 'Open Food Facts',
+          source: 'open_food_facts',
+          label: `${prod.name} (${scaled.grams} g)`,
+          ...scaled,
+        });
+        // Mise en cache locale automatique pour réutilisation instantanée hors-ligne
+        await saveCustomFood(state.profile.id, {
+          ...prod,
+          source: 'off_cached',
+        });
+        state.customFoods = await listCustomFoods(state.profile.id);
+        state.nutritionAll = await listNutritionLogs(state.profile.id);
+        state.nutritionToday = state.nutritionAll.filter((n) => n.date === getTodayISO());
+        renderApp();
+        showToast(`${prod.name} ajouté (${scaled.kcal} kcal) + mémorisé hors-ligne.`);
+        return;
+      }
+
+      if (e.target.closest('[data-open-create-food]')) {
+        openCreateCustomFoodModal((state.ciqualQuery || '').trim(), ({ logged }) => {
+          if (logged) renderApp();
+          else requestAnimationFrame(renderLocalAndFallback);
+        });
+        return;
+      }
+
+      if (e.target.closest('[data-open-ai-estimate]')) {
+        openAIFoodEstimateModal((state.ciqualQuery || '').trim(), ({ logged }) => {
+          if (logged) renderApp();
+          else requestAnimationFrame(renderLocalAndFallback);
+        });
+      }
     });
 
     slot.querySelectorAll('[data-log-fav]').forEach((btn) => {
@@ -3039,7 +3624,7 @@ function renderNutritionInputMode(slot, macros) {
     return;
   }
 
-  // Mode Code-Barres & Open Food Facts
+  // Mode Code-Barres & Open Food Facts (mise à jour isolée de #off-results-list sans reconstruire les champs)
   slot.innerHTML = `
     <section class="panel">
       <div class="panel-header">
@@ -3055,41 +3640,71 @@ function renderNutritionInputMode(slot, macros) {
           <button type="button" class="btn btn-sm" id="btn-lookup-barcode">Chercher</button>
         </div>
         <div class="input-action-row">
-          <input id="off-text-input" class="input" type="search" placeholder="Recherche Open Food Facts..." />
+          <input id="off-text-input" class="input" type="search" autocomplete="off" placeholder="Recherche Open Food Facts..." />
           <button type="button" class="btn btn-sm" id="btn-search-off">OK</button>
         </div>
       </div>
 
       <div class="row">
         <label class="label-tech" for="off-grams">Portion à ajouter (g) :</label>
-        <input id="off-grams" class="input mono" type="number" min="5" max="1500" value="100" style="max-width: 110px;" />
+        <input id="off-grams" class="input mono" type="number" inputmode="numeric" min="5" max="1500" value="100" style="max-width: 110px;" />
       </div>
 
-      <div id="off-results-list" class="stack-sm">
-        ${state.offResults
-          .map(
-            (p, idx) => `
-          <div class="row-between panel-elevated" style="padding: 10px 12px;">
-            <div class="stack-sm" style="gap: 2px;">
-              <strong>${esc(p.name)} ${p.brand ? `· ${esc(p.brand)}` : ''}</strong>
-              <span class="mono metric-sm text-secondary">${p.kcal} kcal/100g · P ${p.proteinG}g · G ${p.carbsG}g · L ${p.fatG}g ${p.nutriscore ? `· Nutri-Score ${esc(p.nutriscore)}` : ''}</span>
-            </div>
-            <button type="button" class="btn btn-sm btn-primary" data-add-off="${idx}">+ Ajouter</button>
-          </div>`
-          )
-          .join('')}
-      </div>
+      <div id="off-results-list" class="stack-sm"></div>
     </section>
   `;
 
+  const offListEl = document.getElementById('off-results-list');
+  const renderOffResultsList = (statusMsg = '') => {
+    if (!offListEl) return;
+    if (statusMsg) {
+      offListEl.innerHTML = `<p class="panel-subtitle">${esc(statusMsg)}</p>`;
+      return;
+    }
+    if (!state.offResults || state.offResults.length === 0) {
+      offListEl.innerHTML = '';
+      return;
+    }
+    offListEl.innerHTML = state.offResults
+      .map(
+        (p, idx) => `
+      <div class="row-between panel-elevated" style="padding: 10px 12px;">
+        <div class="stack-sm" style="gap: 2px;">
+          <strong>${esc(p.name)}${p.brand ? ` · ${esc(p.brand)}` : ''}</strong>
+          <span class="mono metric-xs text-secondary">${p.kcal} kcal/100g · P ${p.proteinG}g · G ${p.carbsG}g · L ${p.fatG}g${p.nutriscore ? ` · Nutri-Score ${esc(p.nutriscore)}` : ''}</span>
+        </div>
+        <button type="button" class="btn btn-sm btn-primary" data-add-off="${idx}">+ Ajouter</button>
+      </div>`
+      )
+      .join('');
+  };
+  renderOffResultsList();
+
   const handleBarcode = async (code) => {
+    renderOffResultsList('Recherche du code-barres...');
     try {
       const product = await lookupBarcodeOpenFoodFacts(code);
       state.offResults = [product];
-      renderNutritionInputMode(slot, macros);
+      renderOffResultsList();
       showToast(`Produit trouvé : ${product.name}`);
     } catch (err) {
+      renderOffResultsList(err.message);
       showToast(err.message);
+    }
+  };
+
+  const runOffTextSearch = async () => {
+    const q = (document.getElementById('off-text-input')?.value || '').trim();
+    if (q.length < 2) {
+      showToast('Tape au moins 2 caractères.');
+      return;
+    }
+    renderOffResultsList('Recherche Open Food Facts...');
+    state.offResults = await searchOpenFoodFactsText(q, { pageSize: 12 });
+    if (state.offResults.length === 0) {
+      renderOffResultsList('Aucun produit trouvé sur Open Food Facts.');
+    } else {
+      renderOffResultsList();
     }
   };
 
@@ -3106,29 +3721,42 @@ function renderNutritionInputMode(slot, macros) {
     handleBarcode(document.getElementById('manual-barcode-input').value);
   });
 
-  document.getElementById('btn-search-off')?.addEventListener('click', async () => {
-    const q = document.getElementById('off-text-input').value;
-    state.offResults = await searchOpenFoodFactsText(q);
-    renderNutritionInputMode(slot, macros);
+  document.getElementById('manual-barcode-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleBarcode(e.target.value);
+    }
   });
 
-  slot.querySelectorAll('[data-add-off]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const prod = state.offResults[Number(btn.dataset.addOff)];
-      const grams = Number(document.getElementById('off-grams')?.value) || 100;
-      const scaled = scaleFoodMacros(prod, grams);
-      await saveNutritionLog(state.profile.id, {
-        date: getTodayISO(),
-        mealSlot: 'Code-Barres',
-        source: 'barcode',
-        label: `${prod.name} (${scaled.grams} g)`,
-        ...scaled,
-      });
-      state.nutritionAll = await listNutritionLogs(state.profile.id);
-      state.nutritionToday = state.nutritionAll.filter((n) => n.date === getTodayISO());
-      renderApp();
-      showToast(`${prod.name} ajouté (${scaled.kcal} kcal).`);
+  document.getElementById('btn-search-off')?.addEventListener('click', runOffTextSearch);
+  document.getElementById('off-text-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      runOffTextSearch();
+    }
+  });
+
+  offListEl?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-add-off]');
+    if (!btn) return;
+    const prod = state.offResults[Number(btn.dataset.addOff)];
+    if (!prod) return;
+    const grams = Number(document.getElementById('off-grams')?.value) || 100;
+    const scaled = scaleFoodMacros(prod, grams);
+    await saveNutritionLog(state.profile.id, {
+      date: getTodayISO(),
+      mealSlot: 'Code-Barres',
+      source: 'barcode',
+      label: `${prod.name} (${scaled.grams} g)`,
+      ...scaled,
     });
+    // Cache automatique dans les aliments perso pour réutilisation hors-ligne
+    await saveCustomFood(state.profile.id, { ...prod, source: 'off_cached' });
+    state.customFoods = await listCustomFoods(state.profile.id);
+    state.nutritionAll = await listNutritionLogs(state.profile.id);
+    state.nutritionToday = state.nutritionAll.filter((n) => n.date === getTodayISO());
+    renderApp();
+    showToast(`${prod.name} ajouté (${scaled.kcal} kcal) + mémorisé hors-ligne.`);
   });
 }
 
@@ -4586,11 +5214,19 @@ function renderProfilSubTab(slot) {
         s.tier3ModelId = document.getElementById('ai-t3-model')?.value || TIER3_MODELS[0].id;
         s.tier3AcceptedRamWarning = Boolean(document.getElementById('ai-t3-accept')?.checked);
       }
+      clearTimeout(state.aiAutosaveTimer);
       state.aiSettings = await saveAISettings(state.profile.id, s);
       const statusEl = document.getElementById('ai-autosave-status');
       if (statusEl && silent) {
         statusEl.textContent = 'Enregistré automatiquement dans IndexedDB.';
       }
+    };
+
+    const scheduleSilentAIPersist = () => {
+      clearTimeout(state.aiAutosaveTimer);
+      state.aiAutosaveTimer = setTimeout(() => {
+        persistCurrentAI({ silent: true });
+      }, 300);
     };
 
     slot.querySelectorAll('[data-set-tier]').forEach((btn) => {
@@ -4621,9 +5257,9 @@ function renderProfilSubTab(slot) {
       renderProfilSubTab(slot);
     });
 
-    // Auto-sauvegarde + auto-détection du fournisseur dès le collage d'une clé API (aucun préfixe bloqué)
+    // Auto-sauvegarde debouncée + auto-détection du fournisseur SANS jamais détruire #ai-key (zéro perte de focus)
     const keyInput = document.getElementById('ai-key');
-    keyInput?.addEventListener('input', async () => {
+    keyInput?.addEventListener('input', () => {
       const cleaned = keyInput.value
         .trim()
         .replace(/^["'`]+|["'`]+$/g, '')
@@ -4637,16 +5273,21 @@ function renderProfilSubTab(slot) {
         s.baseUrl = pr.baseUrl;
         s.model = pr.model;
         s.visionModel = pr.visionModel;
-        state.aiSettings = await saveAISettings(state.profile.id, s);
-        renderProfilSubTab(slot);
+        const presetSel = document.getElementById('ai-preset-sel');
+        const urlEl = document.getElementById('ai-url');
+        const modEl = document.getElementById('ai-mod');
+        const vmodEl = document.getElementById('ai-vmod');
+        if (presetSel) presetSel.value = pr.id;
+        if (urlEl) urlEl.value = pr.baseUrl;
+        if (modEl) modEl.value = pr.model;
+        if (vmodEl) vmodEl.value = pr.visionModel;
         showToast(`Clé ${pr.label} détectée — fournisseur et modèle configurés.`);
-        return;
       }
-      await persistCurrentAI({ silent: true });
+      scheduleSilentAIPersist();
     });
 
     ['ai-url', 'ai-mod', 'ai-vmod'].forEach((id) => {
-      document.getElementById(id)?.addEventListener('input', () => persistCurrentAI({ silent: true }));
+      document.getElementById(id)?.addEventListener('input', scheduleSilentAIPersist);
     });
 
     document.getElementById('btn-toggle-apikey')?.addEventListener('click', async () => {

@@ -73,11 +73,25 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+html,
+body,
+button,
+a,
+input,
+select,
+textarea,
+summary,
+[role="button"] {
+  touch-action: manipulation;
+}
+
 html {
   width: 100%;
   max-width: 100%;
+  height: 100%;
   overflow-x: clip;
   overscroll-behavior-x: none;
+  overscroll-behavior-y: none;
   background-color: var(--bg-canvas);
   color: var(--text-primary);
   font-family: var(--font-sans);
@@ -85,6 +99,7 @@ html {
   line-height: 1.48;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
   color-scheme: dark;
 }
 
@@ -101,10 +116,35 @@ body {
   min-height: 100dvh;
   overflow-x: clip;
   overscroll-behavior-x: none;
-  touch-action: pan-y;
+  overscroll-behavior-y: none;
   background-color: var(--bg-canvas);
   color: var(--text-primary);
   padding-bottom: calc(var(--bottomnav-height) + var(--safe-bottom) + 18px);
+}
+
+/* Empêche la sélection accidentelle sur l'interface tout en la préservant dans les champs et messages Coach */
+button,
+.btn,
+.segmented-btn,
+.bottom-nav,
+.app-topbar,
+.panel-header,
+.kpi-strip,
+.state-tag,
+summary,
+[role="button"] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea,
+select,
+.chat-bubble,
+.coach-md,
+.nut-advisor-msg {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 h1, h2, h3, h4, p, ul, ol, figure {
@@ -139,6 +179,13 @@ img, svg, canvas, video {
 button, input, select, textarea {
   font: inherit;
   color: inherit;
+}
+
+/* Anti-auto-zoom Safari iOS strict (>= 16px sur tous les champs de saisie) */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+textarea,
+select {
+  font-size: 16px;
 }
 
 [hidden] {
@@ -654,15 +701,15 @@ table th.num,
 }
 
 .btn-sm {
-  min-height: 38px;
+  min-height: 44px;
   padding: 0 11px;
   font-size: 0.78rem;
 }
 
 .btn-xs {
-  min-height: 34px;
-  padding: 0 8px;
-  font-size: 0.74rem;
+  min-height: 44px;
+  padding: 0 9px;
+  font-size: 0.75rem;
 }
 
 .btn-block {
@@ -706,7 +753,7 @@ table th.num,
 
 .segmented-btn {
   min-width: 0;
-  min-height: 38px;
+  min-height: 44px;
   padding: 0 6px;
   border: none;
   border-radius: 3px;
@@ -758,7 +805,7 @@ table th.num,
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
-  font-size: 0.92rem;
+  font-size: 16px;
   transition: border-color var(--dur-fast) var(--ease-tech);
 }
 
@@ -1056,7 +1103,7 @@ input[type="range"].range-tech::-webkit-slider-thumb {
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 0.9rem;
+  font-size: 16px;
   font-weight: 600;
 }
 
@@ -1421,6 +1468,7 @@ input[type="range"].range-tech::-webkit-slider-thumb {
   max-height: 88dvh;
   overflow-y: auto;
   overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
   background-color: var(--bg-surface);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md) var(--radius-md) 0 0;
@@ -1817,4 +1865,128 @@ input[type="range"].range-tech::-webkit-slider-thumb {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 }
+
+/* ==========================================================================
+   RECHERCHE ALIMENTAIRE HYBRIDE (PERSO · CIQUAL · OPEN FOOD FACTS) & SCROLL
+   ========================================================================== */
+
+#coach-thread,
+.nut-advisor-thread,
+.food-results-list,
+.table-wrap {
+  -webkit-overflow-scrolling: touch;
+}
+
+.food-results-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.food-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0 2px;
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.food-source-tag {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  background-color: var(--bg-input);
+}
+
+.food-source-tag.is-perso {
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.food-source-tag.is-off {
+  border-color: var(--ok-border);
+  color: var(--ok);
+}
+
+.food-result-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border-hairline);
+  min-width: 0;
+}
+
+.food-result-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.food-result-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.food-result-name {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow-wrap: break-word;
+}
+
+.food-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.food-portion-btn {
+  min-height: 44px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.food-portion-btn:hover {
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.food-fallback-box {
+  margin-top: 4px;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-hairline);
+  background-color: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.food-fallback-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 

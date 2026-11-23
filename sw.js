@@ -8,7 +8,7 @@
  * - Network-Only strict pour tous les endpoints IA, GitHub API et ntfy.sh
  */
 
-const SHELL_CACHE = 'kinetix-shell-v1.5.0';
+const SHELL_CACHE = 'kinetix-shell-v1.6.0';
 const MEDIA_CACHE = 'kinetix-exercise-media-v2';
 const FONTS_CACHE = 'kinetix-fonts-v1';
 const CDN_CACHE = 'kinetix-cdn-v1';
@@ -54,6 +54,7 @@ const NETWORK_ONLY_HOSTS = [
   'text.pollinations.ai',
   'api.puter.com',
   'world.openfoodfacts.org',
+  'fr.openfoodfacts.org',
 ];
 
 function isExerciseMediaRequest(url) {
