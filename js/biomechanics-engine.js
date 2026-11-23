@@ -145,7 +145,54 @@ export const TRAINING_SPLITS = Object.freeze({
     shortLabel: 'Split classique',
     summary: 'Focus complet par groupe (Pecs, Dos, Jambes, Épaules/Bras) sur 4–5 j/sem.',
   },
+  legs_first_4d: {
+    id: 'legs_first_4d',
+    label: 'Split Personnalisé — S1 Jambes + 3j Haut',
+    shortLabel: 'S1 Jambes + 3j Haut',
+    summary: 'S1 Jambes complètes, S2 Poussée Haut, S3 Tirage Dos/Arrière, S4 Haut Complet & Rappel (filtré blessures & matériel).',
+  },
 });
+
+export function detectCustomLegsFirstSplit(rawOrNormText) {
+  const norm = String(rawOrNormText || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  if (!norm) return null;
+
+  const hasLegsWord = /\b(jambes?|bas\s*du\s*corps|cuisses?|lower)\b/.test(norm);
+  if (!hasLegsWord) return null;
+
+  const hasDayOneAnchor =
+    /\b(s1|j1|jour\s*1|seance\s*1|premier\s*jour|en\s*premier|d[' ]?abord|debut\s*de\s*semaine|commenc\w*\s+par\s+(?:les\s+)?jambes?)\b/.test(norm);
+  const hasPlusOtherDays =
+    /\b(?:et|plus|\+)\s*([2-4]|deux|trois|quatre)\s*(?:autres?\s*)?(?:jours?|j\b|seances?)/.test(norm) ||
+    /\b(?:1|une)\s*(?:seance|jour)\s*(?:de\s*)?(?:jambes?|bas)\s*(?:et|plus|\+)\s*([2-4]|deux|trois|quatre)\s*(?:autres?\s*)?(?:jours?|seances?|haut)/.test(norm);
+
+  if (!hasDayOneAnchor && !hasPlusOtherDays) return null;
+
+  const wordToNum = { deux: 2, trois: 3, quatre: 4 };
+  let sessionsPerWeek = 4;
+  const otherDaysMatch = norm.match(/\b(?:et|plus|\+)\s*([2-4]|deux|trois|quatre)\s*(?:autres?\s*)?(?:jours?|j\b|seances?)/);
+  if (otherDaysMatch) {
+    const extra = wordToNum[otherDaysMatch[1]] || Number(otherDaysMatch[1]) || 3;
+    sessionsPerWeek = Math.max(3, Math.min(5, 1 + extra));
+  } else {
+    const totalDaysMatch = norm.match(/\b([3-5])\s*(?:jours?|j\b|seances?)/);
+    if (totalDaysMatch) {
+      sessionsPerWeek = Math.max(3, Math.min(5, Number(totalDaysMatch[1])));
+    }
+  }
+
+  return {
+    split: 'legs_first_4d',
+    sessionsPerWeek,
+    label:
+      sessionsPerWeek === 4
+        ? 'Split Personnalisé — S1 Jambes + 3 jours Haut (4 j/sem)'
+        : `Split Personnalisé — S1 Jambes + ${sessionsPerWeek - 1} jours Haut (${sessionsPerWeek} j/sem)`,
+  };
+}
 
 export const TRAINING_METHODS = Object.freeze({
   double_progression: {
@@ -296,7 +343,31 @@ function pickBestExercise({ primaryMuscle, movementPlane = null, profile, usedId
 
   if (scored.length > 0) return scored[0].ex;
 
-  // Repli sans contrainte de plan si matériel très réduit (ex. poids du corps seul)
+  // Repli sans contrainte de plan, en respectant impérativement les blessures (contre-indications)
+  const safeFallback = EXERCISES_DB.filter(
+    (ex) =>
+      !usedIds.has(ex.id) &&
+      ex.primaryMuscles.includes(primaryMuscle) &&
+      hasRequiredEquipment(ex, profile?.equipment) &&
+      scoreExerciseForProfile(ex, profile) > -500
+  ).sort((a, b) => scoreExerciseForProfile(b, profile) - scoreExerciseForProfile(a, profile));
+  if (safeFallback.length > 0) return safeFallback[0];
+
+  // Second repli sûr : muscles secondaires ou même chaîne (jamais un exercice contre-indiqué)
+  const safeSecondary = EXERCISES_DB.filter(
+    (ex) =>
+      !usedIds.has(ex.id) &&
+      (ex.primaryMuscles.includes(primaryMuscle) || ex.secondaryMuscles?.includes(primaryMuscle)) &&
+      hasRequiredEquipment(ex, profile?.equipment) &&
+      scoreExerciseForProfile(ex, profile) > -500
+  ).sort((a, b) => scoreExerciseForProfile(b, profile) - scoreExerciseForProfile(a, profile));
+  if (safeSecondary.length > 0) return safeSecondary[0];
+
+  const safeAnyEquipment = EXERCISES_DB.filter(
+    (ex) => !usedIds.has(ex.id) && ex.primaryMuscles.includes(primaryMuscle) && scoreExerciseForProfile(ex, profile) > -500
+  ).sort((a, b) => scoreExerciseForProfile(b, profile) - scoreExerciseForProfile(a, profile));
+  if (safeAnyEquipment.length > 0) return safeAnyEquipment[0];
+
   const fallback = EXERCISES_DB.filter(
     (ex) => !usedIds.has(ex.id) && ex.primaryMuscles.includes(primaryMuscle) && hasRequiredEquipment(ex, profile?.equipment)
   );
@@ -637,6 +708,79 @@ function getSplitBlueprints(sessionsPerWeek, splitPreference = 'auto') {
     ];
     const fbCount = Math.max(2, Math.min(4, n));
     return { splitType: 'full_body', splitLabel: `Full Body (${fbCount} j/sem)`, days: baseDays.slice(0, fbCount) };
+  }
+
+  if (resolved === 'legs_first_4d') {
+    const legsFirstDays = [
+      {
+        id: 'day_lf_1',
+        name: 'S1 — Jambes (Quadriceps, Ischios & Fessiers)',
+        slots: [
+          { muscle: 'quads', plane: 'knee_dominant', sets: 4 },
+          { muscle: 'hamstrings', plane: 'hip_hinge', sets: 3 },
+          { muscle: 'quads', plane: 'knee_isolation', sets: 3 },
+          { muscle: 'hamstrings', plane: 'knee_isolation', sets: 3 },
+          { muscle: 'glutes', plane: 'hip_extension', sets: 3 },
+          { muscle: 'calves', plane: 'ankle_plantarflexion', sets: 3 },
+        ],
+      },
+      {
+        id: 'day_lf_2',
+        name: 'S2 — Poussée Haut du corps (Pecs, Épaules, Triceps)',
+        slots: [
+          { muscle: 'pecs_upper', plane: 'incline_push', sets: 4 },
+          { muscle: 'pecs_lower', plane: 'horizontal_push', sets: 3 },
+          { muscle: 'delts_ant', plane: 'vertical_push', sets: 3 },
+          { muscle: 'delts_lat', plane: 'shoulder_abduction', sets: 4 },
+          { muscle: 'triceps', plane: 'elbow_extension', sets: 3 },
+          { muscle: 'abs', plane: 'anti_extension', sets: 3 },
+        ],
+      },
+      {
+        id: 'day_lf_3',
+        name: 'S3 — Tirage Dos & Arrière (Dos, Trapèzes, Biceps)',
+        slots: [
+          { muscle: 'lats_width', plane: 'vertical_pull', sets: 4 },
+          { muscle: 'traps_rhomboids', plane: 'horizontal_pull', sets: 4 },
+          { muscle: 'lats_width', plane: 'vertical_pull', sets: 3, preferUnilateral: true },
+          { muscle: 'delts_post', plane: 'rear_delt', sets: 4 },
+          { muscle: 'biceps', plane: 'elbow_flexion', sets: 3 },
+          { muscle: 'biceps', plane: 'elbow_flexion', sets: 3, preferUnilateral: true },
+        ],
+      },
+      {
+        id: 'day_lf_4',
+        name: 'S4 — Haut Complet & Rappel (Points faibles & Bras)',
+        slots: [
+          { muscle: 'pecs_upper', plane: 'incline_push', sets: 3 },
+          { muscle: 'traps_rhomboids', plane: 'horizontal_pull', sets: 3 },
+          { muscle: 'delts_lat', plane: 'shoulder_abduction', sets: 4 },
+          { muscle: 'delts_post', plane: 'rear_delt', sets: 3 },
+          { muscle: 'triceps', plane: 'elbow_extension', sets: 3 },
+          { muscle: 'biceps', plane: 'elbow_flexion', sets: 3 },
+        ],
+      },
+      {
+        id: 'day_lf_5',
+        name: 'S5 — Rappel Jambes, Fessiers & Gainage',
+        slots: [
+          { muscle: 'quads', plane: 'knee_dominant', sets: 3, preferUnilateral: true },
+          { muscle: 'hamstrings', plane: 'knee_isolation', sets: 3 },
+          { muscle: 'glutes', plane: 'hip_extension', sets: 3 },
+          { muscle: 'calves', plane: 'ankle_plantarflexion', sets: 4 },
+          { muscle: 'abs', plane: 'anti_extension', sets: 3 },
+        ],
+      },
+    ];
+    const count = Math.max(3, Math.min(5, n === 2 ? 4 : n));
+    return {
+      splitType: 'legs_first_4d',
+      splitLabel:
+        count === 4
+          ? 'Split Personnalisé — S1 Jambes + 3j Haut (4 j/sem)'
+          : `Split Personnalisé — S1 Jambes + ${count - 1}j Haut (${count} j/sem)`,
+      days: legsFirstDays.slice(0, count),
+    };
   }
 
   if (resolved === 'arnold') {
@@ -1705,8 +1849,17 @@ export function analyzeCoachFeedbackAndProposeAction(message, profile = {}, prog
   let programPhase = program?.phase || 'accumulation';
   let memoryNote = null;
 
-  // 1. Détection souhait de Split
-  if (/\bfull\s*body\b/.test(norm)) {
+  // 1. Détection souhait de Split (y compris splits personnalisés S1 Jambes + 3 autres jours)
+  const customLegsSplit = detectCustomLegsFirstSplit(norm);
+  if (customLegsSplit) {
+    profilePatch.splitPreference = customLegsSplit.split;
+    profilePatch.sessionsPerWeek = customLegsSplit.sessionsPerWeek;
+    changes.push(`Split → ${customLegsSplit.label}`);
+    memoryNote = {
+      category: 'schedule',
+      text: `Préfère le split personnalisé ${customLegsSplit.label} (S1 Jambes en priorité).`,
+    };
+  } else if (/\bfull\s*body\b/.test(norm)) {
     profilePatch.splitPreference = 'full_body';
     if ((profile.sessionsPerWeek || 4) > 4) profilePatch.sessionsPerWeek = 3;
     changes.push('Split → Full Body');
@@ -1759,7 +1912,7 @@ export function analyzeCoachFeedbackAndProposeAction(message, profile = {}, prog
 
   // 3. Détection fréquence (2 à 6 jours/semaine) ou durée de séance
   const freqMatch = norm.match(/\b([2-6])\s*(j|jours?|seances?|fois)\b/);
-  if (freqMatch) {
+  if (freqMatch && !customLegsSplit) {
     profilePatch.sessionsPerWeek = Number(freqMatch[1]);
     changes.push(`Fréquence → ${freqMatch[1]} j/sem`);
   }

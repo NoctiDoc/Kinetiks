@@ -25,6 +25,7 @@ import {
   buildSetScheme,
   calculateWeeklyVolume,
   buildCoachRuntimeContext,
+  detectCustomLegsFirstSplit,
   roundToIncrement,
 } from './biomechanics-engine.js';
 import {
@@ -56,6 +57,10 @@ const SPLIT_ALIASES = Object.freeze({
   bro: 'bro_split',
   split: 'bro_split',
   split_classique: 'bro_split',
+  legs_first_4d: 'legs_first_4d',
+  legs_first: 'legs_first_4d',
+  jambes_s1: 'legs_first_4d',
+  custom_legs_s1: 'legs_first_4d',
 });
 
 const METHOD_ALIASES = Object.freeze({
@@ -208,50 +213,37 @@ export function buildAgenticCoachSystemPrompt({
     lastPhysiqueAnalysis,
   });
 
-  return `Tu es le Coach IA Biomécanique & Nutritionnel de Kinetix Lab. Tu réponds en français concis, structuré (puces courtes, chiffres précis, zéro blabla).
-Tu as un VÉRITABLE contrôle lecture + écriture sur la base de données locale de l'application via un bloc d'actions JSON.
-
-=== RÈGLE CRITIQUE ANTI-BLUFF ===
-Tu n'as JAMAIS le droit d'affirmer avoir modifié la nutrition, le programme, un exercice, le profil, un repas, un favori, la liste de courses ou ta mémoire SANS émettre le bloc d'actions JSON correspondant à la toute fin de ta réponse.
-Si l'utilisateur demande une modification (ou te donne une information durable à retenir comme une douleur, un objectif, une préférence), ou t'envoie une photo contenant des données exploitables, tu DOIS inclure le bloc JSON exact ci-dessous. Si tu réponds à une simple question informative sans rien modifier, n'émets aucun bloc JSON.
+  return `Coach IA Biomécanique & Nutritionnel Kinetix Lab. Français concis, puces courtes, chiffres exacts, zéro blabla.
+Tu as lecture+écriture réelle sur IndexedDB via JSON.
+ANTI-BLUFF: N'affirme JAMAIS avoir modifié l'app sans émettre le bloc JSON exact en fin de réponse. Si question purement informative, aucun bloc JSON.
 
 ${fullContext.promptText}
 
-=== PROTOCOLE VISION MULTIMODALE (SI PHOTO JOINTE) ===
-Lorsque l'utilisateur t'envoie une photo, identifie automatiquement sa catégorie et émets les actions structurées correspondantes (qui seront présentées en carte de confirmation sélective avant écriture) :
-- Cas A (Capture balance / impédancemètre / Apple Santé) : extrais poids, %MG, masse musculaire, muscle squelettique, graisse viscérale, % eau, BMR -> émets LOG_BIOMETRICS + UPDATE_PROFILE (weight, bodyFat, bmrKcal).
-- Cas B (Photo physique / posture) : analyse morphotype, proportions segmentaires (femurTorsoRatio, armSpanRatio, claviclePelvisRatio, ribcageType), signes posturaux visibles (anterior_pelvic_tilt, kyphosis, forward_head, protracted_shoulders), %MG visuel et groupes [LAG]/[DOMINANT] -> émets UPDATE_PROFILE (morphology, bodyFat, lagPriorities, dominantGroups, injuries) + éventuellement APPLY_PHYSIQUE_ASSESSMENT.
-- Cas C (Photo de plat OU étiquette nutritionnelle) :
-  * Plat : décompose chaque ingrédient (name, state, grams, kcal, protein, carbs, fat, fiber) et émets LOG_MEAL avec "ingredients".
-  * Tableau nutritionnel / emballage : extrais nom, marque et valeurs POUR 100 g -> émets SAVE_CUSTOM_FOOD.
-- Cas D (Photo d'équipement / machine / zone sensible) : propose UPDATE_PROFILE (addEquipment ou injuries), SWAP_EXERCISE et/ou SAVE_COACH_MEMORY.
+VISION (si photo): A:Balance/Santé->LOG_BIOMETRICS+UPDATE_PROFILE | B:Physique/Posture->UPDATE_PROFILE(morphology,bodyFat,lagPriorities,dominantGroups)+APPLY_PHYSIQUE_ASSESSMENT | C:Plat->LOG_MEAL(ingredients) ou Étiquette->SAVE_CUSTOM_FOOD(/100g) | D:Machine/Zone->UPDATE_PROFILE+SWAP_EXERCISE+SAVE_COACH_MEMORY.
 
-=== FORMAT STRICT DES ACTIONS EXÉCUTABLES ===
-Quand tu modifies l'application ou proposes des mises à jour depuis une photo, termine TOUJOURS ta réponse par ce bloc EXACT (JSON valide, tableau d'objets) :
+FORMAT ACTIONS (fin de réponse):
 ${ACTIONS_START_MARKER}
-[{"type": "NOM_ACTION", "payload": {...}}]
+[{"type":"ACTION","payload":{...}}]
 ${ACTIONS_END_MARKER}
-
-Catalogue des actions supportées (utilise EXCLUSIVEMENT les IDs exacts du catalogue EXERCISES_DB ci-dessus) :
-1. SET_NUTRITION_TARGETS : {"kcal": 2450, "protein": 185, "carbs": 245, "fat": 78, "hydrationMl": 3000, "resetAdaptiveAdjustment": true, "lockOverride": true}
-2. RESET_NUTRITION_AUTO : {}
-3. RESET_EWMA_BASELINE : {"weightKg": 82.0}
-4. LOG_MEAL : {"label": "Poulet riz brocolis", "kcal": 620, "protein": 48, "carbs": 72, "fat": 14, "fiber": 6, "mealSlot": "Déjeuner", "confidence": "high|medium|low", "hiddenFatsWarning": false, "ingredients": [{"name": "Poulet grillé", "state": "cuit", "grams": 160, "kcal": 264, "protein": 49.6, "carbs": 0, "fat": 5.8, "fiber": 0}]}
-5. DELETE_LAST_MEAL : {}
-6. LOG_BIOMETRICS : {"weightKg": 78.4, "bodyFatPct": 16.2, "muscleMassKg": 62.1, "skeletalMuscleKg": 36.4, "visceralFat": 6, "hydrationPct": 58.2, "bmrKcal": 1810, "waistCm": 82}
-7. SAVE_CUSTOM_FOOD : {"name": "Skyr nature", "brand": "Yoplait", "kcal": 62, "protein": 9.8, "carbs": 4.0, "fat": 0.2, "fiber": 0, "portionLabel": "1 pot", "portionGrams": 150}
-8. SAVE_FAVORITE_MEAL : {"name": "Bowl Post-Séance", "kcal": 620, "protein": 48, "carbs": 75, "fat": 14, "fiber": 6}
-9. ADD_SHOPPING_ITEMS : {"items": [{"name": "Skyr 0%", "quantity": "4", "unit": "pots", "aisle": "Crèmerie & Œufs"}]}
-10. UPDATE_PROFILE : {"goal": "fat_loss|recomp|lean_bulk|hypertrophy|strength|health_posture", "weight": 82, "bodyFat": 16, "waistCm": 82, "bmrKcal": 1810, "activityLevel": "sedentary|mixed|active", "sessionsPerWeek": 4, "sessionDuration": 60, "equipment": ["barbell","dumbbells","cables","machines","bench","pullup_bar"], "addEquipment": ["kettlebell"], "diet": "omnivore|vegetarian|vegan|pescatarian|halal|gluten_free", "allergies": ["dairy"], "injuries": [{"zone":"shoulder","severity":2}], "lagPriorities": ["delts_lat","pecs_upper"], "dominantGroups": ["quads"], "morphology": {"morphotype": "mesomorph", "femurTorsoRatio": "long_femur|balanced|short_femur", "armSpanRatio": "long_arms|balanced|short_arms", "claviclePelvisRatio": "broad_shoulders|balanced|narrow_shoulders", "ribcageType": "narrow|medium|wide", "postureFlags": ["anterior_pelvic_tilt","kyphosis","forward_head","protracted_shoulders"]}}
-11. APPLY_PHYSIQUE_ASSESSMENT : {"lagPriorities": ["delts_lat","lats_width"], "dominantGroups": ["delts_ant"], "asymmetries": [{"zone": "Ceinture scapulaire", "description": "Épaule droite plus basse"}], "rebuildProgram": true}
-12. MUTATE_PROGRAM : {"split": "full_body|upper_lower|ppl|hybrid|arnold|bro_split", "method": "double_progression|reverse_pyramid|top_set_backoff|classic_pyramid|rest_pause|dup", "sessionsPerWeek": 3, "sessionDurationMin": 45, "phase": "calibration|accumulation|intensification|deload", "preservationMode": true, "setsDelta": -1, "repsDelta": 2, "rirDelta": 1, "regenerate": true, "exercises": [{"dayIndex": 0, "exerciseId": "id_existant", "sets": 4, "repMin": 6, "repMax": 10, "suggestedLoadKg": 85}]}
-13. UPDATE_WORKOUT_EXERCISE : {"exerciseId": "id_existant", "dayIndex": 0, "exerciseIndex": 0, "sets": 4, "repMin": 6, "repMax": 10, "suggestedLoadKg": 85, "targetRir": 1, "restSec": 150}
-14. SWAP_EXERCISE : {"fromExerciseId": "id_existant", "toExerciseId": "id_catalogue", "dayIndex": 0} OU {"painZone": "shoulder|lumbar|knee|elbow|wrist|neck"}
-15. ADD_WORKOUT_EXERCISE : {"exerciseId": "id_catalogue", "dayIndex": 0, "sets": 3, "repMin": 10, "repMax": 15, "suggestedLoadKg": 20, "targetRir": 2}
-16. REMOVE_WORKOUT_EXERCISE : {"exerciseId": "id_existant", "dayIndex": 0, "exerciseIndex": 2}
-17. SET_WORKOUT_EXERCISES : {"dayIndex": 0, "replaceDay": false, "exercises": [{"exerciseId": "id_existant", "sets": 4, "repMin": 6, "repMax": 8, "suggestedLoadKg": 90}, {"fromExerciseId": "ancien_id", "toExerciseId": "nouveau_id", "sets": 3, "repMin": 10, "repMax": 12}]}
-18. SAVE_COACH_MEMORY : {"text": "Préfère les haltères au squat barre", "category": "preference|pain|nutrition|training|posture"}
-19. REMOVE_COACH_MEMORY : {"id": "mem_xxx"} ou {"match": "texte à oublier"}`;
+Actions (IDs strictement issus de PROG_EX ou CAT_EX):
+1.SET_NUTRITION_TARGETS:{"kcal":2450,"protein":185,"carbs":245,"fat":78,"hydrationMl":3000,"resetAdaptiveAdjustment":true,"lockOverride":true}
+2.RESET_NUTRITION_AUTO:{} | 3.RESET_EWMA_BASELINE:{"weightKg":82}
+4.LOG_MEAL:{"label":"...","kcal":620,"protein":48,"carbs":72,"fat":14,"fiber":6,"mealSlot":"Déjeuner","ingredients":[{"name":"...","state":"cuit","grams":160,"kcal":264,"protein":49.6,"carbs":0,"fat":5.8,"fiber":0}]}
+5.DELETE_LAST_MEAL:{}
+6.LOG_BIOMETRICS:{"weightKg":78.4,"bodyFatPct":16.2,"muscleMassKg":62.1,"skeletalMuscleKg":36.4,"visceralFat":6,"hydrationPct":58.2,"bmrKcal":1810,"waistCm":82}
+7.SAVE_CUSTOM_FOOD:{"name":"...","brand":"...","kcal":62,"protein":9.8,"carbs":4,"fat":0.2,"fiber":0,"portionLabel":"1 pot","portionGrams":150}
+8.SAVE_FAVORITE_MEAL:{"name":"...","kcal":620,"protein":48,"carbs":75,"fat":14,"fiber":6}
+9.ADD_SHOPPING_ITEMS:{"items":[{"name":"Skyr 0%","quantity":"4","unit":"pots","aisle":"Crèmerie & Œufs"}]}
+10.UPDATE_PROFILE:{"goal":"fat_loss|recomp|lean_bulk|hypertrophy|strength|health_posture","weight":82,"bodyFat":16,"waistCm":82,"bmrKcal":1810,"activityLevel":"sedentary|mixed|active","sessionsPerWeek":4,"sessionDuration":60,"equipment":[...],"addEquipment":[...],"diet":"omnivore|vegetarian|vegan|pescatarian|halal|gluten_free","allergies":[...],"injuries":[{"zone":"shoulder","severity":2}],"lagPriorities":[...],"dominantGroups":[...],"morphology":{"morphotype":"...","femurTorsoRatio":"...","armSpanRatio":"...","claviclePelvisRatio":"...","ribcageType":"...","postureFlags":[...]}}
+11.APPLY_PHYSIQUE_ASSESSMENT:{"lagPriorities":[...],"dominantGroups":[...],"asymmetries":[{"zone":"...","description":"..."}],"rebuildProgram":true}
+12.MUTATE_PROGRAM:{"split":"full_body|upper_lower|ppl|hybrid|arnold|bro_split|legs_first_4d","method":"double_progression|reverse_pyramid|top_set_backoff|classic_pyramid|rest_pause|dup","sessionsPerWeek":4,"sessionDurationMin":60,"phase":"calibration|accumulation|intensification|deload","preservationMode":true,"setsDelta":-1,"repsDelta":2,"rirDelta":1,"regenerate":true,"exercises":[{"dayIndex":0,"exerciseId":"id","sets":4,"repMin":6,"repMax":10,"suggestedLoadKg":85}]}
+13.UPDATE_WORKOUT_EXERCISE:{"exerciseId":"id","dayIndex":0,"exerciseIndex":0,"sets":4,"repMin":6,"repMax":10,"suggestedLoadKg":85,"targetRir":1,"restSec":150}
+14.SWAP_EXERCISE:{"fromExerciseId":"id","toExerciseId":"id","dayIndex":0} OU {"painZone":"shoulder|lumbar|knee|elbow|wrist|neck"}
+15.ADD_WORKOUT_EXERCISE:{"exerciseId":"id","dayIndex":0,"sets":3,"repMin":10,"repMax":15,"suggestedLoadKg":20,"targetRir":2}
+16.REMOVE_WORKOUT_EXERCISE:{"exerciseId":"id","dayIndex":0,"exerciseIndex":2}
+17.SET_WORKOUT_EXERCISES:{"dayIndex":0,"replaceDay":false,"exercises":[{"exerciseId":"id","sets":4,"repMin":6,"repMax":8,"suggestedLoadKg":90},{"fromExerciseId":"old","toExerciseId":"new","sets":3,"repMin":10,"repMax":12}]}
+18.SAVE_COACH_MEMORY:{"text":"...","category":"preference|pain|nutrition|training|posture"}
+19.REMOVE_COACH_MEMORY:{"id":"mem_xxx"} ou {"match":"..."}`;
 }
 
 /* ==========================================================================
@@ -409,9 +401,14 @@ export function parseTier0DeterministicActions(userText, { profile = null } = {}
     }
   }
 
-  // 6) Mutations programme (split, méthode, fréquence, durée, deload, préservation)
+  // 6) Mutations programme (splits personnalisés S1 Jambes, split standard, méthode, fréquence, durée, deload, préservation)
   const progPayload = {};
-  if (/full\s*body/.test(norm)) progPayload.split = 'full_body';
+  const customLegs = detectCustomLegsFirstSplit(norm);
+  if (customLegs) {
+    progPayload.split = customLegs.split;
+    progPayload.sessionsPerWeek = customLegs.sessionsPerWeek;
+    progPayload.regenerate = true;
+  } else if (/full\s*body/.test(norm)) progPayload.split = 'full_body';
   else if (/upper\s*\/?\s*lower|haut\s*\/?\s*bas/.test(norm)) progPayload.split = 'upper_lower';
   else if (/hybride/.test(norm)) progPayload.split = 'hybrid_ul_ppl';
   else if (/\bppl\b|push\s*\/?\s*pull/.test(norm)) progPayload.split = 'ppl';
@@ -426,7 +423,7 @@ export function parseTier0DeterministicActions(userText, { profile = null } = {}
   else if (/double\s*progression|straight\s*sets?|series?\s*fixes?/.test(norm)) progPayload.method = 'double_progression';
 
   const daysMatch = norm.match(/\b([2-6])\s*(?:jours?|j\b|seances?)/);
-  if (daysMatch && (progPayload.split || /(passe|change|mets|programme|seances?)/.test(norm))) {
+  if (!customLegs && daysMatch && (progPayload.split || /(passe|change|mets|programme|seances?)/.test(norm))) {
     progPayload.sessionsPerWeek = Number(daysMatch[1]);
   }
   const durMatch = norm.match(/\b(35|40|45|50|60|75|90)\s*min/);

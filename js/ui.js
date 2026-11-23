@@ -5890,12 +5890,16 @@ function renderProfilSubTab(slot) {
                             <span><strong>Erreur API :</strong> ${esc(m.apiError)}</span>
                             <button type="button" class="btn btn-xs" data-open-ai-settings>Vérifier clé / Audit</button>
                           </div>`
-                        : m.fallbackReason
-                          ? `<div class="notice notice-danger" style="padding: 7px 9px; font-size: 0.76rem;">
-                              <span><strong>Repli Niveau 0 :</strong> ${esc(m.fallbackReason)}</span>
-                              <button type="button" class="btn btn-xs" data-open-ai-settings>Vérifier clé</button>
+                        : m.quotaFallback
+                          ? `<div class="notice notice-accent" style="padding: 6px 9px; font-size: 0.74rem;">
+                              <span><strong>Relais local (quota Gemini 429) :</strong> ${esc(m.fallbackReason || 'Demande exécutée localement via le moteur Niveau 0.')}</span>
                             </div>`
-                          : ''
+                          : m.fallbackReason
+                            ? `<div class="notice notice-danger" style="padding: 7px 9px; font-size: 0.76rem;">
+                                <span><strong>Repli Niveau 0 :</strong> ${esc(m.fallbackReason)}</span>
+                                <button type="button" class="btn btn-xs" data-open-ai-settings>Vérifier clé</button>
+                              </div>`
+                            : ''
                     }
                   </div>`;
                   })
@@ -6453,6 +6457,7 @@ function renderProfilSubTab(slot) {
             tierUsed: res.tierUsed,
             provider: res.provider || null,
             apiError: null,
+            quotaFallback: Boolean(res.quotaFallback),
             fallbackReason: res.usedFallback ? res.fallbackReason : null,
             actionProposal: !photoUpdateProposal && executedBadges.length === 0 ? actionProposal || null : null,
             actionApplied: false,
@@ -6726,7 +6731,7 @@ function renderProfilSubTab(slot) {
             <div>
               <h2>Clé API Gemini (Unique)</h2>
               <p class="panel-subtitle" id="ai-autosave-status">
-                Double persistance locale (IndexedDB + localStorage) · En-tête HTTP <code>x-goog-api-key</code> · Failover auto <code>gemini-3.8-flash → gemini-flash-lite-latest</code>.
+                Double persistance locale (IndexedDB + localStorage) · En-tête HTTP <code>x-goog-api-key</code> · Failover auto <code>gemini-flash-lite-latest → gemini-flash-latest → gemini-3.8-flash</code>.
               </p>
             </div>
             <span class="state-tag ${s.apiKey && isGeminiPrimary ? 'is-ok' : 'is-accent'}">

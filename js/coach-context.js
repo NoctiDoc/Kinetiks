@@ -1,14 +1,13 @@
 /**
  * Kinetix Lab — Constructeur de Dossier Omni-Contexte Coach IA (js/coach-context.js)
  *
- * Rassemble en un dossier structuré et compact 100 % des données réelles de l'athlète :
+ * Rassemble en un dossier ultra-compact (< 2 500 tokens) les données réelles de l'athlète :
  * - Profil complet (morpho, posture, blessures, matériel, régime, objectif)
- * - Historique biométrique 30j (poids brut, EWMA, vitesse, US Navy, WHtR, BMR, TDEE, override)
- * - Nutrition du jour + moyennes & adhérence 7j et 14j + distribution protéique
- * - Programme actif + 10 dernières séances réelles (charges, reps, e1RM, douleurs, Readiness)
- * - Synthèse pro-intelligence.js (fatigue CNS, volume effectif par muscle, alertes articulaires, corrélations)
- * - Dernier bilan Labo Physique ([LAG] / [DOMINANT])
- * - Mémoire complète du Coach avec IDs
+ * - Biométrie récente (EWMA, vitesse, %MG, WHtR, BMR, TDEE, 5 dernières pesées)
+ * - Nutrition du jour + moyenne & adhérence 7j
+ * - Programme actif + 5 dernières séances réelles
+ * - Sous-ensemble filtré <= 45 exercices essentiels (matériel + blessures) au format id:Nom sur 1 ligne
+ * - Synthèse pro-intelligence.js, bilan Labo Physique et mémoire Coach
  */
 
 import { EXERCISES_DB, MUSCLE_GROUPS } from './exercises-db.js';
@@ -17,6 +16,116 @@ import { getProfileAdaptiveAdjustmentKcal } from './nutrition-db.js';
 import { computeProIntelligence } from './pro-intelligence.js';
 
 const DAY_MS = 86400000;
+const MAX_COMPACT_CATALOG_EXERCISES = 45;
+
+const INJURY_CONTRAINDICATION_MAP = Object.freeze({
+  lumbar: ['lumbar_shear', 'lumbar_flexion'],
+  shoulder: ['shoulder_impingement', 'anterior_shoulder'],
+  knee: ['knee_shear'],
+  wrist: ['wrist_extension'],
+  elbow: ['elbow_tendon'],
+  neck: ['cervical_load'],
+});
+
+function hasProfileEquipment(exercise, userEquipment = []) {
+  const eqList = Array.isArray(exercise?.equipment) ? exercise.equipment : [];
+  if (eqList.length === 0) return true;
+  const owned = new Set([...(Array.isArray(userEquipment) ? userEquipment : []), 'bodyweight']);
+  if (eqList.includes('bench') && !owned.has('bench')) return false;
+  const nonBench = eqList.filter((eq) => eq !== 'bench');
+  if (nonBench.length === 0) return true;
+  return nonBench.some((eq) => owned.has(eq));
+}
+
+function getInjuryFilters(injuries = []) {
+  const blocked = new Set();
+  const caution = new Set();
+  for (const inj of Array.isArray(injuries) ? injuries : []) {
+    const tags = INJURY_CONTRAINDICATION_MAP[inj?.zone] || [];
+    const sev = Number(inj?.severity) || 1;
+    for (const tag of tags) {
+      if (sev >= 2) blocked.add(tag);
+      else caution.add(tag);
+    }
+  }
+  return { blocked, caution };
+}
+
+/**
+ * Sélectionne au maximum 45 exercices essentiels de EXERCISES_DB filtrés strictement
+ * selon le matériel et les blessures du profil, répartis équitablement sur tous les
+ * groupes musculaires (priorité aux groupes [LAG] et exercices de référence natifs).
+ * Exclut les exercices déjà présents dans le programme actif (déjà listés dans PROG).
+ */
+export function selectCompactCoachExercises(profile = {}, program = null, maxCount = MAX_COMPACT_CATALOG_EXERCISES) {
+  const cap = Math.max(1, Math.min(MAX_COMPACT_CATALOG_EXERCISES, Number(maxCount) || MAX_COMPACT_CATALOG_EXERCISES));
+  const { blocked, caution } = getInjuryFilters(profile?.injuries);
+  const userEquipment = Array.isArray(profile?.equipment) ? profile.equipment : [];
+
+  const activeProgramIds = new Set();
+  for (const day of program?.days || []) {
+    for (const slot of day.exercises || []) {
+      if (slot?.exerciseId) activeProgramIds.add(slot.exerciseId);
+    }
+  }
+
+  const eligible = (EXERCISES_DB || []).filter((ex) => {
+    if (!ex?.id || !ex?.name) return false;
+    if (activeProgramIds.has(ex.id)) return false;
+    if (!hasProfileEquipment(ex, userEquipment)) return false;
+    const contras = Array.isArray(ex.contraindications) ? ex.contraindications : [];
+    if (contras.some((c) => blocked.has(c))) return false;
+    return true;
+  });
+
+  const scoreCandidate = (ex) => {
+    let score = 0;
+    // Priorité absolue aux exercices natifs biomécaniques (noms français propres & calibrés)
+    if (!ex.isExternalCatalog && ex.source !== 'free-exercise-db') score += 50;
+    if (ex.category === 'compound') score += 12;
+    const contras = Array.isArray(ex.contraindications) ? ex.contraindications : [];
+    if (contras.some((c) => caution.has(c))) score -= 18;
+    return score;
+  };
+
+  const buckets = new Map();
+  for (const ex of eligible) {
+    const primary = ex.primaryMuscles?.[0] || 'other';
+    if (!buckets.has(primary)) buckets.set(primary, []);
+    buckets.get(primary).push(ex);
+  }
+  for (const list of buckets.values()) {
+    list.sort((a, b) => scoreCandidate(b) - scoreCandidate(a) || a.id.localeCompare(b.id));
+  }
+
+  const lagList = Array.isArray(profile?.lagPriorities) ? profile.lagPriorities : [];
+  const allGroups = Array.from(
+    new Set([...lagList, ...Object.keys(MUSCLE_GROUPS), ...buckets.keys()])
+  ).filter((g) => buckets.has(g));
+
+  const selected = [];
+  const seenIds = new Set();
+  let round = 0;
+
+  while (selected.length < cap) {
+    let addedInRound = false;
+    for (const grp of allGroups) {
+      const list = buckets.get(grp);
+      if (!list || round >= list.length) continue;
+      const ex = list[round];
+      if (!seenIds.has(ex.id)) {
+        seenIds.add(ex.id);
+        selected.push(ex);
+        addedInRound = true;
+        if (selected.length >= cap) break;
+      }
+    }
+    if (!addedInRound) break;
+    round += 1;
+  }
+
+  return selected;
+}
 
 function formatExerciseTopSet(ex) {
   const workSets = (ex.sets || []).filter((s) => !s.isWarmup && s.done);
@@ -30,8 +139,15 @@ function formatExerciseTopSet(ex) {
       best = s;
     }
   }
-  const painTag = ex.feedback === 'joint_pain' ? ' [DOULEUR]' : ex.feedback === 'too_easy' ? ' [FACILE]' : ex.feedback === 'at_limit' ? ' [LIMITE]' : '';
-  return `${ex.name}: ${workSets.length}s top ${best.weightKg}kg×${best.reps}${bestE1 > 0 ? ` (e1RM ${Math.round(bestE1)})` : ''}${painTag}`;
+  const tag =
+    ex.feedback === 'joint_pain'
+      ? '!PAIN'
+      : ex.feedback === 'too_easy'
+        ? '+EZ'
+        : ex.feedback === 'at_limit'
+          ? '!LIM'
+          : '';
+  return `${ex.exerciseId || ex.name}:${workSets.length}s@${best.weightKg}x${best.reps}${bestE1 > 0 ? `(1RM:${Math.round(bestE1)})` : ''}${tag}`;
 }
 
 export function buildCoachFullContext({
@@ -68,7 +184,7 @@ export function buildCoachFullContext({
   const adaptiveAdj = getProfileAdaptiveAdjustmentKcal(profile);
   const memoryItems = Array.isArray(profile?.coachMemory) ? profile.coachMemory : [];
 
-  // 1. Profil complet & Morpho-posture
+  // 1. Morpho-posture
   const morph = profile?.morphology || {};
   const morphSummary = [
     morph.morphotype ? `Morphotype ${morph.morphotype}` : null,
@@ -81,35 +197,48 @@ export function buildCoachFullContext({
     .filter(Boolean)
     .join(' · ');
 
-  // 2. Historique biométrique 30j
+  const morphCompact = [
+    morph.morphotype || 'std',
+    `fem=${morph.femurTorsoRatio || 'bal'}`,
+    `env=${morph.armSpanRatio || 'bal'}`,
+    `clav=${morph.claviclePelvisRatio || 'bal'}`,
+    Array.isArray(morph.postureFlags) && morph.postureFlags.length ? `post=${morph.postureFlags.join(',')}` : null,
+  ]
+    .filter(Boolean)
+    .join(';');
+
+  // 2. Biométrie 30j (5 dernières pesées dans le prompt compact)
   const nowMs = Date.now();
-  const bio30 = (biometrics || [])
-    .filter((b) => {
-      const ts = b.timestamp || Date.parse(`${b.date}T12:00:00Z`) || 0;
-      return nowMs - ts <= 31 * DAY_MS;
-    })
-    .slice(-10);
-  const bioTrendLine =
-    bio30.length > 0
-      ? bio30
-          .map((b) => `${b.date}:${b.weightKg ?? '--'}kg${b.bodyFatPct ? `/${b.bodyFatPct}%MG` : ''}`)
-          .join(' | ')
-      : 'aucune pesée récente';
+  const bio30 = (biometrics || []).filter((b) => {
+    const ts = b.timestamp || Date.parse(`${b.date}T12:00:00Z`) || 0;
+    return nowMs - ts <= 31 * DAY_MS;
+  });
+  const bioRecent5 = bio30.slice(-5);
+  const bioTrendCompact =
+    bioRecent5.length > 0
+      ? bioRecent5
+          .map((b) => `${b.date.slice(5)}:${b.weightKg ?? '-'}kg${b.bodyFatPct ? `/${b.bodyFatPct}%` : ''}`)
+          .join(',')
+      : 'aucune';
 
   const latestBf = latestBio?.bodyFatPct ?? latestBio?.navyBodyFatPct ?? null;
   const latestWhtr = latestBio?.whtr ?? null;
 
-  // 3. Nutrition du jour + 7j / 14j
-  const todayMealsLine =
+  // 3. Nutrition jour + moyenne 7j
+  const todayMealsCompact =
     (nutritionToday || []).length > 0
       ? nutritionToday
-          .slice(0, 8)
-          .map((m) => `${m.label} (${m.kcal} kcal, P${m.proteinG}/G${m.carbsG}/L${m.fatG})`)
-          .join(' | ')
-      : 'aucun repas logué';
+          .slice(0, 5)
+          .map((m) => `${String(m.label || '').slice(0, 28)}(${m.kcal}k/P${m.proteinG}/G${m.carbsG}/L${m.fatG})`)
+          .join('|')
+      : 'aucun';
 
   const p7 = intel.nutritionTiming.period7d;
   const p14 = intel.nutritionTiming.period14d;
+  const adherenceCompact =
+    p7.daysLogged > 0
+      ? `${p7.daysLogged}j:avg=${p7.avgKcal}kcal(P${p7.avgProteinG}/G${p7.avgCarbsG}/L${p7.avgFatG}),adh=${p7.adherencePct}%`
+      : 'insuffisant';
   const adherenceLine = [
     p7.daysLogged > 0
       ? `7j (${p7.daysLogged}j): moy ${p7.avgKcal} kcal · P${p7.avgProteinG}g/G${p7.avgCarbsG}g/L${p7.avgFatG}g · adhérence ${p7.adherencePct}%`
@@ -121,105 +250,103 @@ export function buildCoachFullContext({
     .filter(Boolean)
     .join(' | ');
 
-  // 4. Programme actif (avec dayIndex, index exercice, exercise_id, séries, réps et charge)
+  // 4. Programme actif (compact avec dayIndex, [eIdx], exerciseId, sets×reps@load)
   const programLines = (program?.days || [])
     .map((day, dIdx) => {
       const exList = (day.exercises || [])
         .map(
           (ex, eIdx) =>
-            `[${eIdx}] ${ex.exerciseId} ("${ex.name}", ${ex.sets}×${ex.repRange?.[0] || ex.repMin || 8}-${ex.repRange?.[1] || ex.repMax || 12} @ ${ex.suggestedLoadKg}kg, RIR ${ex.targetRir})`
+            `${eIdx}:${ex.exerciseId}:${ex.name}(${ex.sets}x${ex.repRange?.[0] || ex.repMin || 8}-${ex.repRange?.[1] || ex.repMax || 12}@${ex.suggestedLoadKg}kg,RIR${ex.targetRir})`
         )
-        .join(' ; ');
-      return `  - Jour dayIndex=${dIdx} [${day.name}] : ${exList}`;
+        .join('|');
+      return `J${dIdx}[${day.name}]:${exList}`;
     })
     .join('\n');
 
-  // Catalogue exact de tous les exercices disponibles (id: Nom Français (groupe))
-  const exerciseCatalogLine = EXERCISES_DB.map((e) => {
-    const grp = MUSCLE_GROUPS[e.primaryMuscles?.[0]]?.label || e.primaryMuscles?.[0] || 'Général';
-    return `${e.id}: ${e.name} (${grp})`;
-  }).join(' | ');
+  // Catalogue compact filtré selon matériel + blessures (strictement <= 45 exercices, id:Nom sur 1 seule ligne)
+  const compactCatalog = selectCompactCoachExercises(profile, program, MAX_COMPACT_CATALOG_EXERCISES);
+  const exerciseCatalogLine = compactCatalog.map((e) => `${e.id}:${e.name}`).join('|');
 
-  // 5. 10 dernières séances réelles
-  const last10Workouts = [...(workouts || [])]
+  // 5. 5 dernières séances réelles (au lieu de 10)
+  const last5Workouts = [...(workouts || [])]
     .sort((a, b) => (b.endedAt || Date.parse(b.date) || 0) - (a.endedAt || Date.parse(a.date) || 0))
-    .slice(0, 10);
+    .slice(0, 5);
 
   const workoutHistoryLines =
-    last10Workouts.length > 0
-      ? last10Workouts
+    last5Workouts.length > 0
+      ? last5Workouts
           .map((w) => {
-            const rd = w.readiness?.score ? `Rd ${w.readiness.score}/100` : 'Rd --';
-            const exSummaries = (w.exercises || []).map(formatExerciseTopSet).filter(Boolean).slice(0, 5);
-            return `  - ${w.date} [${w.dayName}] (${rd}) : ${exSummaries.join(' ; ') || 'séance enregistrée'}`;
+            const rd = w.readiness?.score ? `Rd${w.readiness.score}` : 'Rd-';
+            const exSummaries = (w.exercises || []).map(formatExerciseTopSet).filter(Boolean).slice(0, 4);
+            return `${String(w.date || '').slice(5)}[${String(w.dayName || '').slice(0, 22)}](${rd}):${exSummaries.join(';') || 'ok'}`;
           })
           .join('\n')
-      : '  (aucune séance enregistrée)';
+      : 'aucune';
 
-  // 6. Synthèse Pro Intelligence
-  const volumeSummary = Object.values(intel.volumeByMuscle)
+  // 6. Pro Intelligence compact
+  const volumeCompact = Object.values(intel.volumeByMuscle)
     .filter((v) => v.sets > 0)
     .sort((a, b) => b.sets - a.sets)
-    .slice(0, 10)
-    .map((v) => `${v.label}: ${v.sets}s (MEV ${v.mev}/MRV ${v.mrv}${v.zone === 'OVER_MRV' ? ' !SURCHARGE' : ''})`)
-    .join(' | ');
+    .slice(0, 6)
+    .map((v) => `${v.label}:${v.sets}s(${v.mev}-${v.mrv}${v.zone === 'OVER_MRV' ? '!' : ''})`)
+    .join('|');
 
   const jointAlertLine =
     intel.jointVigilance.recurringAlerts.length > 0
-      ? intel.jointVigilance.recurringAlerts.map((a) => `${a.label} (${a.count}×/14j)`).join(', ')
-      : 'aucune alerte récurrente';
+      ? intel.jointVigilance.recurringAlerts.map((a) => `${a.label}(${a.count}x)`).join(',')
+      : '0';
 
   const stagLine =
     intel.stagnatingExercises.length > 0
-      ? intel.stagnatingExercises.map((s) => `${s.name} (${s.sessionsFlat} séances @ e1RM ${s.latestE1rm}kg)`).join(', ')
-      : 'aucune';
+      ? intel.stagnatingExercises.slice(0, 4).map((s) => `${s.name}(${s.sessionsFlat}s@${s.latestE1rm}kg)`).join(',')
+      : '0';
 
-  // 7. Dernier bilan Labo Physique
+  // 7. Labo Physique compact
   const lagLabels = (profile?.lagPriorities || []).map((g) => MUSCLE_GROUPS[g]?.label || g);
   const domLabels = (profile?.dominantGroups || []).map((g) => MUSCLE_GROUPS[g]?.label || g);
+  const laboCompact = `bf=${lastPhysiqueAnalysis?.estimated_body_fat_pct ?? latestBf ?? '-'}%;LAG=[${(profile?.lagPriorities || []).join(',') || '-'}];DOM=[${(profile?.dominantGroups || []).join(',') || '-'}]`;
   const laboLine = lastPhysiqueAnalysis
     ? `Dernier scan Labo (${lastPhysiqueAnalysis.meta?.provider || 'local'}): %MG est. ${lastPhysiqueAnalysis.estimated_body_fat_pct ?? '--'}%, LAG [${lagLabels.join(', ') || 'aucun'}], DOMINANT [${domLabels.join(', ') || 'aucun'}]`
     : `LAG [${lagLabels.join(', ') || 'aucun'}] · DOMINANT [${domLabels.join(', ') || 'aucun'}]`;
 
-  // 8. Mémoire Coach
+  // 8. Mémoire Coach (10 derniers repères)
+  const memoryRecent = memoryItems.slice(-10);
   const memoryLines =
-    memoryItems.length > 0 ? memoryItems.map((m) => `[${m.id}] ${m.text}`).join(' | ') : 'aucun repère mémorisé';
+    memoryRecent.length > 0 ? memoryRecent.map((m) => `[${m.id}]${String(m.text || '').slice(0, 90)}`).join('|') : '0';
 
   const wInfo = intel.nutritionTiming.weather;
   const weatherLine = wInfo
     ? `${wInfo.city || 'Local'} ${wInfo.tempC}°C (${wInfo.humidityPct}% HR, bonus eau +${intel.nutritionTiming.heatHydrationBonusMl} ml${intel.nutritionTiming.electrolytesRecommended ? ', électrolytes' : ''})`
     : 'non configurée';
+  const weatherCompact = wInfo
+    ? `${wInfo.tempC}C/+${intel.nutritionTiming.heatHydrationBonusMl}ml`
+    : '-';
   const novaLine =
     intel.nutritionTiming.todayNova4Count > 0 || intel.nutritionTiming.avgNovaGroup7d
       ? `NOVA 4 aujourd'hui : ${intel.nutritionTiming.todayNova4Count}${intel.nutritionTiming.avgNovaGroup7d ? ` · Moy. 7j : ${intel.nutritionTiming.avgNovaGroup7d}` : ''}`
       : 'aucun produit NOVA 4';
 
-  const promptText = `=== DOSSIER COMPLET TEMPS RÉEL DE L'ATHLÈTE ===
-- Profil : ${profile?.name || 'Athlète'}, ${profile?.sex || 'male'}, ${profile?.age || 28} ans, ${profile?.heightCm || 176} cm, ${profile?.weightKg || 75} kg (Masse maigre est. ${macros.leanMassKg} kg)
-- Morpho & Posture : ${morphSummary}
-- Objectif : ${profile?.goal || 'recomp'} · Niveau : ${profile?.level || 'intermediate'} · NEAT : ${profile?.lifestyle?.neatLevel || 'mixed'}
-- Régime : ${profile?.nutritionPrefs?.dietType || 'omnivore'} · Allergies : ${(profile?.nutritionPrefs?.allergies || []).join(', ') || 'aucune'} · Repas/j : ${profile?.nutritionPrefs?.mealsPerDay || 3}
-- Matériel : ${(profile?.equipment || []).join(', ') || 'bodyweight'}
-- Blessures/Sensibilités : ${(profile?.injuries || []).map((i) => `${i.zone}(sev ${i.severity})`).join(', ') || 'aucune'}
-- Biométrie 30j : EWMA ${ewma?.latestEwmaKg ?? profile?.weightKg} kg (brut ${ewma?.latestRawKg ?? profile?.weightKg} kg, vitesse ${ewma?.weeklyDeltaKg ?? 0} kg/sem) · %MG ${latestBf ?? '--'}% · WHtR ${latestWhtr ?? '--'} · BMR ${macros.bmrKcal} kcal · Ajust. EWMA ${adaptiveAdj} kcal
-- Historique pesées : ${bioTrendLine}
-- Nutrition Cible : ${macros.kcal} kcal (P ${macros.proteinG}g · G ${macros.carbsG}g · L ${macros.fatG}g · Fibres ${macros.fiberG}g · Eau ${intel.nutritionTiming.recommendedWaterTodayMl} ml [${intel.nutritionTiming.dayType}]) · Mode ${macros.isOverride ? `SURCHARGE (${macros.overrideSource}${macros.overrideLocked ? ', VERROUILLÉE' : ''})` : 'AUTO'} · TDEE ${adaptive.estimatedTdeeKcal} kcal · Plancher sûr ${macros.safeFloorKcal} kcal
-- Nutrition Aujourd'hui : ${consumed.kcal} kcal (P ${consumed.proteinG}g · G ${consumed.carbsG}g · L ${consumed.fatG}g · F ${intel.nutritionTiming.todayFiberG}g) · Eau ${hydration?.totalMl || 0} ml · Prises >=30g prot : ${intel.nutritionTiming.todayLeucineMeals}/${intel.nutritionTiming.targetLeucineMeals} · ${novaLine}
-- Météo & Hydratation : ${weatherLine}
-- Repas du jour : ${todayMealsLine}
-- Moyennes & Adhérence : ${adherenceLine}
-- Pro Intelligence (SFR/CNS) : Récupération ${intel.recoveryScore}/100 (Fatigue ${intel.cnsStatus}) · Séries effectives 7j : ${intel.totalEffectiveSets7d} · Tendance force e1RM : ${intel.avgStrengthTrendPct >= 0 ? '+' : ''}${intel.avgStrengthTrendPct}% · Stagnations : ${stagLine}
-- Volume 7j par muscle : ${volumeSummary || 'aucune série effective enregistrée sur 7j'}
-- Vigilance articulaire 14j : ${jointAlertLine} · Corrélations : ${intel.correlations.join(' ; ') || 'en cours de calibration'}
-- Bilan Labo Physique : ${laboLine}
-- Programme actif : ${trainingSummary.activeSplitLabel} (${program?.splitType || 'auto'}) · Méthode ${trainingSummary.activeMethodLabel} (${program?.progressionMethod || 'double_progression'}) · Phase ${program?.phase || 'calibration'} (Sem. ${program?.weekNumber || 1}) · ${profile?.sessionsPerWeek || 4} j/sem · ${profile?.sessionDurationMin || 60} min${activeSession ? ` · Séance en cours : ${activeSession.dayName}` : ''}
-- Exercices du programme actif (dayIndex + [index] + exercise_id) :
-${programLines || '  (aucun)'}
-- Catalogue exercices valides (${EXERCISES_DB.length} · format id: Nom Français (groupe)) :
-  ${exerciseCatalogLine}
-- 10 dernières séances réelles :
+  const injuriesCompact = (profile?.injuries || []).map((i) => `${i.zone}:s${i.severity}`).join(',') || '0';
+  const equipCompact = (profile?.equipment || []).join(',') || 'bodyweight';
+  const allergiesCompact = (profile?.nutritionPrefs?.allergies || []).join(',') || '0';
+
+  const promptText = `=== DOSSIER ATHLETE (COMPACT) ===
+PROF:nom=${profile?.name || 'Athlète'}|sex=${profile?.sex || 'male'}|age=${profile?.age || 28}|cm=${profile?.heightCm || 176}|kg=${profile?.weightKg || 75}|lbm=${macros.leanMassKg}|obj=${profile?.goal || 'recomp'}|niv=${profile?.level || 'intermediate'}|neat=${profile?.lifestyle?.neatLevel || 'mixed'}
+MORPHO:${morphCompact}|MAT:${equipCompact}|BLESS:${injuriesCompact}|REG:${profile?.nutritionPrefs?.dietType || 'omnivore'}|ALLERG:${allergiesCompact}|REPAS_J:${profile?.nutritionPrefs?.mealsPerDay || 3}
+BIO:ewma=${ewma?.latestEwmaKg ?? profile?.weightKg}kg|brut=${ewma?.latestRawKg ?? profile?.weightKg}kg|vel=${ewma?.weeklyDeltaKg ?? 0}kg/sem|bf=${latestBf ?? '-'}%|whtr=${latestWhtr ?? '-'}|bmr=${macros.bmrKcal}|tdee=${adaptive.estimatedTdeeKcal}|adj=${adaptiveAdj}|PESEES5:${bioTrendCompact}
+NUT_CIBLE:${macros.kcal}kcal(P${macros.proteinG}/G${macros.carbsG}/L${macros.fatG}/F${macros.fiberG})|eau=${intel.nutritionTiming.recommendedWaterTodayMl}ml[${intel.nutritionTiming.dayType}]|mode=${macros.isOverride ? `OVERRIDE(${macros.overrideSource}${macros.overrideLocked ? ',LOCK' : ''})` : 'AUTO'}|min=${macros.safeFloorKcal}
+NUT_JOUR:${consumed.kcal}kcal(P${consumed.proteinG}/G${consumed.carbsG}/L${consumed.fatG}/F${intel.nutritionTiming.todayFiberG})|eau=${hydration?.totalMl || 0}ml|leu=${intel.nutritionTiming.todayLeucineMeals}/${intel.nutritionTiming.targetLeucineMeals}|nova4=${intel.nutritionTiming.todayNova4Count}|meteo=${weatherCompact}
+REPAS_JOUR:${todayMealsCompact}
+NUT_7J:${adherenceCompact}
+INTEL:rec=${intel.recoveryScore}/100(${intel.cnsStatus})|sets7j=${intel.totalEffectiveSets7d}|e1rm=${intel.avgStrengthTrendPct >= 0 ? '+' : ''}${intel.avgStrengthTrendPct}%|stag=${stagLine}|alert=${jointAlertLine}|vol7j=${volumeCompact || '-'}
+LABO:${laboCompact}
+PROG_META:split=${program?.splitType || 'auto'}(${trainingSummary.activeSplitLabel})|meth=${program?.progressionMethod || 'double_progression'}|phase=${program?.phase || 'calibration'}(S${program?.weekNumber || 1})|freq=${profile?.sessionsPerWeek || 4}j|dur=${profile?.sessionDurationMin || 60}m${activeSession ? `|live=${activeSession.dayName}` : ''}
+PROG_EX(dayIndex:exIdx:id:Nom):
+${programLines || 'aucun'}
+CAT_EX(${compactCatalog.length},id:Nom):${exerciseCatalogLine}
+HIST5:
 ${workoutHistoryLines}
-- Mémoire du Coach (${memoryItems.length} repères) : ${memoryLines}`;
+MEM(${memoryRecent.length}):${memoryLines}`;
 
   // Sections structurées pour la modale "Contexte actif" cliquable dans l'en-tête du Coach
   const rawSections = [
@@ -258,9 +385,10 @@ ${workoutHistoryLines}
       ],
     },
     {
-      title: `Programme & ${last10Workouts.length} dernières séances`,
+      title: `Programme, Catalogue Filtré (${compactCatalog.length} ex.) & ${last5Workouts.length} dernières séances`,
       items: [
         `${trainingSummary.activeSplitLabel} · ${trainingSummary.activeMethodLabel} · Phase ${program?.phase || 'calibration'}`,
+        `Catalogue injecté : ${compactCatalog.length} exercices filtrés (matériel + blessures) · ~${Math.ceil(promptText.length / 4)} tokens`,
         laboLine,
         `Mémoire Coach : ${memoryItems.length} repère(s) actif(s)`,
       ],
@@ -276,12 +404,15 @@ ${workoutHistoryLines}
     promptText,
     sections,
     proIntel: intel,
+    compactCatalog,
     stats: {
-      workoutsCount: last10Workouts.length,
+      workoutsCount: last5Workouts.length,
       bioCount30d: bio30.length,
       biometricsCount: bio30.length,
       memoryCount: memoryItems.length,
       recoveryScore: intel.recoveryScore,
+      catalogCount: compactCatalog.length,
+      estimatedTokens: Math.ceil(promptText.length / 4),
     },
   };
 }

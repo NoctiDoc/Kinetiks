@@ -74,13 +74,13 @@ export const TIER2_PRESETS = Object.freeze({
     label: 'Google Gemini (API Native)',
     protocol: 'gemini_native',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    model: 'gemini-3.8-flash',
-    visionModel: 'gemini-3.8-flash',
+    model: 'gemini-flash-lite-latest',
+    visionModel: 'gemini-flash-lite-latest',
     requiresApiKey: true,
     supportsVision: true,
     supportsWhisper: false,
     corsNote:
-      'Pré-câblé d’usine : en-tête x-goog-api-key uniquement · Failover auto gemini-3.8-flash → gemini-flash-lite-latest → gemini-flash-latest. Compatible clés AQ. et AIza…',
+      'Pré-câblé d’usine : en-tête x-goog-api-key uniquement · Failover auto gemini-flash-lite-latest → gemini-flash-latest → gemini-3.8-flash. Compatible clés AQ. et AIza…',
   },
   openai: {
     id: 'openai',
@@ -147,15 +147,15 @@ export const TIER3_MODELS = Object.freeze([
 ]);
 
 export const GEMINI_PRIMARY_FAILOVER_MODELS = Object.freeze([
-  'gemini-3.8-flash',
   'gemini-flash-lite-latest',
   'gemini-flash-latest',
+  'gemini-3.8-flash',
 ]);
 
 export const GEMINI_FAST_FAILOVER_MODELS = Object.freeze([
   'gemini-flash-lite-latest',
-  'gemini-3.8-flash',
   'gemini-flash-latest',
+  'gemini-3.8-flash',
 ]);
 
 export const GEMINI_FAILOVER_MODELS = GEMINI_PRIMARY_FAILOVER_MODELS;
@@ -189,10 +189,10 @@ export function normalizeAISettings(saved = null) {
     String(merged.baseUrl || '').includes('generativelanguage.googleapis.com');
 
   if (isGeminiCfg) {
-    if (isDeprecatedGeminiModel(merged.model)) {
+    if (isDeprecatedGeminiModel(merged.model) || (!merged.manualModelOverride && merged.model === 'gemini-3.8-flash')) {
       merged.model = TIER2_PRESETS.gemini.model;
     }
-    if (isDeprecatedGeminiModel(merged.visionModel)) {
+    if (isDeprecatedGeminiModel(merged.visionModel) || (!merged.manualModelOverride && merged.visionModel === 'gemini-3.8-flash')) {
       merged.visionModel = TIER2_PRESETS.gemini.visionModel;
     }
   }
@@ -775,8 +775,20 @@ function runTier0CoachReply(prompt = '', context = {}) {
     return `${name}, Kinetix Lab gère nativement 6 méthodes de progression :\n• Double progression (séries fixes)\n• Pyramidal inversé (RPT : Top Set lourd puis -10 % / -18 %)\n• Top Set + Back-off (-12 % volume contrôlé)\n• Pyramidal montant (80 → 90 → 100 %)\n• Rest-Pause / Myo-Reps (densité rapide sur isolations)\n• Ondulatoire DUP (alternance séances Force / Hypertrophie / Métabolique).\nChaque méthode recalcule automatiquement tes charges et cibles de répétitions série par série.${actionSuffix}`;
   }
 
+  if (
+    /\b(jambes?|bas\s*du\s*corps|cuisses?|lower)\b/.test(lower) &&
+    (/\b(s1|j1|jour\s*1|seance\s*1|premier\s*jour|en\s*premier|d[' ]?abord)\b/.test(lower) ||
+      /\b(?:et|plus|\+)\s*([2-4]|deux|trois|quatre)\s*(?:autres?\s*)?(?:jours?|j\b|seances?)/.test(lower))
+  ) {
+    const injuriesTxt =
+      Array.isArray(profile.injuries) && profile.injuries.length > 0
+        ? `filtré selon tes sensibilités (${profile.injuries.map((i) => i.zone).join(', ')})`
+        : 'calibré selon ta morphologie';
+    return `${name}, ton split personnalisé avec Jambes en S1 est configuré et ${injuriesTxt} :\n• S1 — Jambes complètes (Quadriceps, Ischios, Fessiers, Mollets)\n• S2 — Poussée Haut du corps (Pecs, Épaules, Triceps, Gainage)\n• S3 — Tirage Dos & Arrière (Grand dorsal, Trapèzes/Rhomboïdes, Deltoïdes post., Biceps)\n• S4 — Haut Complet & Rappel (Points faibles & Bras)\nTous les exercices respectent ton matériel disponible et tes protections articulaires.${actionSuffix}`;
+  }
+
   if (/(full\s*body|upper\s*\/?\s*lower|ppl|push\s*pull|arnold|bro\s*split|split)/.test(lower)) {
-    return `${name}, tu peux changer de split à tout moment selon ta récupération et ton agenda :\n• Full Body (2–4 j) : stimulation fréquente, top si séances limitées ou priorité force.\n• Upper / Lower (4 j) : meilleur compromis volume/récupération (2×/muscle/semaine).\n• PPL (3 ou 6 j) : spécialisation poussée / tirage / jambes.\n• Hybride UL + PPL (5 j), Arnold Split (Pecs-Dos / Épaules-Bras / Jambes) ou Split classique (4–5 j).\nSplit actuel : ${summary.activeSplitLabel || 'adaptatif'} · Méthode : ${summary.activeMethodLabel || 'Double progression'}.${actionSuffix}`;
+    return `${name}, tu peux changer de split à tout moment selon ta récupération et ton agenda :\n• Full Body (2–4 j) : stimulation fréquente, top si séances limitées ou priorité force.\n• Upper / Lower (4 j) : meilleur compromis volume/récupération (2×/muscle/semaine).\n• S1 Jambes + 3j Haut (4 j) : 1 séance Jambes dédiée en S1 + 3 séances Haut ciblées.\n• PPL (3 ou 6 j) : spécialisation poussée / tirage / jambes.\n• Hybride UL + PPL (5 j), Arnold Split ou Split classique (4–5 j).\nSplit actuel : ${summary.activeSplitLabel || 'adaptatif'} · Méthode : ${summary.activeMethodLabel || 'Double progression'}.${actionSuffix}`;
   }
 
   if (/(douleur|epaule|lombaire|genou|coude|poignet|mal|pincement|tendinite)/.test(lower)) {
@@ -1072,12 +1084,12 @@ export function isVisionCapableModel(modelName, isGeminiMode = false) {
 
 function scoreGeminiModelPriority(modelName) {
   const m = String(modelName || '').toLowerCase();
-  if (m === 'gemini-3.8-flash') return 0;
-  if (m === 'gemini-flash-lite-latest') return 1;
-  if (m === 'gemini-flash-latest') return 2;
+  if (m === 'gemini-flash-lite-latest') return 0;
+  if (m === 'gemini-flash-latest') return 1;
+  if (m === 'gemini-3.8-flash') return 2;
   if (m === 'gemini-3.7-flash') return 3;
-  if (m.includes('3.8-flash')) return 4;
-  if (m.includes('flash-lite-latest')) return 5;
+  if (m.includes('flash-lite-latest')) return 4;
+  if (m.includes('3.8-flash')) return 5;
   if (/^gemini-3\./.test(m)) {
     const minorMatch = m.match(/^gemini-3\.(\d+)/);
     const minor = minorMatch ? Number(minorMatch[1]) : 0;
@@ -1222,7 +1234,7 @@ export function normalizeGeminiBaseUrl(rawBaseUrl) {
   return base;
 }
 
-export function normalizeGeminiModelName(rawModel, fallback = 'gemini-3.8-flash') {
+export function normalizeGeminiModelName(rawModel, fallback = 'gemini-flash-lite-latest') {
   const cleaned = String(rawModel || '')
     .trim()
     .replace(/^["'`]+|["'`]+$/g, '')
@@ -1545,6 +1557,7 @@ async function runGeminiNative({
   let lastErr = null;
   let saw404 = false;
   const attempted = [];
+  const failureStatuses = [];
 
   for (let i = 0; i < candidates.length; i += 1) {
     const candidateModel = candidates[i];
@@ -1574,12 +1587,21 @@ async function runGeminiNative({
       };
     } catch (err) {
       lastErr = err;
-      if (Number(err?.httpStatus) === 404) saw404 = true;
+      const st = Number(err?.httpStatus) || 0;
+      failureStatuses.push(st);
+      if (st === 404) saw404 = true;
       const hasMore = i < candidates.length - 1;
+      // HTTP 429 : bascule immédiate sur le modèle suivant ; HTTP 503 : déjà retenté 1x après 1500 ms
       if (hasMore && shouldFailoverGeminiModel(err)) {
         continue;
       }
       if (!saw404) {
+        if (lastErr && typeof lastErr === 'object') {
+          lastErr.attemptedModels = attempted;
+          if (failureStatuses.length > 0 && failureStatuses.every((code) => code === 429)) {
+            lastErr.allGeminiQuota429 = true;
+          }
+        }
         throw err;
       }
     }
@@ -1631,6 +1653,12 @@ async function runGeminiNative({
     }
   }
 
+  if (lastErr && typeof lastErr === 'object') {
+    lastErr.attemptedModels = attempted;
+    if (failureStatuses.length > 0 && failureStatuses.every((code) => code === 429)) {
+      lastErr.allGeminiQuota429 = true;
+    }
+  }
   throw lastErr;
 }
 
@@ -2202,8 +2230,25 @@ export async function routeAIRequest({
       return buildFallback('Niveau IA inconnu.');
     }
   } catch (err) {
-    // Transparence totale : si une clé API explicite (ex. Gemini) est configurée,
-    // NE JAMAIS déguiser son échec sous l'étiquette "Niveau 0"
+    // Résilience HTTP 429 : si toute la chaîne Gemini a atteint son quota, bascule transparente
+    // sur le moteur déterministe Niveau 0 sans bloquer l'utilisateur (avec mention discrète).
+    const isAllGemini429 = Boolean(
+      err?.allGeminiQuota429 ||
+      (err?.isGeminiNative && Number(err?.httpStatus) === 429)
+    );
+    if (hasExplicitKey && isAllGemini429) {
+      return {
+        ...buildFallback(
+          'Quota temporaire Gemini atteint (HTTP 429) — exécuté localement via le moteur Niveau 0.'
+        ),
+        quotaFallback: true,
+        httpStatus: 429,
+        attemptedModels: err?.attemptedModels || [],
+      };
+    }
+
+    // Transparence totale pour les autres erreurs (400/401/403/404/503/réseau) :
+    // NE JAMAIS masquer un problème de clé ou d'endpoint sous l'étiquette "Niveau 0"
     if (hasExplicitKey) {
       const explicitMsg = formatExplicitApiError(err, settings);
       return {
