@@ -44,6 +44,11 @@ import {
   listCustomFoods,
   saveCustomFood,
   deleteCustomFood,
+  getCachedFood,
+  putCachedFood,
+  listCachedFoods,
+  getCapacitiesSettings,
+  saveCapacitiesSettings,
   getHydrationForDate,
   addHydration,
   listPhysiquePhotos,
@@ -134,6 +139,8 @@ import {
   createMealIngredientFromFood,
   computeMealIngredientsTotals,
   analyzeMealPhoto,
+  analyzeNutritionLabelPhoto,
+  parseFreeTextMeal,
   extractScaleMetricsOCR,
   generateMealPlanAndShoppingList,
 } from './nutrition-db.js';
@@ -147,6 +154,37 @@ import {
   buildPeriWorkoutGuide,
   askNutritionAdvisor,
 } from './nutrition-advisor.js';
+
+import { computeProIntelligence } from './pro-intelligence.js';
+import { buildCoachFullContext } from './coach-context.js';
+
+import {
+  normalizeCapacitiesSettings,
+  isCapacitiesActive,
+  fetchCapacitiesSpaces,
+  saveToCapacitiesDailyNote,
+  copyMarkdownFallback,
+  exportCapacitiesZeroKey,
+  shareCapacitiesNative,
+  formatWorkoutCapacitiesMarkdown,
+  formatNutritionEveningCapacitiesMarkdown,
+  formatCoachMessageCapacitiesMarkdown,
+} from './capacities-sync.js';
+
+import {
+  EXTERNAL_SOURCES_REGISTRY,
+  fetchWeatherHydrationContext,
+  requestBrowserCoordinates,
+  searchFreeExerciseDb,
+  loadFreeExerciseCatalog,
+  fetchWgerAnatomyCatalog,
+  getCachedCiqualExtension,
+  syncCiqualRemoteDataset,
+  isWebSpeechSupported,
+  dictateFrenchVoiceText,
+  warmExternalSourcesInBackground,
+  getExternalSourcesStatus,
+} from './external-sources.js';
 
 import {
   buildAgenticCoachSystemPrompt,
@@ -191,10 +229,15 @@ const state = {
   nutritionAll: [],
   favorites: [],
   customFoods: [],
+  cachedFoods: [],
+  capacitiesSettings: normalizeCapacitiesSettings(),
   hydration: { totalMl: 0, entries: [] },
   photos: [],
   coachMessages: [],
   shoppingList: [],
+  weather: null,
+  ciqualExtension: [],
+  externalStatus: null,
   storageInfo: null,
   deferredInstallPrompt: null,
   manualKcalOffset: 0,
@@ -210,6 +253,7 @@ const state = {
   nutritionSubTab: 'journal', // 'journal' | 'advisor' | 'plan'
   nutritionInputMode: 'ciqual', // 'ciqual' | 'photo' | 'barcode'
   ciqualQuery: '',
+  freeTextMealDraft: '',
   foodSearchGrams: 150,
   offResults: [],
   offLiveResults: [],
@@ -225,6 +269,8 @@ const state = {
   mealPhotoDataUrl: null,
   mealPhotoPortionMult: 1,
   barcodeScanner: null,
+  barcodeTorchOn: false,
+  lastScannedBarcode: '',
   advisorDayMode: 'auto', // 'auto' | 'training' | 'rest'
   advisorMatrixTab: 'prioritize', // 'prioritize' | 'moderate' | 'avoid'
   advisorRecalibrationOpen: false,
@@ -428,6 +474,65 @@ function openModal(title, bodyHtml, onMount = null) {
   }
 }
 
+async function triggerCapacitiesExport(mdText, titleLabel = 'Exporter vers Capacities') {
+  const apiActive = isCapacitiesActive(state.capacitiesSettings);
+  let apiError = null;
+  let corsBlocked = false;
+
+  if (apiActive) {
+    const res = await saveToCapacitiesDailyNote(state.capacitiesSettings, mdText);
+    if (res.ok) {
+      showToast('Envoyé dans ta Daily Note Capacities.');
+      return res;
+    }
+    apiError = res.message || res.error || 'Envoi API direct impossible.';
+    corsBlocked = Boolean(res.corsBlocked);
+  }
+
+  // Mode 0-Clé par défaut (ou repli instantané si API bloquée / hors-ligne)
+  const zeroRes = await exportCapacitiesZeroKey(mdText, { title: titleLabel });
+  if (zeroRes.copied) {
+    showToast('Bilan Markdown copié — prêt pour Capacities.');
+  }
+
+  const canNativeShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+  openModal(
+    titleLabel,
+    `
+      ${
+        apiError
+          ? `<div class="notice ${corsBlocked ? 'notice-danger' : ''}">
+              <span>API Capacities indisponible (${esc(apiError)}) — repli automatique Mode 0-Clé.</span>
+            </div>`
+          : `<div class="notice notice-accent">
+              <span>${zeroRes.copied ? 'Markdown copié automatiquement dans le presse-papiers. Colle-le dans ta Daily Note Capacities.' : 'Copie ou partage ce bilan Markdown dans ta Daily Note Capacities.'}</span>
+            </div>`
+      }
+      <pre class="code-box" style="max-height: 220px;">${esc(mdText)}</pre>
+      <div class="row-wrap">
+        <button type="button" class="btn btn-primary" id="btn-cap-copy-fallback">Copier Markdown</button>
+        <a href="capacities://" class="btn" id="btn-cap-open-app">Ouvrir Capacities</a>
+        ${canNativeShare ? `<button type="button" class="btn" id="btn-cap-native-share">Partager…</button>` : ''}
+      </div>
+    `,
+    ({ close }) => {
+      document.getElementById('btn-cap-copy-fallback')?.addEventListener('click', async () => {
+        const ok = await copyMarkdownFallback(mdText);
+        showToast(ok ? 'Bilan Markdown copié dans le presse-papiers.' : 'Copie manuelle requise depuis le bloc ci-dessus.');
+        if (ok) close();
+      });
+      document.getElementById('btn-cap-native-share')?.addEventListener('click', async () => {
+        const shared = await shareCapacitiesNative(mdText, titleLabel);
+        if (shared) {
+          showToast('Bilan partagé.');
+          close();
+        }
+      });
+    }
+  );
+  return zeroRes;
+}
+
 /* ==========================================================================
    CHARGEMENT DONNÉES & PROFIL DÉMO COMPLET (TEST IMMÉDIAT)
    ========================================================================== */
@@ -462,6 +567,8 @@ async function loadProfileWorkspace() {
     nutAll,
     favorites,
     customFoods,
+    cachedFoods,
+    capacitiesCfg,
     hydration,
     photos,
     coachMsgs,
@@ -474,6 +581,8 @@ async function loadProfileWorkspace() {
     listNutritionLogs(pid),
     listFavorites(pid),
     listCustomFoods(pid),
+    listCachedFoods(120),
+    getCapacitiesSettings(pid),
     getHydrationForDate(pid, today),
     listPhysiquePhotos(pid),
     listCoachMessages(pid),
@@ -487,6 +596,8 @@ async function loadProfileWorkspace() {
   state.nutritionToday = nutAll.filter((n) => n.date === today);
   state.favorites = favorites;
   state.customFoods = customFoods;
+  state.cachedFoods = cachedFoods;
+  state.capacitiesSettings = normalizeCapacitiesSettings(capacitiesCfg);
   state.hydration = hydration;
   state.photos = photos;
   state.coachMessages = coachMsgs;
@@ -527,6 +638,34 @@ async function loadProfileWorkspace() {
     state.biometrics = await listBiometrics(pid);
     showToast(`Synchronisation santé importée (${syncedBio.weightKg ? syncedBio.weightKg + ' kg' : syncedBio.steps + ' pas'}).`);
   }
+
+  // Chargement silencieux du cache Ciqual étendu & préchauffage non bloquant des sources publiques (Open-Meteo, free-exercise-db, wger)
+  getCachedCiqualExtension()
+    .then((ext) => {
+      if (Array.isArray(ext) && ext.length > 0) state.ciqualExtension = ext;
+    })
+    .catch(() => {});
+
+  fetchWeatherHydrationContext(state.profile?.lifestyle || {})
+    .then((w) => {
+      if (w && state.profile?.id === pid) {
+        const prevTemp = state.weather?.temperatureC;
+        state.weather = w;
+        const activeTag = document.activeElement?.tagName;
+        const isTyping = activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT';
+        if (prevTemp !== w.temperatureC && !isTyping && (state.route === 'cockpit' || state.route === 'nutrition')) {
+          renderApp();
+        }
+      }
+    })
+    .catch(() => {});
+
+  warmExternalSourcesInBackground(state.profile)
+    .then(() => getExternalSourcesStatus())
+    .then((st) => {
+      state.externalStatus = st;
+    })
+    .catch(() => {});
 }
 
 async function seedDemoProfile() {
@@ -701,15 +840,30 @@ function getDerivedTelemetry() {
       proteinG: Math.round((acc.proteinG + (Number(item.proteinG) || 0)) * 10) / 10,
       carbsG: Math.round((acc.carbsG + (Number(item.carbsG) || 0)) * 10) / 10,
       fatG: Math.round((acc.fatG + (Number(item.fatG) || 0)) * 10) / 10,
+      fiberG: Math.round((acc.fiberG + (Number(item.fiberG) || 0)) * 10) / 10,
     }),
-    { kcal: 0, proteinG: 0, carbsG: 0, fatG: 0 }
+    { kcal: 0, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0 }
   );
 
   // Streak séances des 28 derniers jours
   const recent7d = state.workouts.filter((w) => Date.now() - (w.startedAt || 0) <= 7 * 86400000).length;
   const deloadStatus = detectDeloadNeed(state.workouts, state.program?.weekNumber || 1);
 
-  return { ewma, latestBio, knownBf, adaptive, macros, consumed, smoothing, recent7d, deloadStatus };
+  const baseTelemetry = { ewma, latestBio, knownBf, adaptive, macros, consumed, smoothing, recent7d, deloadStatus };
+  const proIntel = computeProIntelligence({
+    profile: state.profile,
+    program: state.program,
+    workouts: state.workouts,
+    biometrics: state.biometrics,
+    nutritionAll: state.nutritionAll,
+    nutritionToday: state.nutritionToday,
+    hydration: state.hydration,
+    telemetry: baseTelemetry,
+    activeSession: state.activeSession,
+    weather: state.weather,
+  });
+
+  return { ...baseTelemetry, proIntel };
 }
 
 /* ==========================================================================
@@ -912,10 +1066,12 @@ function renderOnboarding(container) {
    ========================================================================== */
 
 function renderCockpit(container) {
-  const { ewma, latestBio, adaptive, macros, consumed, recent7d, deloadStatus } = getDerivedTelemetry();
+  const { ewma, latestBio, adaptive, macros, consumed, recent7d, deloadStatus, proIntel } = getDerivedTelemetry();
   const todaySteps = latestBio?.date === getTodayISO() ? latestBio.steps || 0 : 0;
   const stepTarget = state.profile.lifestyle?.stepTarget || 8500;
   const lagList = (state.profile.lagPriorities || []).map((g) => MUSCLE_GROUPS[g]?.label || g);
+  const effectiveWaterTargetMl = proIntel?.nutritionTiming?.recommendedWaterTodayMl || macros.waterTargetMl;
+  const cockpitSignals = (proIntel?.signals || []).slice(0, 2);
 
   const pct = (val, target) => Math.min(100, Math.round((val / Math.max(1, target)) * 100));
 
@@ -964,6 +1120,37 @@ function renderCockpit(container) {
           <span class="kpi-delta">BMR ${macros.bmrKcal} kcal</span>
         </div>
       </div>
+
+      <!-- Signaux Pro silencieux (CNS, volume effectif, vigilance & timing) -->
+      ${
+        proIntel
+          ? `
+        <div class="pro-signal-strip">
+          <div class="pro-signal-head">
+            <span class="label-tech">Moteur Scientifique</span>
+            <div class="pro-signal-metrics">
+              <span>Récup CNS <strong class="${proIntel.recoveryScore < 58 ? 'text-danger' : 'text-accent'}">${proIntel.recoveryScore}/100</strong></span>
+              <span>·</span>
+              <span>Vol. 7j <strong>${proIntel.totalEffectiveSets7d}</strong> sér. eff.</span>
+              <span>·</span>
+              <span>${proIntel.nutritionTiming.dayType === 'training' ? 'Jour Séance' : 'Jour Repos'}</span>
+            </div>
+          </div>
+          ${
+            cockpitSignals.length > 0
+              ? `<div class="pro-signal-list">
+                  ${cockpitSignals
+                    .map(
+                      (sig) =>
+                        `<div class="pro-signal-item ${sig.level === 'danger' ? 'is-danger' : sig.level === 'ok' ? 'is-ok' : ''}">${esc(sig.text)}</div>`
+                    )
+                    .join('')}
+                </div>`
+              : ''
+          }
+        </div>`
+          : ''
+      }
 
       ${
         lagList.length > 0
@@ -1017,10 +1204,19 @@ function renderCockpit(container) {
 
           <div class="gauge-block">
             <div class="gauge-head">
-              <span class="label-tech">Hydratation</span>
-              <span class="mono metric-sm">${state.hydration.totalMl || 0} / ${macros.waterTargetMl} ml</span>
+              <span class="label-tech">
+                Hydratation${proIntel?.nutritionTiming?.periWorkoutHydrationBonusMl ? ' (+500ml séance)' : ''}${proIntel?.nutritionTiming?.heatHydrationBonusMl ? ` (+${proIntel.nutritionTiming.heatHydrationBonusMl}ml chaleur)` : ''}
+              </span>
+              <span class="mono metric-sm">${state.hydration.totalMl || 0} / ${effectiveWaterTargetMl} ml</span>
             </div>
-            <div class="gauge-track"><div class="gauge-fill" style="transform: scaleX(${pct(state.hydration.totalMl || 0, macros.waterTargetMl) / 100})"></div></div>
+            ${
+              state.weather
+                ? `<div class="row-wrap" style="gap: 6px; margin-bottom: 4px;">
+                    <span class="weather-chip">${esc(state.weather.city || 'Météo')} · ${state.weather.temperatureC}°C · Hum. ${state.weather.humidityPct}%${proIntel?.nutritionTiming?.electrolytesRecommended ? ' · Électrolytes' : ''}</span>
+                  </div>`
+                : ''
+            }
+            <div class="gauge-track"><div class="gauge-fill" style="transform: scaleX(${pct(state.hydration.totalMl || 0, effectiveWaterTargetMl) / 100})"></div></div>
             <div class="grid-4" style="grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 4px;">
               <button type="button" class="btn btn-sm mono" data-add-water="250">+250 ml</button>
               <button type="button" class="btn btn-sm mono" data-add-water="500">+500 ml</button>
@@ -1285,6 +1481,17 @@ function renderSeance(container) {
   const session = ensureActiveSessionForSelectedDay();
   const readiness = evaluateReadiness(state.readinessDraft);
   session.readiness = { ...readiness, preservationMode: session.preservationMode };
+  const { proIntel } = getDerivedTelemetry();
+  const autoPrehabDrills = proIntel?.jointVigilance?.autoPrehabDrills || [];
+  const baseWarmups = state.program.warmupDrills || [];
+  const mergedWarmups = [
+    ...autoPrehabDrills.map((d) => ({ ...d, isAutoPrehab: true })),
+    ...baseWarmups.filter((bw) => !autoPrehabDrills.some((ap) => ap.name === bw.name)),
+  ];
+  const riskyExerciseIds = new Set(proIntel?.jointVigilance?.riskyExerciseIds || []);
+  const seanceProAlert = (proIntel?.signals || []).find(
+    (s) => (s.area === 'joint' || s.area === 'training') && (s.level === 'danger' || s.level === 'warn')
+  );
 
   container.innerHTML = `
     <section class="stack">
@@ -1365,17 +1572,23 @@ function renderSeance(container) {
         </div>
       </section>
 
-      <!-- Échauffement correctif ciblé -->
-      <details class="panel">
+      ${
+        seanceProAlert
+          ? `<div class="pro-signal-item ${seanceProAlert.level === 'danger' ? 'is-danger' : ''}">${esc(seanceProAlert.text)}</div>`
+          : ''
+      }
+
+      <!-- Échauffement correctif ciblé (inclut préhab auto 14j si vigilance articulaire) -->
+      <details class="panel" ${autoPrehabDrills.length > 0 ? 'open' : ''}>
         <summary style="cursor: pointer; font-weight: 600; font-size: 0.88rem;">
-          Échauffement correctif (${(state.program.warmupDrills || []).length} ateliers · 5 min)
+          Échauffement correctif (${mergedWarmups.length} ateliers${autoPrehabDrills.length > 0 ? ` · ${autoPrehabDrills.length} préhab auto` : ''} · 5 min)
         </summary>
         <div class="stack-sm" style="margin-top: 8px;">
-          ${(state.program.warmupDrills || [])
+          ${mergedWarmups
             .map(
               (w) => `
             <div class="row-between" style="padding: 6px 0; border-bottom: 1px solid var(--border-hairline);">
-              <span style="font-size: 0.84rem;">${esc(w.name)}</span>
+              <span style="font-size: 0.84rem;">${w.isAutoPrehab ? `<span class="state-tag is-danger" style="margin-right: 6px;">[PRÉHAB AUTO]</span>` : ''}${esc(w.name)}</span>
               <span class="mono metric-xs text-secondary" style="flex-shrink: 0;">${w.sets}×${esc(w.reps)}</span>
             </div>`
             )
@@ -1387,20 +1600,25 @@ function renderSeance(container) {
       <div class="stack" id="workout-exercises-list">
         ${session.exercises
           .map((slot, exIdx) => {
-            const exMeta = getExerciseById(slot.exerciseId);
-            const media = getExerciseMediaUrls(exMeta);
+            const exMeta = getExerciseById(slot.exerciseId) || slot.customMeta || null;
+            const baseMedia = getExerciseMediaUrls(exMeta);
+            const media = baseMedia.start ? baseMedia : (slot.customMedia || baseMedia);
             const openDrawer = state.openDrawers[slot.slotId] || null;
             const plateSummary = exMeta
               ? calculatePerSideLoad(slot.setsData.find((s) => !s.isWarmup)?.weightKg ?? slot.suggestedLoadKg, exMeta).label
               : '';
+            const isJointRisky = riskyExerciseIds.has(slot.exerciseId);
 
             return `
             <article class="panel" data-ex-idx="${exIdx}">
               <div class="stack-sm" style="gap: 4px;">
                 <div class="row-between">
                   <h3>${exIdx + 1}. ${esc(slot.name)}</h3>
-                  ${slot.isLagPriority ? `<span class="state-tag is-lag">[LAG]</span>` : ''}
-                  ${!slot.isLagPriority && slot.unilateral ? `<span class="state-tag is-accent">[UNILAT.]</span>` : ''}
+                  <div class="row" style="gap: 4px;">
+                    ${isJointRisky ? `<span class="state-tag is-danger">[VIGILANCE]</span>` : ''}
+                    ${slot.isLagPriority ? `<span class="state-tag is-lag">[LAG]</span>` : ''}
+                    ${!slot.isLagPriority && slot.unilateral ? `<span class="state-tag is-accent">[UNILAT.]</span>` : ''}
+                  </div>
                 </div>
                 <div class="meta-inline mono">
                   <span class="text-accent">${slot.sets}×${slot.repMin}-${slot.repMax}</span>
@@ -1722,31 +1940,54 @@ function renderSeance(container) {
     });
   });
 
-  // Swap Biomécanique modal
+  // Swap Biomécanique modal (Catalogue interne + base étendue free-exercise-db 800+)
   container.querySelectorAll('[data-swap-ex]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const exIdx = Number(btn.dataset.swapEx);
       const slot = session.exercises[exIdx];
       const currentLoad = slot.setsData.find((s) => !s.isWarmup)?.weightKg ?? slot.suggestedLoadKg;
       const swaps = findBiomechanicalSwaps(slot.exerciseId, state.profile, currentLoad);
+      const sourceMeta = getExerciseById(slot.exerciseId);
+      const primaryMuscle = sourceMeta?.primaryMuscles?.[0] || '';
 
-      const listHtml =
-        swaps.length > 0
-          ? swaps
-              .map((sw, i) => {
-                const m = getExerciseMediaUrls(sw.exercise);
-                return `
-              <div class="swap-card">
-                <img class="swap-thumb" src="${esc(m.start || '')}" alt="${esc(sw.exercise.name)}" loading="lazy" />
-                <div class="stack-sm" style="gap: 2px;">
-                  <strong style="font-size: 0.86rem;">${esc(sw.exercise.name)}</strong>
-                  <span class="meta-inline mono">${sw.convertedLoadKg} kg · ${esc(sw.reason)}</span>
-                </div>
-                <button type="button" class="btn btn-sm btn-primary" data-pick-swap="${i}">Choisir</button>
-              </div>`;
-              })
-              .join('')
-          : `<p class="text-secondary">Aucun équivalent mécanique compatible avec votre matériel actuel.</p>`;
+      const listHtml = `
+        <div class="stack">
+          ${
+            swaps.length > 0
+              ? swaps
+                  .map((sw, i) => {
+                    const m = getExerciseMediaUrls(sw.exercise);
+                    return `
+                  <div class="swap-card">
+                    <img class="swap-thumb" src="${esc(m.start || '')}" alt="${esc(sw.exercise.name)}" loading="lazy" />
+                    <div class="stack-sm" style="gap: 2px;">
+                      <strong style="font-size: 0.86rem;">${esc(sw.exercise.name)}</strong>
+                      <span class="meta-inline mono">${sw.convertedLoadKg} kg · ${esc(sw.reason)}</span>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-primary" data-pick-swap="${i}">Choisir</button>
+                  </div>`;
+                  })
+                  .join('')
+              : `<p class="text-secondary">Aucun équivalent mécanique interne pour votre matériel actuel.</p>`
+          }
+          <details class="advanced-accordion" id="free-ex-db-accordion">
+            <summary>Base étendue free-exercise-db (800+ exercices)</summary>
+            <div class="advanced-accordion-body">
+              <input
+                id="free-ex-search-input"
+                class="input"
+                type="search"
+                autocomplete="off"
+                placeholder="Rechercher ex. bench, row, squat, cable..."
+                value="${esc(primaryMuscle)}"
+              />
+              <div id="free-ex-results" class="stack-sm">
+                <p class="panel-subtitle mono">Ouvre ou tape un mot-clé pour parcourir le catalogue free-exercise-db.</p>
+              </div>
+            </div>
+          </details>
+        </div>
+      `;
 
       openModal(`Swap biomécanique · ${slot.name}`, listHtml, ({ close, body }) => {
         body.querySelectorAll('[data-pick-swap]').forEach((pickBtn) => {
@@ -1769,6 +2010,86 @@ function renderSeance(container) {
                 renderApp();
               },
             });
+          });
+        });
+
+        const acc = body.querySelector('#free-ex-db-accordion');
+        const freeInput = body.querySelector('#free-ex-search-input');
+        const freeResultsEl = body.querySelector('#free-ex-results');
+        let freeTimer = null;
+        let lastFreeItems = [];
+
+        const runFreeDbSearch = async () => {
+          if (!freeResultsEl) return;
+          const q = (freeInput?.value || '').trim();
+          freeResultsEl.innerHTML = `<p class="panel-subtitle mono">Recherche dans free-exercise-db…</p>`;
+          try {
+            const res = await searchFreeExerciseDb(q, { limit: 12 });
+            lastFreeItems = res;
+            if (res.length === 0) {
+              freeResultsEl.innerHTML = `<p class="panel-subtitle">Aucun exercice trouvé (vérifie ta connexion ou synchronise le cache hors-ligne dans Profil → Clés IA).</p>`;
+              return;
+            }
+            freeResultsEl.innerHTML = res
+              .map(
+                (ex, idx) => `
+              <div class="free-ex-card">
+                ${
+                  ex.startImg
+                    ? `<img class="free-ex-thumb" src="${esc(ex.startImg)}" alt="${esc(ex.name)}" loading="lazy" />`
+                    : `<div class="free-ex-thumb"></div>`
+                }
+                <div class="stack-sm" style="gap: 2px; flex: 1; min-width: 0;">
+                  <strong style="font-size: 0.84rem;">${esc(ex.name)}</strong>
+                  <span class="meta-inline mono">${esc(ex.equipment || 'Libre')} · ${esc((ex.primaryMuscles || []).join(', '))}</span>
+                </div>
+                <button type="button" class="btn btn-sm btn-primary" data-pick-free-ex="${idx}">Choisir</button>
+              </div>`
+              )
+              .join('');
+          } catch {
+            freeResultsEl.innerHTML = `<p class="panel-subtitle">Catalogue free-exercise-db indisponible hors-ligne.</p>`;
+          }
+        };
+
+        acc?.addEventListener('toggle', () => {
+          if (acc.open && lastFreeItems.length === 0) runFreeDbSearch();
+        });
+
+        freeInput?.addEventListener('input', () => {
+          clearTimeout(freeTimer);
+          freeTimer = setTimeout(runFreeDbSearch, 180);
+        });
+
+        freeResultsEl?.addEventListener('click', (e) => {
+          const pick = e.target.closest('[data-pick-free-ex]');
+          if (!pick) return;
+          const chosen = lastFreeItems[Number(pick.dataset.pickFreeEx)];
+          if (!chosen) return;
+          const prevSnapshot = structuredClone(slot);
+          slot.exerciseId = String(chosen.id || '').startsWith('fedb_') ? chosen.id : `fedb_${chosen.id}`;
+          slot.name = chosen.name;
+          slot.unilateral = Boolean(chosen.unilateral || /one-arm|single|unilateral/i.test(chosen.name));
+          slot.customMedia = { start: chosen.startImg || chosen.mediaUrls?.start, end: chosen.endImg || chosen.mediaUrls?.end };
+          slot.customMeta = {
+            id: slot.exerciseId,
+            name: chosen.name,
+            primaryMuscles: chosen.primaryMuscles || [],
+            secondaryMuscles: chosen.secondaryMuscles || [],
+            tempo: '2-0-1-0',
+            resistanceCurve: 'standard',
+            incrementKg: chosen.incrementKg || 2.5,
+            setupCues: Array.isArray(chosen.instructions) && chosen.instructions.length > 0 ? chosen.instructions.join(' ') : 'Contrôle excentrique 2s, amplitude complète.',
+            breathing: 'Inspire en excentrique, expire sur la poussée/tirage.',
+            injuryWarnings: {},
+          };
+          close();
+          renderApp();
+          showToast(`Remplacé par ${chosen.name} (free-exercise-db).`, {
+            undoAction: () => {
+              session.exercises[exIdx] = prevSnapshot;
+              renderApp();
+            },
           });
         });
       });
@@ -1864,6 +2185,70 @@ function renderSeance(container) {
     state.activeSession = null;
     state.selectedDayIdx = (state.selectedDayIdx + 1) % state.program.days.length;
     renderApp();
+
+    // Bilan compact de fin de séance + bouton Capacities (visible uniquement si activé)
+    const freshTelemetry = getDerivedTelemetry();
+    const capActive = isCapacitiesActive(state.capacitiesSettings);
+    const mdSummary = formatWorkoutCapacitiesMarkdown({
+      workout: saved,
+      proIntel: freshTelemetry.proIntel,
+      profile: state.profile,
+    });
+    const doneSetsCount = (saved.exercises || []).reduce(
+      (acc, ex) => acc + (ex.sets || []).filter((s) => !s.isWarmup && s.done).length,
+      0
+    );
+    const totalTonnage = Math.round(
+      (saved.exercises || []).reduce(
+        (acc, ex) =>
+          acc +
+          (ex.sets || [])
+            .filter((s) => !s.isWarmup && s.done)
+            .reduce((sAcc, s) => sAcc + (Number(s.weightKg) || 0) * (Number(s.reps) || 0), 0),
+        0
+      )
+    );
+    const painExos = (saved.exercises || []).filter((ex) => ex.feedback === 'joint_pain').map((ex) => ex.name);
+
+    openModal(
+      `Bilan · ${saved.dayName}`,
+      `
+        <div class="kpi-strip">
+          <div class="kpi-cell">
+            <span class="kpi-label">Séries eff.</span>
+            <span class="kpi-value">${doneSetsCount}</span>
+          </div>
+          <div class="kpi-cell">
+            <span class="kpi-label">Tonnage</span>
+            <span class="kpi-value">${totalTonnage} kg</span>
+          </div>
+          <div class="kpi-cell">
+            <span class="kpi-label">Readiness</span>
+            <span class="kpi-value">${saved.readiness?.score ?? '--'}/100</span>
+          </div>
+          <div class="kpi-cell">
+            <span class="kpi-label">Récup CNS</span>
+            <span class="kpi-value">${freshTelemetry.proIntel?.recoveryScore ?? '--'}/100</span>
+          </div>
+        </div>
+        ${
+          painExos.length > 0
+            ? `<div class="notice notice-danger"><span>Vigilance enregistrée : ${esc(painExos.join(', '))} (mémorisé pour le Coach et le préhab auto).</span></div>`
+            : `<p class="panel-subtitle">Charges suivantes et schémas de séries recalibrés automatiquement.</p>`
+        }
+        <div class="row-wrap">
+          <button type="button" class="btn btn-primary" id="btn-cap-send-workout">
+            ${capActive ? 'Envoyer vers Capacities' : 'Exporter vers Capacities'}
+          </button>
+        </div>
+      `,
+      ({ close }) => {
+        document.getElementById('btn-cap-send-workout')?.addEventListener('click', async () => {
+          close();
+          await triggerCapacitiesExport(mdSummary, 'Export Séance → Capacities');
+        });
+      }
+    );
     showToast(`Séance "${saved.dayName}" enregistrée. Charges suivantes recalibrées.`);
   });
 }
@@ -2121,13 +2506,16 @@ function renderNutrition(container) {
 
 function renderNutritionSubTab(slot, telemetry) {
   if (!slot) return;
-  const { adaptive, ewma, knownBf, macros, consumed, smoothing } = telemetry;
+  const { adaptive, ewma, knownBf, macros, consumed, smoothing, proIntel } = telemetry;
 
   /* ------------------------------------------------------------------------
      VUE 1 — JOURNAL (SAISIE CIQUAL/PHOTO/CODE-BARRES + HYDRATATION + JOURNAL)
      ------------------------------------------------------------------------ */
   if (state.nutritionSubTab === 'journal') {
-    const waterPct = Math.min(100, Math.round(((state.hydration?.totalMl || 0) / Math.max(1, macros.waterTargetMl)) * 100));
+    const targetWaterMl = proIntel?.nutritionTiming?.recommendedWaterTodayMl || macros.waterTargetMl;
+    const waterPct = Math.min(100, Math.round(((state.hydration?.totalMl || 0) / Math.max(1, targetWaterMl)) * 100));
+    const capActive = isCapacitiesActive(state.capacitiesSettings);
+    const nutTiming = proIntel?.nutritionTiming;
     slot.innerHTML = `
       <div class="stack">
         <!-- Sélecteur compact de saisie -->
@@ -2143,8 +2531,10 @@ function renderNutritionSubTab(slot, telemetry) {
         <section class="panel">
           <div class="row-between">
             <div>
-              <h2>Hydratation du jour</h2>
-              <span class="mono metric-xs text-secondary">${state.hydration?.totalMl || 0} / ${macros.waterTargetMl} ml (${waterPct} %)</span>
+              <h2>
+                Hydratation du jour${nutTiming?.periWorkoutHydrationBonusMl ? ' (+500ml séance)' : ''}${nutTiming?.heatHydrationBonusMl ? ` (+${nutTiming.heatHydrationBonusMl}ml chaleur)` : ''}
+              </h2>
+              <span class="mono metric-xs text-secondary">${state.hydration?.totalMl || 0} / ${targetWaterMl} ml (${waterPct} %)${nutTiming ? ` · Leucine ≥30g : ${nutTiming.todayLeucineMeals}/${nutTiming.targetLeucineMeals}` : ''}${nutTiming?.electrolytesRecommended ? ' · Électrolytes' : ''}</span>
             </div>
             <div class="row" style="gap: 6px;">
               <button type="button" class="btn btn-sm" data-nut-water="250">+250 ml</button>
@@ -2160,7 +2550,10 @@ function renderNutritionSubTab(slot, telemetry) {
         <section class="panel">
           <div class="panel-header">
             <h2>Journal du jour (${state.nutritionToday.length} entrées)</h2>
-            <span class="mono metric-sm text-secondary">${consumed.kcal} kcal</span>
+            <div class="row" style="gap: 6px;">
+              <button type="button" class="btn btn-xs" id="btn-cap-nutrition-evening">${capActive ? 'Clôture → Capacities' : 'Exporter → Capacities'}</button>
+              <span class="mono metric-sm text-secondary">${consumed.kcal} kcal</span>
+            </div>
           </div>
           ${
             state.nutritionToday.length === 0
@@ -2230,6 +2623,19 @@ function renderNutritionSubTab(slot, telemetry) {
         renderApp();
         showToast(`+${ml} ml d’eau enregistrés.`);
       });
+    });
+
+    document.getElementById('btn-cap-nutrition-evening')?.addEventListener('click', async () => {
+      const md = formatNutritionEveningCapacitiesMarkdown({
+        date: getTodayISO(),
+        consumed,
+        macros,
+        hydrationMl: state.hydration?.totalMl || 0,
+        ewma,
+        nutritionToday: state.nutritionToday,
+        proIntel,
+      });
+      await triggerCapacitiesExport(md, 'Bilan Nutrition → Capacities');
     });
 
     slot.querySelectorAll('[data-del-nut]').forEach((btn) => {
@@ -3114,13 +3520,32 @@ function renderNutritionInputMode(slot, macros, consumed = null) {
 
   if (state.nutritionInputMode === 'ciqual') {
     const initialGrams = Math.max(5, Math.min(2000, Number(state.foodSearchGrams) || 150));
+    const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
     slot.innerHTML = `
       <div class="grid-2">
         <section class="panel">
           <div class="panel-header">
             <h2>Recherche Alimentaire Hybride</h2>
-            <span class="state-tag is-muted">PERSO · CIQUAL · OFF</span>
+            <span class="status-dot-tag ${isOnline ? 'is-online' : 'is-offline'}" id="food-net-badge">${isOnline ? 'EN LIGNE' : 'HORS-LIGNE'}</span>
           </div>
+
+          <!-- Saisie en phrase libre / dictée vocale (Niveau 0 local + enrichissement IA) -->
+          <form id="free-text-meal-form" class="free-text-meal-bar">
+            <span class="label-tech">Saisie rapide en phrase libre / dictée (hors-ligne / IA)</span>
+            <div class="input-action-row">
+              <input
+                id="free-text-meal-input"
+                class="input"
+                type="text"
+                autocomplete="off"
+                placeholder="Ex. 180g poulet, 150g riz cuit, 1 c.à.s huile"
+                value="${esc(state.freeTextMealDraft)}"
+              />
+              ${isWebSpeechSupported() ? `<button type="button" class="btn btn-sm" id="btn-voice-free-meal" title="Dicter le repas (Web Speech natif)">Dictée</button>` : ''}
+              <button type="submit" class="btn btn-sm btn-primary" id="btn-parse-free-meal">Décomposer</button>
+            </div>
+          </form>
+
           <div class="input-action-row">
             <input
               id="ciqual-search"
@@ -3185,10 +3610,76 @@ function renderNutritionInputMode(slot, macros, consumed = null) {
 
     const searchInput = document.getElementById('ciqual-search');
     const gramsInput = document.getElementById('ciqual-grams');
+    const freeMealInput = document.getElementById('free-text-meal-input');
     const resultsRoot = document.getElementById('nutrition-search-results');
     const localContainer = document.getElementById('nutrition-local-results');
     const offContainer = document.getElementById('nutrition-off-section');
     const fallbackContainer = document.getElementById('nutrition-fallback-section');
+
+    // Mémorise le brouillon sans jamais re-rendre
+    freeMealInput?.addEventListener('input', (e) => {
+      state.freeTextMealDraft = e.target.value;
+    });
+
+    document.getElementById('btn-voice-free-meal')?.addEventListener('click', async () => {
+      const voiceBtn = document.getElementById('btn-voice-free-meal');
+      if (voiceBtn) {
+        voiceBtn.disabled = true;
+        voiceBtn.textContent = 'Écoute…';
+      }
+      try {
+        const transcript = await dictateFrenchVoiceText();
+        if (transcript && freeMealInput) {
+          freeMealInput.value = transcript;
+          state.freeTextMealDraft = transcript;
+          showToast(`Dicté : « ${transcript} » — clique sur Décomposer.`);
+        }
+      } catch (err) {
+        showToast(err?.message || 'Dictée vocale indisponible.');
+      } finally {
+        if (voiceBtn) {
+          voiceBtn.disabled = false;
+          voiceBtn.textContent = 'Dictée';
+        }
+      }
+    });
+
+    document.getElementById('free-text-meal-form')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const rawText = (freeMealInput?.value || '').trim();
+      if (!rawText) {
+        showToast('Saisis ton repas (ex. 180g poulet, 150g riz cuit, 1 c.à.s huile).');
+        return;
+      }
+      const btn = document.getElementById('btn-parse-free-meal');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Analyse...';
+      }
+      try {
+        const parsed = await parseFreeTextMeal(rawText, {
+          customFoods: state.customFoods,
+          cachedFoods: state.cachedFoods,
+          profile: state.profile,
+          aiSettings: state.aiSettings,
+          consumed,
+          targets: macros,
+        });
+        state.freeTextMealDraft = '';
+        state.lastMealVisionResult = parsed;
+        state.mealPhotoDataUrl = null;
+        state.mealPhotoPortionMult = 1;
+        state.nutritionInputMode = 'photo';
+        renderApp();
+        showToast(`${parsed.data?.ingredients?.length || 0} ingrédient(s) décomposé(s) — vérifie les grammages.`);
+      } catch (err) {
+        showToast(err?.message || 'Impossible de décomposer ce repas.');
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Décomposer';
+        }
+      }
+    });
 
     // Index en mémoire des résultats locaux actuellement rendus pour ajout instantané sans re-calcul
     let renderedLocalMap = new Map();
@@ -3199,6 +3690,11 @@ function renderNutritionInputMode(slot, macros, consumed = null) {
       const g = getGramsValue();
       const brandTxt = item.brand ? ` · ${esc(item.brand)}` : '';
       const nsTxt = item.nutriscore ? ` · NS ${esc(item.nutriscore)}` : '';
+      const novaBadge =
+        item.novaGroup && Number(item.novaGroup) >= 1 && Number(item.novaGroup) <= 4
+          ? ` <span class="nova-badge nova-${Number(item.novaGroup)}">NOVA ${Number(item.novaGroup)}</span>`
+          : '';
+      const isFavItem = item._origin === 'favorite' || item._personalKind === 'favorite';
       const portionBtn =
         item.portion && item.portion.grams
           ? `<button type="button" class="food-portion-btn" ${keyAttr}="${esc(keyVal)}" data-grams="${item.portion.grams}">+ ${esc(item.portion.label)} (${item.portion.grams}g)</button>`
@@ -3211,14 +3707,22 @@ function renderNutritionInputMode(slot, macros, consumed = null) {
         <div class="food-result-row">
           <div class="food-result-main">
             <div class="food-result-info">
-              <span class="food-result-name">${esc(item.name)}${brandTxt}</span>
-              <span class="mono metric-xs text-secondary">${item.kcal} kcal/100g · P ${item.proteinG} · G ${item.carbsG} · L ${item.fatG}${nsTxt}</span>
+              <span class="food-result-name">${esc(item.name)}${brandTxt}${isFavItem ? ' <span class="mono metric-xs text-accent">[FAVORI]</span>' : ''}${novaBadge}</span>
+              <span class="mono metric-xs text-secondary">${
+                isFavItem
+                  ? `${item.kcal} kcal/portion · P ${item.proteinG} · G ${item.carbsG} · L ${item.fatG}`
+                  : `${item.kcal} kcal/100g · P ${item.proteinG} · G ${item.carbsG} · L ${item.fatG}${nsTxt}`
+              }</span>
             </div>
             ${delBtn}
           </div>
           <div class="food-result-actions">
             ${portionBtn}
-            <button type="button" class="btn btn-sm btn-primary mono" ${keyAttr}="${esc(keyVal)}" data-grams-btn-label="1">+ ${g}g</button>
+            ${
+              isFavItem
+                ? `<button type="button" class="btn btn-sm btn-primary mono" ${keyAttr}="${esc(keyVal)}" data-fav-direct="1">+1 tap</button>`
+                : `<button type="button" class="btn btn-sm btn-primary mono" ${keyAttr}="${esc(keyVal)}" data-grams-btn-label="1">+ ${g}g</button>`
+            }
           </div>
         </div>
       `;
@@ -3228,27 +3732,34 @@ function renderNutritionInputMode(slot, macros, consumed = null) {
       if (!localContainer || !fallbackContainer) return;
       const q = state.ciqualQuery || '';
       const trimmed = q.trim();
-      const { customMatches, ciqualMatches } = searchHybridLocalFoods(q, state.customFoods, state.profile, { ciqualLimit: 18 });
+      const { personalMatches, customMatches, ciqualMatches } = searchHybridLocalFoods(q, state.customFoods, state.profile, {
+        ciqualLimit: 18,
+        cachedFoods: state.cachedFoods,
+        favorites: state.favorites,
+        extraCiqualFoods: state.ciqualExtension,
+      });
+      const topPersonal = Array.isArray(personalMatches) ? personalMatches : customMatches;
 
       renderedLocalMap = new Map();
       const htmlParts = [];
 
-      if (customMatches.length > 0) {
+      if (topPersonal.length > 0) {
         htmlParts.push(`
           <div class="food-section-head">
-            <span class="food-source-tag is-perso">[PERSO]</span>
-            <span class="mono metric-xs text-secondary">${customMatches.length} mémorisé${customMatches.length > 1 ? 's' : ''}</span>
+            <span class="food-source-tag is-perso">[MES ALIMENTS & FAVORIS]</span>
+            <span class="mono metric-xs text-secondary">${topPersonal.length} mémorisé${topPersonal.length > 1 ? 's' : ''}</span>
           </div>
         `);
-        for (const cf of customMatches) {
-          const mapKey = `custom:${cf.id}`;
-          renderedLocalMap.set(mapKey, { food: cf, kind: 'custom' });
+        for (const cf of topPersonal) {
+          const origin = cf._origin || cf._personalKind || 'custom';
+          const mapKey = `${origin}:${cf.id || cf.code || cf.name}`;
+          renderedLocalMap.set(mapKey, { food: cf, kind: origin });
           htmlParts.push(
             renderFoodRowHtml(cf, {
-              kind: 'custom',
+              kind: origin,
               keyAttr: 'data-add-local-key',
               keyVal: mapKey,
-              removableId: cf.id,
+              removableId: origin === 'custom' ? cf.id : null,
             })
           );
         }
@@ -3257,7 +3768,7 @@ function renderNutritionInputMode(slot, macros, consumed = null) {
       if (ciqualMatches.length > 0) {
         htmlParts.push(`
           <div class="food-section-head">
-            <span class="food-source-tag">[CIQUAL · HORS-LIGNE]</span>
+            <span class="food-source-tag">[CIQUAL · RÉFÉRENCE]</span>
             <span class="mono metric-xs text-secondary">${ciqualMatches.length} résultat${ciqualMatches.length > 1 ? 's' : ''}</span>
           </div>
         `);
@@ -3272,7 +3783,7 @@ function renderNutritionInputMode(slot, macros, consumed = null) {
             })
           );
         }
-      } else if (customMatches.length === 0) {
+      } else if (topPersonal.length === 0) {
         htmlParts.push(`<p class="panel-subtitle">Aucun aliment local pour « ${esc(trimmed)} ».</p>`);
       }
 
@@ -3387,7 +3898,7 @@ function renderNutritionInputMode(slot, macros, consumed = null) {
         const controller = new AbortController();
         state.offSearchAbort = controller;
         try {
-          const products = await searchOpenFoodFactsText(trimmed, { pageSize: 12, signal: controller.signal });
+          const products = await searchOpenFoodFactsText(trimmed, { pageSize: 15, signal: controller.signal });
           if ((state.ciqualQuery || '').trim() !== trimmed) return;
           state.offLiveQuery = trimmed;
           state.offLiveResults = products;
@@ -3402,7 +3913,7 @@ function renderNutritionInputMode(slot, macros, consumed = null) {
           state.offLiveOffline = true;
           requestAnimationFrame(renderOffSection);
         }
-      }, 350);
+      }, 300);
     };
 
     // Rendu initial de la liste isolée (sans jamais recréer les inputs ensuite)
@@ -3451,12 +3962,30 @@ function renderNutritionInputMode(slot, macros, consumed = null) {
       if (addLocalBtn) {
         const entry = renderedLocalMap.get(addLocalBtn.dataset.addLocalKey);
         if (!entry) return;
+        if (entry.kind === 'favorite' && addLocalBtn.dataset.favDirect === '1') {
+          await saveNutritionLog(state.profile.id, {
+            date: getTodayISO(),
+            mealSlot: 'Favori',
+            source: 'favorite',
+            label: entry.food.name,
+            kcal: Math.round(Number(entry.food.kcal) || 0),
+            proteinG: Number(entry.food.proteinG) || 0,
+            carbsG: Number(entry.food.carbsG) || 0,
+            fatG: Number(entry.food.fatG) || 0,
+            fiberG: Number(entry.food.fiberG) || 0,
+          });
+          state.nutritionAll = await listNutritionLogs(state.profile.id);
+          state.nutritionToday = state.nutritionAll.filter((n) => n.date === getTodayISO());
+          renderApp();
+          showToast(`Favori ajouté : ${entry.food.name} (${entry.food.kcal} kcal).`);
+          return;
+        }
         const grams = Number(addLocalBtn.dataset.grams) || getGramsValue();
         const scaled = scaleFoodMacros(entry.food, grams);
         await saveNutritionLog(state.profile.id, {
           date: getTodayISO(),
-          mealSlot: entry.kind === 'custom' ? 'Perso' : 'Ciqual',
-          source: entry.kind === 'custom' ? 'custom' : 'ciqual',
+          mealSlot: entry.kind === 'custom' ? 'Perso' : entry.kind === 'cached' ? 'Produit mémorisé' : 'Ciqual',
+          source: entry.kind === 'custom' ? 'custom' : entry.kind === 'cached' ? 'open_food_facts' : 'ciqual',
           label: `${entry.food.name} (${scaled.grams} g)`,
           ...scaled,
         });
@@ -3477,10 +4006,16 @@ function renderNutritionInputMode(slot, macros, consumed = null) {
           date: getTodayISO(),
           mealSlot: 'Open Food Facts',
           source: 'open_food_facts',
+          novaGroup: prod.novaGroup || null,
+          nutriscore: prod.nutriscore || null,
           label: `${prod.name} (${scaled.grams} g)`,
           ...scaled,
         });
-        // Mise en cache locale automatique pour réutilisation instantanée hors-ligne
+        // Mise en cache locale automatique (cachedFoods + customFoods) pour réutilisation hors-ligne
+        if (prod.barcode || prod.code) {
+          await putCachedFood(prod);
+          state.cachedFoods = await listCachedFoods(120);
+        }
         await saveCustomFood(state.profile.id, {
           ...prod,
           source: 'off_cached',
@@ -4089,15 +4624,19 @@ function renderNutritionInputMode(slot, macros, consumed = null) {
     return;
   }
 
-  // Mode Code-Barres & Open Food Facts (mise à jour isolée de #off-results-list sans reconstruire les champs)
+  // Mode Code-Barres & Open Food Facts API v2 (Torche, Cache IndexedDB, Photo OCR étiquette)
   slot.innerHTML = `
     <section class="panel">
       <div class="panel-header">
         <h2>Scanner Code-Barres & Open Food Facts (0 clé)</h2>
-        <button type="button" class="btn btn-sm btn-primary" id="btn-start-barcode">Ouvrir caméra</button>
+        <div class="scanner-toolbar">
+          <button type="button" class="btn btn-sm btn-primary" id="btn-start-barcode">Ouvrir caméra</button>
+          <button type="button" class="btn btn-sm" id="btn-toggle-torch" hidden>Torche</button>
+          <button type="button" class="btn btn-sm btn-danger" id="btn-stop-barcode" hidden>Stop</button>
+        </div>
       </div>
 
-      <div id="barcode-reader-box" style="width: 100%; max-width: 420px;"></div>
+      <div id="barcode-reader-box" style="width: 100%; max-width: 440px;"></div>
 
       <div class="grid-2">
         <div class="input-action-row">
@@ -4110,9 +4649,15 @@ function renderNutritionInputMode(slot, macros, consumed = null) {
         </div>
       </div>
 
-      <div class="row">
-        <label class="label-tech" for="off-grams">Portion à ajouter (g) :</label>
-        <input id="off-grams" class="input mono" type="number" inputmode="numeric" min="5" max="1500" value="100" style="max-width: 110px;" />
+      <div class="row-between" style="flex-wrap: wrap; gap: 8px;">
+        <div class="row">
+          <label class="label-tech" for="off-grams">Portion (g) :</label>
+          <input id="off-grams" class="input mono" type="number" inputmode="numeric" min="5" max="1500" value="100" style="max-width: 105px;" />
+        </div>
+        <label class="btn btn-sm" style="cursor: pointer;">
+          Scanner l’étiquette nutritionnelle (Photo OCR)
+          <input id="label-ocr-input" type="file" accept="image/*" capture="environment" hidden />
+        </label>
       </div>
 
       <div id="off-results-list" class="stack-sm"></div>
@@ -4120,10 +4665,107 @@ function renderNutritionInputMode(slot, macros, consumed = null) {
   `;
 
   const offListEl = document.getElementById('off-results-list');
-  const renderOffResultsList = (statusMsg = '') => {
+  const openLabelOcrEditorModal = (ocrFood, barcode = '') => {
+    const f = ocrFood || {};
+    const defaultPortionG = f.portion?.grams || 100;
+    openModal(
+      'Étiquette nutritionnelle scannée (pour 100 g)',
+      `
+        <form id="label-ocr-save-form" class="stack">
+          <div class="field">
+            <label class="field-label" for="locr-name">Nom du produit</label>
+            <input id="locr-name" class="input" required value="${esc(f.name || '')}" />
+          </div>
+          <div class="grid-4">
+            <div class="field"><label class="field-label" for="locr-kcal">Kcal/100g</label><input id="locr-kcal" class="input mono" type="number" inputmode="decimal" min="0" required value="${f.kcal || 0}" /></div>
+            <div class="field"><label class="field-label" for="locr-p">Prot/100g</label><input id="locr-p" class="input mono" type="number" inputmode="decimal" step="0.1" min="0" required value="${f.proteinG || 0}" /></div>
+            <div class="field"><label class="field-label" for="locr-c">Gluc/100g</label><input id="locr-c" class="input mono" type="number" inputmode="decimal" step="0.1" min="0" required value="${f.carbsG || 0}" /></div>
+            <div class="field"><label class="field-label" for="locr-f">Lip/100g</label><input id="locr-f" class="input mono" type="number" inputmode="decimal" step="0.1" min="0" required value="${f.fatG || 0}" /></div>
+          </div>
+          <div class="grid-2">
+            <div class="field"><label class="field-label" for="locr-fib">Fibres/100g</label><input id="locr-fib" class="input mono" type="number" inputmode="decimal" step="0.1" min="0" value="${f.fiberG || 0}" /></div>
+            <div class="field"><label class="field-label" for="locr-grams">Portion à logguer (g)</label><input id="locr-grams" class="input mono" type="number" inputmode="numeric" min="5" max="1500" value="${defaultPortionG}" /></div>
+          </div>
+          <label class="row" style="cursor: pointer;">
+            <input id="locr-log-today" type="checkbox" checked />
+            <span style="font-size: 0.84rem;">Ajouter aussi au journal d’aujourd’hui</span>
+          </label>
+          <div class="row-wrap">
+            <button type="submit" class="btn btn-primary">Enregistrer dans Mes Aliments</button>
+          </div>
+        </form>
+      `,
+      ({ close }) => {
+        document.getElementById('label-ocr-save-form')?.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const name = (document.getElementById('locr-name')?.value || '').trim();
+          if (!name) return;
+          const record = {
+            name,
+            brand: f.brand || '',
+            barcode: barcode || state.lastScannedBarcode || '',
+            kcal: Math.round(Number(document.getElementById('locr-kcal')?.value) || 0),
+            proteinG: Math.round((Number(document.getElementById('locr-p')?.value) || 0) * 10) / 10,
+            carbsG: Math.round((Number(document.getElementById('locr-c')?.value) || 0) * 10) / 10,
+            fatG: Math.round((Number(document.getElementById('locr-f')?.value) || 0) * 10) / 10,
+            fiberG: Math.round((Number(document.getElementById('locr-fib')?.value) || 0) * 10) / 10,
+            source: 'label_ocr',
+          };
+          const saved = await saveCustomFood(state.profile.id, record);
+          if (record.barcode) {
+            await putCachedFood({ ...record, code: record.barcode });
+            state.cachedFoods = await listCachedFoods(120);
+          }
+          state.customFoods = await listCustomFoods(state.profile.id);
+          const shouldLog = Boolean(document.getElementById('locr-log-today')?.checked);
+          if (shouldLog) {
+            const grams = Math.max(5, Math.min(1500, Number(document.getElementById('locr-grams')?.value) || 100));
+            const scaled = scaleFoodMacros(saved, grams);
+            await saveNutritionLog(state.profile.id, {
+              date: getTodayISO(),
+              mealSlot: 'Étiquette OCR',
+              source: 'label_ocr',
+              label: `${saved.name} (${scaled.grams} g)`,
+              ...scaled,
+            });
+            state.nutritionAll = await listNutritionLogs(state.profile.id);
+            state.nutritionToday = state.nutritionAll.filter((n) => n.date === getTodayISO());
+          }
+          close();
+          renderApp();
+          showToast(shouldLog ? `${saved.name} mémorisé et ajouté au journal.` : `${saved.name} mémorisé dans Mes Aliments.`);
+        });
+      }
+    );
+  };
+
+  const renderOffResultsList = (statusMsg = '', showLabelFallback = false) => {
     if (!offListEl) return;
     if (statusMsg) {
-      offListEl.innerHTML = `<p class="panel-subtitle">${esc(statusMsg)}</p>`;
+      offListEl.innerHTML = `
+        <div class="stack-sm">
+          <p class="panel-subtitle">${esc(statusMsg)}</p>
+          ${
+            showLabelFallback
+              ? `<div class="food-fallback-box">
+                  <span class="label-tech">Produit absent ou macros incomplètes ?</span>
+                  <div class="food-fallback-actions">
+                    <button type="button" class="btn btn-sm btn-primary" id="btn-trigger-label-ocr">Scanner l’étiquette nutritionnelle (Photo OCR)</button>
+                    <button type="button" class="btn btn-sm" id="btn-barcode-manual-create">Saisir manuellement</button>
+                  </div>
+                </div>`
+              : ''
+          }
+        </div>
+      `;
+      document.getElementById('btn-trigger-label-ocr')?.addEventListener('click', () => {
+        document.getElementById('label-ocr-input')?.click();
+      });
+      document.getElementById('btn-barcode-manual-create')?.addEventListener('click', () => {
+        openCreateCustomFoodModal('', ({ logged }) => {
+          if (logged) renderApp();
+        });
+      });
       return;
     }
     if (!state.offResults || state.offResults.length === 0) {
@@ -4133,27 +4775,50 @@ function renderNutritionInputMode(slot, macros, consumed = null) {
     offListEl.innerHTML = state.offResults
       .map(
         (p, idx) => `
-      <div class="row-between panel-elevated" style="padding: 10px 12px;">
-        <div class="stack-sm" style="gap: 2px;">
-          <strong>${esc(p.name)}${p.brand ? ` · ${esc(p.brand)}` : ''}</strong>
-          <span class="mono metric-xs text-secondary">${p.kcal} kcal/100g · P ${p.proteinG}g · G ${p.carbsG}g · L ${p.fatG}g${p.nutriscore ? ` · Nutri-Score ${esc(p.nutriscore)}` : ''}</span>
+      <div class="stack-sm panel-elevated" style="padding: 10px 12px;">
+        <div class="row-between">
+          <div class="stack-sm" style="gap: 2px;">
+            <strong>${esc(p.name)}${p.brand ? ` · ${esc(p.brand)}` : ''}${p.fromCache ? ` <span class="mono metric-xs text-accent">[CACHE]</span>` : ''}</strong>
+            <span class="mono metric-xs text-secondary">${p.kcal} kcal/100g · P ${p.proteinG}g · G ${p.carbsG}g · L ${p.fatG}g${p.nutriscore ? ` · Nutri-Score ${esc(p.nutriscore)}` : ''}</span>
+          </div>
+          <button type="button" class="btn btn-sm btn-primary" data-add-off="${idx}">+ Ajouter</button>
         </div>
-        <button type="button" class="btn btn-sm btn-primary" data-add-off="${idx}">+ Ajouter</button>
+        ${
+          p.missingMacros
+            ? `<div class="notice notice-danger" style="padding: 6px 8px;">
+                <span>Macros absentes sur Open Food Facts.</span>
+                <button type="button" class="btn btn-xs btn-primary" data-trigger-label-ocr-inline="1">Scanner l’étiquette</button>
+              </div>`
+            : ''
+        }
       </div>`
       )
       .join('');
+    offListEl.querySelectorAll('[data-trigger-label-ocr-inline]').forEach((b) => {
+      b.addEventListener('click', () => document.getElementById('label-ocr-input')?.click());
+    });
   };
   renderOffResultsList();
 
   const handleBarcode = async (code) => {
-    renderOffResultsList('Recherche du code-barres...');
+    const clean = String(code || '').replace(/\D/g, '');
+    state.lastScannedBarcode = clean;
+    const stopBtn = document.getElementById('btn-stop-barcode');
+    const torchBtn = document.getElementById('btn-toggle-torch');
+    if (stopBtn) stopBtn.hidden = true;
+    if (torchBtn) torchBtn.hidden = true;
+    state.barcodeTorchOn = false;
+
+    renderOffResultsList('Recherche du code-barres (Cache local + Open Food Facts v2)...');
     try {
-      const product = await lookupBarcodeOpenFoodFacts(code);
+      const product = await lookupBarcodeOpenFoodFacts(clean, { getCachedFood, putCachedFood });
+      state.cachedFoods = await listCachedFoods(120);
       state.offResults = [product];
       renderOffResultsList();
-      showToast(`Produit trouvé : ${product.name}`);
+      showToast(product.fromCache ? `Produit (cache hors-ligne) : ${product.name}` : `Produit trouvé : ${product.name}`);
     } catch (err) {
-      renderOffResultsList(err.message);
+      state.offResults = [];
+      renderOffResultsList(err.message, true);
       showToast(err.message);
     }
   };
@@ -4164,21 +4829,64 @@ function renderNutritionInputMode(slot, macros, consumed = null) {
       showToast('Tape au moins 2 caractères.');
       return;
     }
-    renderOffResultsList('Recherche Open Food Facts...');
-    state.offResults = await searchOpenFoodFactsText(q, { pageSize: 12 });
+    renderOffResultsList('Recherche Open Food Facts v2...');
+    state.offResults = await searchOpenFoodFactsText(q, { pageSize: 15 });
     if (state.offResults.length === 0) {
-      renderOffResultsList('Aucun produit trouvé sur Open Food Facts.');
+      renderOffResultsList('Aucun produit trouvé sur Open Food Facts.', true);
     } else {
       renderOffResultsList();
     }
   };
 
   document.getElementById('btn-start-barcode')?.addEventListener('click', async () => {
+    const torchBtn = document.getElementById('btn-toggle-torch');
+    const stopBtn = document.getElementById('btn-stop-barcode');
     try {
+      if (state.barcodeScanner) await state.barcodeScanner.stop();
       state.barcodeScanner = new BarcodeScannerController('barcode-reader-box');
       await state.barcodeScanner.start((code) => handleBarcode(code));
+      if (stopBtn) stopBtn.hidden = false;
+      if (torchBtn) {
+        torchBtn.hidden = !state.barcodeScanner.isTorchSupported();
+        torchBtn.textContent = 'Torche';
+      }
+      state.barcodeTorchOn = false;
     } catch (err) {
       showToast(err.message);
+    }
+  });
+
+  document.getElementById('btn-toggle-torch')?.addEventListener('click', async () => {
+    if (!state.barcodeScanner) return;
+    const isOn = await state.barcodeScanner.toggleTorch();
+    state.barcodeTorchOn = isOn;
+    const torchBtn = document.getElementById('btn-toggle-torch');
+    if (torchBtn) {
+      torchBtn.textContent = isOn ? 'Torche ON' : 'Torche';
+      torchBtn.classList.toggle('btn-primary', isOn);
+    }
+  });
+
+  document.getElementById('btn-stop-barcode')?.addEventListener('click', async () => {
+    if (state.barcodeScanner) await state.barcodeScanner.stop();
+    const stopBtn = document.getElementById('btn-stop-barcode');
+    const torchBtn = document.getElementById('btn-toggle-torch');
+    if (stopBtn) stopBtn.hidden = true;
+    if (torchBtn) torchBtn.hidden = true;
+    state.barcodeTorchOn = false;
+  });
+
+  document.getElementById('label-ocr-input')?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    showToast('Lecture OCR de l’étiquette nutritionnelle...');
+    try {
+      const comp = await compressVisionPhoto(file, { maxWidth: 1024, maxHeight: 1024, initialQuality: 0.8 });
+      const res = await analyzeNutritionLabelPhoto(comp.dataUrl, state.profile, state.aiSettings);
+      openLabelOcrEditorModal(res.food, state.lastScannedBarcode);
+      e.target.value = '';
+    } catch (err) {
+      showToast(err?.message || 'Impossible de lire cette étiquette.');
     }
   });
 
@@ -4215,7 +4923,11 @@ function renderNutritionInputMode(slot, macros, consumed = null) {
       label: `${prod.name} (${scaled.grams} g)`,
       ...scaled,
     });
-    // Cache automatique dans les aliments perso pour réutilisation hors-ligne
+    // Cache automatique dans cachedFoods + customFoods pour réutilisation hors-ligne
+    if (prod.barcode || prod.code) {
+      await putCachedFood(prod);
+      state.cachedFoods = await listCachedFoods(120);
+    }
     await saveCustomFood(state.profile.id, { ...prod, source: 'off_cached' });
     state.customFoods = await listCustomFoods(state.profile.id);
     state.nutritionAll = await listNutritionLogs(state.profile.id);
@@ -4977,7 +5689,7 @@ function renderProfil(container) {
         <button type="button" class="segmented-btn ${state.profilSubTab === 'coach' ? 'is-active' : ''}" data-prof-tab="coach">Coach</button>
         <button type="button" class="segmented-btn ${state.profilSubTab === 'profile' ? 'is-active' : ''}" data-prof-tab="profile">Profil</button>
         <button type="button" class="segmented-btn ${state.profilSubTab === 'ai' ? 'is-active' : ''}" data-prof-tab="ai">Clés IA</button>
-        <button type="button" class="segmented-btn ${state.profilSubTab === 'p2p' ? 'is-active' : ''}" data-prof-tab="p2p">P2P</button>
+        <button type="button" class="segmented-btn ${state.profilSubTab === 'p2p' ? 'is-active' : ''}" data-prof-tab="p2p">Intégrations</button>
         <button type="button" class="segmented-btn ${state.profilSubTab === 'backup' ? 'is-active' : ''}" data-prof-tab="backup">Backup</button>
       </div>
 
@@ -5009,6 +5721,7 @@ function renderProfilSubTab(slot) {
             : 'Niv. 0 · Local';
     const runtimeCtx = buildCoachRuntimeContext(state.profile, state.program, state.workouts);
     const memoryList = Array.isArray(state.profile.coachMemory) ? state.profile.coachMemory : [];
+    const capActive = isCapacitiesActive(state.capacitiesSettings);
 
     slot.innerHTML = `
       <section class="panel">
@@ -5019,7 +5732,8 @@ function renderProfilSubTab(slot) {
               <strong class="text-accent">${esc(activeLabel)}</strong> · ${esc(runtimeCtx.activeSplitLabel)} · ${esc(TRAINING_METHODS[runtimeCtx.activeMethodId]?.shortLabel || 'Double prog.')}
             </p>
           </div>
-          <div class="row" style="gap: 6px;">
+          <div class="row-wrap" style="gap: 6px; justify-content: flex-end;">
+            <button type="button" class="context-badge-btn" id="btn-coach-context-preview" title="Voir exactement ce que le Coach lit en temps réel">Contexte actif</button>
             <button type="button" class="btn btn-xs" id="btn-coach-open-ai">IA</button>
             <button type="button" class="btn btn-xs" id="btn-clear-chat">Effacer</button>
           </div>
@@ -5117,7 +5831,14 @@ function renderProfilSubTab(slot) {
                   <div class="chat-bubble ${m.role === 'user' ? 'is-user' : ''}">
                     <div class="row-between">
                       <span class="label-tech ${m.role === 'user' ? 'text-accent' : ''}">${m.role === 'user' ? esc(state.profile.name) : 'Coach Kinetix'}</span>
-                      ${m.tierUsed !== null && m.tierUsed !== undefined ? `<span class="mono metric-xs text-muted">Niv. ${m.tierUsed}${m.provider ? ` · ${esc(m.provider)}` : ''}</span>` : ''}
+                      <div class="row" style="gap: 6px;">
+                        ${
+                          m.role === 'assistant'
+                            ? `<button type="button" class="capacities-archive-btn" data-cap-coach-msg="${esc(m.id)}" title="Exporter dans Capacities Daily Note">Capacities</button>`
+                            : ''
+                        }
+                        ${m.tierUsed !== null && m.tierUsed !== undefined ? `<span class="mono metric-xs text-muted">Niv. ${m.tierUsed}${m.provider ? ` · ${esc(m.provider)}` : ''}</span>` : ''}
+                      </div>
                     </div>
                     ${
                       m.photoDataUrl
@@ -5206,6 +5927,41 @@ function renderProfilSubTab(slot) {
 
     const thread = document.getElementById('coach-thread');
     if (thread) thread.scrollTop = thread.scrollHeight;
+
+    document.getElementById('btn-coach-context-preview')?.addEventListener('click', () => {
+      const telemetry = getDerivedTelemetry();
+      const ctx = buildCoachFullContext({
+        profile: state.profile,
+        program: state.program,
+        telemetry,
+        proIntel: telemetry.proIntel,
+        weather: state.weather,
+        workouts: state.workouts,
+        biometrics: state.biometrics,
+        nutritionAll: state.nutritionAll,
+        nutritionToday: state.nutritionToday,
+        hydration: state.hydration,
+        activeSession: state.activeSession,
+        lastPhysiqueAnalysis: state.lastPhysiqueAnalysis,
+      });
+      openModal(
+        'Dossier Contexte Actif du Coach',
+        `
+          <p class="panel-subtitle">Injecté automatiquement dans chaque échange (lecture temps réel IndexedDB · ${ctx.stats.workoutsCount} séances récentes · ${ctx.stats.biometricsCount} pesées 30j · ${ctx.stats.memoryCount} repères mémoire).</p>
+          <div class="stack-sm">
+            ${ctx.sections
+              .map(
+                (sec) => `
+              <div class="context-dossier-section">
+                <span class="label-tech text-accent">${esc(sec.title)}</span>
+                <pre>${esc(sec.body)}</pre>
+              </div>`
+              )
+              .join('')}
+          </div>
+        `
+      );
+    });
 
     document.getElementById('btn-coach-open-ai')?.addEventListener('click', () => {
       state.profilSubTab = 'ai';
@@ -5347,7 +6103,7 @@ function renderProfilSubTab(slot) {
     const refreshAllProfileDataFromDB = async () => {
       const pid = state.profile.id;
       const today = getTodayISO();
-      const [freshProfile, freshProg, freshBio, freshNutAll, freshHyd, freshMsgs, freshCustom, freshFavs] = await Promise.all([
+      const [freshProfile, freshProg, freshBio, freshNutAll, freshHyd, freshMsgs, freshCustom, freshFavs, freshShop, freshCached] = await Promise.all([
         getActiveProfile(),
         getActiveProgram(pid),
         listBiometrics(pid),
@@ -5356,6 +6112,8 @@ function renderProfilSubTab(slot) {
         listCoachMessages(pid),
         listCustomFoods(pid),
         listFavorites(pid),
+        listShoppingList(pid),
+        listCachedFoods(120),
       ]);
       if (freshProfile && freshProfile.id === pid) {
         state.profile = freshProfile;
@@ -5369,6 +6127,8 @@ function renderProfilSubTab(slot) {
       state.coachMessages = freshMsgs;
       state.customFoods = freshCustom;
       state.favorites = freshFavs;
+      state.shoppingList = freshShop;
+      state.cachedFoods = freshCached;
       state.manualKcalOffset = clampAdaptiveAdjustmentKcal(
         state.profile?.nutritionPrefs?.adaptiveAdjustmentKcal ??
           state.profile?.nutritionPrefs?.manualKcalOffset ??
@@ -5376,8 +6136,17 @@ function renderProfilSubTab(slot) {
       );
     };
 
-    // Délégation des cartes "Aperçu & Confirmation sélective" dans le fil Coach
+    // Délégation des cartes "Aperçu & Confirmation sélective" + archivage Capacities dans le fil Coach
     thread?.addEventListener('click', async (e) => {
+      const capBtn = e.target.closest('[data-cap-coach-msg]');
+      if (capBtn) {
+        const msg = state.coachMessages.find((m) => m.id === capBtn.dataset.capCoachMsg);
+        if (!msg) return;
+        const md = formatCoachMessageCapacitiesMarkdown({ message: msg, profile: state.profile });
+        await triggerCapacitiesExport(md, 'Archiver réponse Coach → Capacities');
+        return;
+      }
+
       const applyBtn = e.target.closest('[data-apply-photo-proposal]');
       if (applyBtn) {
         const msgId = applyBtn.dataset.applyPhotoProposal;
@@ -5411,6 +6180,10 @@ function renderProfilSubTab(slot) {
             deleteNutritionLog,
             saveCustomFood,
             deleteCustomFood,
+            saveFavorite,
+            deleteFavorite,
+            saveShoppingItem,
+            deleteShoppingItem,
           },
         });
 
@@ -5520,10 +6293,15 @@ function renderProfilSubTab(slot) {
         profile: state.profile,
         program: state.program,
         telemetry,
+        proIntel: telemetry.proIntel,
+        weather: state.weather,
         workouts: state.workouts,
+        biometrics: state.biometrics,
+        nutritionAll: state.nutritionAll,
         nutritionToday: state.nutritionToday,
         hydration: state.hydration,
         activeSession: state.activeSession,
+        lastPhysiqueAnalysis: state.lastPhysiqueAnalysis,
       });
 
       let executedBadges = [];
@@ -5600,6 +6378,10 @@ function renderProfilSubTab(slot) {
                 deleteNutritionLog,
                 saveCustomFood,
                 deleteCustomFood,
+                saveFavorite,
+                deleteFavorite,
+                saveShoppingItem,
+                deleteShoppingItem,
               },
             });
             executedBadges = execResult.executedBadges;
@@ -5749,6 +6531,16 @@ function renderProfilSubTab(slot) {
                 <input id="pe-steps" class="input mono" type="number" step="500" value="${p.lifestyle?.stepTarget || 8500}" />
               </div>
             </div>
+            <div class="field">
+              <label class="field-label" for="pe-city">
+                <span>Ville / Localisation (Hydratation chaleur Open-Meteo · 0 clé)</span>
+                ${state.weather ? `<span class="mono metric-xs text-accent">${state.weather.temperatureC}°C · ${state.weather.humidityPct}% hum.</span>` : ''}
+              </label>
+              <div class="input-action-row">
+                <input id="pe-city" class="input" type="text" placeholder="Ex. Lyon, Paris, Marseille (optionnel)" value="${esc(p.lifestyle?.city || '')}" />
+                <button type="button" class="btn btn-sm" id="btn-pe-geoloc">Ma position</button>
+              </div>
+            </div>
             <button type="submit" class="btn btn-primary btn-block">Enregistrer & Recalculer Programme + Macros</button>
           </form>
         </section>
@@ -5779,8 +6571,33 @@ function renderProfilSubTab(slot) {
       </div>
     `;
 
+    document.getElementById('btn-pe-geoloc')?.addEventListener('click', async () => {
+      try {
+        const coords = await requestBrowserCoordinates();
+        state.profile = await updateProfile(p.id, {
+          lifestyle: {
+            ...(state.profile.lifestyle || {}),
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+            city: (document.getElementById('pe-city')?.value || '').trim() || 'Position locale',
+          },
+        });
+        state.weather = await fetchWeatherHydrationContext(state.profile.lifestyle, { forceRefresh: true });
+        renderProfilSubTab(slot);
+        showToast(
+          state.weather
+            ? `Météo synchronisée : ${state.weather.temperatureC}°C${state.weather.heatBonusMl > 0 ? ` (+${state.weather.heatBonusMl} ml hydratation)` : ''}.`
+            : 'Coordonnées enregistrées.'
+        );
+      } catch (err) {
+        showToast(err?.message || 'Géolocalisation refusée ou indisponible.');
+      }
+    });
+
     document.getElementById('profile-edit-form')?.addEventListener('submit', async (e) => {
       e.preventDefault();
+      const cityVal = (document.getElementById('pe-city')?.value || '').trim();
+      const cityChanged = cityVal !== (p.lifestyle?.city || '');
       state.profile = await updateProfile(p.id, {
         name: document.getElementById('pe-name').value.trim(),
         goal: document.getElementById('pe-goal').value,
@@ -5794,14 +6611,20 @@ function renderProfilSubTab(slot) {
           armSpanRatio: document.getElementById('pe-arms').value,
         },
         lifestyle: {
+          ...(p.lifestyle || {}),
           neatLevel: document.getElementById('pe-neat').value,
           stepTarget: Number(document.getElementById('pe-steps').value),
+          city: cityVal,
+          ...(cityChanged ? { latitude: null, longitude: null } : {}),
         },
         nutritionPrefs: {
           dietType: document.getElementById('pe-diet').value,
           mealsPerDay: Number(document.getElementById('pe-meals').value),
         },
       });
+      if (cityVal) {
+        state.weather = await fetchWeatherHydrationContext(state.profile.lifestyle, { forceRefresh: cityChanged }).catch(() => state.weather);
+      }
       const rebuilt = generateProgram(state.profile, { phase: state.program?.phase || 'accumulation' });
       state.program = await saveProgram(state.profile.id, rebuilt);
       state.activeSession = null;
@@ -5839,203 +6662,273 @@ function renderProfilSubTab(slot) {
 
   if (state.profilSubTab === 'ai') {
     const s = state.aiSettings;
-    const preset = TIER2_PRESETS[s.tier2Preset] || TIER2_PRESETS.custom;
+    const preset = TIER2_PRESETS[s.tier2Preset] || TIER2_PRESETS.gemini;
     const webCap = detectBrowserLlmCapability();
     const probe = state.lastProbeResult;
+    const isGeminiPrimary = s.activeTier === 2 && s.tier2Preset === 'gemini';
+    const hasCustomAdvanced = !isGeminiPrimary;
+    const extStat = state.externalStatus || {};
 
     slot.innerHTML = `
-      <section class="panel">
-        <div class="panel-header">
-          <div>
-            <h2>Routeur IA & Clés API</h2>
-            <p class="panel-subtitle" id="ai-autosave-status">Sauvegarde automatique locale (IndexedDB) · Aucune clé en dur.</p>
+      <div class="stack">
+        <!-- 1. CARTE PRINCIPALE : UNE SEULE CLÉ API PRIVÉE (GEMINI) -->
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Clé API Gemini (Unique)</h2>
+              <p class="panel-subtitle" id="ai-autosave-status">
+                Sauvegarde locale IndexedDB uniquement · En-tête HTTP <code>x-goog-api-key</code> · Failover auto <code>gemini-flash-lite-latest → gemini-2.5-flash</code>.
+              </p>
+            </div>
+            <span class="state-tag ${s.apiKey && isGeminiPrimary ? 'is-ok' : 'is-accent'}">
+              ${s.apiKey && isGeminiPrimary ? 'GEMINI ACTIF' : hasCustomAdvanced ? `NIV. ${s.activeTier}` : 'REPLI GRATUIT'}
+            </span>
           </div>
-          <span class="state-tag is-accent">NIV. ${s.activeTier}</span>
-        </div>
 
-        <div class="segmented-grid-2">
-          <button type="button" class="segmented-btn ${s.activeTier === 0 ? 'is-active' : ''}" data-set-tier="0">0 · Local</button>
-          <button type="button" class="segmented-btn ${s.activeTier === 1 ? 'is-active' : ''}" data-set-tier="1">1 · Gratuit</button>
-          <button type="button" class="segmented-btn ${s.activeTier === 2 ? 'is-active' : ''}" data-set-tier="2">2 · Clé API / Local</button>
-          <button type="button" class="segmented-btn ${s.activeTier === 3 ? 'is-active' : ''}" data-set-tier="3">3 · WebLLM</button>
-        </div>
-
-        ${
-          s.activeTier === 0
-            ? `
-          <div class="panel-elevated stack-sm">
-            <strong>Niveau 0 — 100 % Hors-Ligne (MediaPipe + Biomécanique)</strong>
-            <span class="panel-subtitle">Zéro réseau, zéro clé API. Calculs biomécaniques, progression, Ciqual et landmarks MediaPipe en local.</span>
-          </div>`
-            : ''
-        }
-
-        ${
-          s.activeTier === 1
-            ? `
-          <div class="panel-elevated stack-sm">
-            <strong>Niveau 1 — Cloud Gratuit Sans Clé</strong>
-            <div class="field">
-              <label class="field-label" for="ai-t1-provider">Fournisseur gratuit</label>
-              <select id="ai-t1-provider" class="select">
-                <option value="puter" ${s.tier1Provider !== 'pollinations' ? 'selected' : ''}>Puter.js (défaut, avec repli Pollinations)</option>
-                <option value="pollinations" ${s.tier1Provider === 'pollinations' ? 'selected' : ''}>Pollinations.ai direct (sans connexion Puter)</option>
-              </select>
-            </div>
-            <label class="row" style="cursor: pointer;">
-              <input type="checkbox" id="ai-allow-public-body" ${s.allowPublicBodyPhotos ? 'checked' : ''} />
-              <span class="panel-subtitle">Autoriser l’envoi de photos corporelles sur Pollinations (bloqué par défaut)</span>
+          <div class="field">
+            <label class="field-label" for="ai-gemini-key">
+              <span>Clé API Gemini</span>
+              <span class="mono metric-xs ${s.apiKey ? 'text-ok' : 'text-secondary'}">${s.apiKey ? 'Enregistrée en local' : 'Optionnelle (repli Puter.js → Local Niv. 0)'}</span>
             </label>
-            <span class="panel-subtitle">Astuce : si vous avez une clé Gemini, Groq, OpenRouter ou OpenAI, passez sur <strong>2 · Clé API</strong>.</span>
-          </div>`
-            : ''
-        }
-
-        ${
-          s.activeTier === 2
-            ? `
-          <div class="stack">
-            <div class="field">
-              <label class="field-label" for="ai-preset-sel">Fournisseur (préréglage 1-clic)</label>
-              <select id="ai-preset-sel" class="select">
-                ${Object.values(TIER2_PRESETS)
-                  .map((pr) => `<option value="${pr.id}" ${s.tier2Preset === pr.id ? 'selected' : ''}>${esc(pr.label)}</option>`)
-                  .join('')}
-              </select>
+            <div class="input-action-row">
+              <input
+                id="ai-gemini-key"
+                class="input mono"
+                type="${state.showApiKey ? 'text' : 'password'}"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="Colle ta clé Google AI Studio (AQ.… ou AIza…)"
+                value="${esc(isGeminiPrimary ? s.apiKey : '')}"
+              />
+              <button type="button" class="btn btn-sm" id="btn-toggle-apikey">${state.showApiKey ? 'Masquer' : 'Voir'}</button>
             </div>
+          </div>
 
-            <div class="field">
-              <label class="field-label" for="ai-key">
-                <span>Clé API (auto-détectée au collage)</span>
-                <span class="mono metric-xs ${s.apiKey ? 'text-ok' : 'text-muted'}">${s.apiKey ? 'Clé enregistrée' : preset.requiresApiKey ? 'Requise' : 'Optionnelle'}</span>
-              </label>
-              <div class="input-action-row">
-                <input id="ai-key" class="input mono" type="${state.showApiKey ? 'text' : 'password'}" autocomplete="off" spellcheck="false" placeholder="Collez AQ.... / AIza... / gsk_... / sk-or-... / sk-..." value="${esc(s.apiKey)}" />
-                <button type="button" class="btn btn-sm" id="btn-toggle-apikey">${state.showApiKey ? 'Masquer' : 'Voir'}</button>
-              </div>
-            </div>
+          <div class="row-wrap">
+            <button type="button" class="btn btn-primary" id="btn-probe-ai">Tester la clé</button>
+            <button type="button" class="btn" id="btn-save-ai">Enregistrer</button>
+          </div>
 
-            <div class="field"><label class="field-label" for="ai-url">URL de base</label><input id="ai-url" class="input mono" value="${esc(s.baseUrl)}" /></div>
-            <div class="grid-2">
-              <div class="field"><label class="field-label" for="ai-mod">Modèle texte</label><input id="ai-mod" class="input mono" value="${esc(s.model)}" /></div>
-              <div class="field"><label class="field-label" for="ai-vmod">Modèle vision</label><input id="ai-vmod" class="input mono" value="${esc(s.visionModel)}" /></div>
-            </div>
+          <div id="ai-probe-result">
             ${
-              s.tier2Preset === 'groq'
-                ? `<label class="row" style="cursor:pointer;"><input type="checkbox" id="ai-whisper" ${s.groqWhisperEnabled ? 'checked' : ''} /><span class="panel-subtitle">Activer Groq Whisper pour la dictée vocale en salle</span></label>`
+              probe
+                ? `<div class="probe-card ${probe.ok ? 'is-ok' : 'is-err'}">
+                    <div class="row-between">
+                      <span class="state-tag ${probe.ok ? 'is-ok' : 'is-danger'}">${probe.ok ? 'CONNEXION VALIDÉE' : 'ÉCHEC CONNEXION'}</span>
+                      <span class="mono metric-xs">${probe.latencyMs ?? 0} ms · HTTP ${probe.httpStatus ?? 'Local'}${probe.ok ? ` · Vision ${probe.visionSupported ? 'Oui' : 'Non'}` : ''}</span>
+                    </div>
+                    <span class="mono metric-xs text-secondary">Moteur : ${esc(probe.provider || '')}${probe.modelUsed ? ` · Modèle : ${esc(probe.modelUsed)}` : ''}${probe.visionModelUsed ? ` · Vision : ${esc(probe.visionModelUsed)}` : ''}${probe.authMode ? ` · ${esc(probe.authMode)}` : ''}</span>
+                    ${
+                      probe.endpointUrl
+                        ? `<div class="stack-sm" style="gap: 2px;">
+                            <span class="label-tech">Endpoint appelé (sans clé)</span>
+                            <code class="code-box" style="padding: 6px 8px;">${esc(probe.endpointUrl)}</code>
+                          </div>`
+                        : ''
+                    }
+                    ${
+                      !probe.ok && probe.rawError
+                        ? `<div class="stack-sm" style="gap: 2px;">
+                            <span class="label-tech">Réponse serveur (HTTP ${probe.httpStatus ?? 'Réseau/CORS'})</span>
+                            <pre class="code-box" style="padding: 6px 8px;">${esc(probe.rawError)}</pre>
+                          </div>`
+                        : ''
+                    }
+                    ${
+                      probe.ok && !probe.visionSupported && probe.visionError
+                        ? `<div class="stack-sm" style="gap: 2px;">
+                            <span class="label-tech">Échec micro-test Vision (HTTP ${probe.visionHttpStatus ?? 'Réseau/CORS'})</span>
+                            <pre class="code-box" style="padding: 6px 8px;">${esc(probe.visionError)}</pre>
+                          </div>`
+                        : ''
+                    }
+                    <span style="font-size: 0.82rem;">${esc(probe.diagnostic || '')}</span>
+                    ${
+                      !probe.ok && Array.isArray(probe.suggestedModels) && probe.suggestedModels.length > 0
+                        ? `<div class="stack-sm" style="gap: 6px; margin-top: 2px;">
+                            <span class="label-tech text-accent">Modèles Gemini actifs recommandés</span>
+                            <div class="row-wrap">
+                              ${probe.suggestedModels
+                                .map(
+                                  (mName) =>
+                                    `<button type="button" class="btn btn-xs btn-primary mono" data-pick-gemini-model="${esc(mName)}">Utiliser ${esc(mName)}</button>`
+                                )
+                                .join('')}
+                            </div>
+                          </div>`
+                        : ''
+                    }
+                    ${
+                      probe.ok && !probe.visionSupported && Array.isArray(probe.visionSuggestedModels) && probe.visionSuggestedModels.length > 0
+                        ? `<div class="stack-sm" style="gap: 6px; margin-top: 2px;">
+                            <span class="label-tech text-accent">Modèles Gemini Vision actifs</span>
+                            <div class="row-wrap">
+                              ${probe.visionSuggestedModels
+                                .map(
+                                  (mName) =>
+                                    `<button type="button" class="btn btn-xs btn-primary mono" data-pick-gemini-vision="${esc(mName)}">Vision : ${esc(mName)}</button>`
+                                )
+                                .join('')}
+                            </div>
+                          </div>`
+                        : ''
+                    }
+                  </div>`
+                : `<div class="probe-card"><span class="panel-subtitle">Sans clé Gemini, Kinetix Lab bascule automatiquement sur <strong>Puter.js</strong> (gratuit, 0 clé) puis le moteur déterministe <strong>Niveau 0</strong> 100 % hors-ligne.</span></div>`
+            }
+          </div>
+        </section>
+
+        <!-- 2. OPTIONS AVANCÉES (IA PERSO) REPLIÉES PAR DÉFAUT -->
+        <details class="advanced-accordion" ${hasCustomAdvanced ? 'open' : ''}>
+          <summary>Options avancées (IA perso : Ollama, LM Studio, Groq, OpenRouter, WebLLM)</summary>
+          <div class="advanced-accordion-body">
+            <div class="segmented-grid-2">
+              <button type="button" class="segmented-btn ${s.activeTier === 0 ? 'is-active' : ''}" data-set-tier="0">0 · Local</button>
+              <button type="button" class="segmented-btn ${s.activeTier === 1 ? 'is-active' : ''}" data-set-tier="1">1 · Gratuit</button>
+              <button type="button" class="segmented-btn ${s.activeTier === 2 ? 'is-active' : ''}" data-set-tier="2">2 · API / Local</button>
+              <button type="button" class="segmented-btn ${s.activeTier === 3 ? 'is-active' : ''}" data-set-tier="3">3 · WebLLM</button>
+            </div>
+
+            ${
+              s.activeTier === 0
+                ? `<div class="panel-elevated stack-sm">
+                    <strong>Niveau 0 — 100 % Hors-Ligne (MediaPipe + Biomécanique + Ciqual)</strong>
+                    <span class="panel-subtitle">Zéro réseau, zéro clé API. Calculs biomécaniques, progression, nutrition et landmarks MediaPipe en local.</span>
+                  </div>`
                 : ''
             }
-            <div class="notice notice-accent"><span>${esc(preset.corsNote)}</span></div>
-          </div>`
-            : ''
-        }
 
-        ${
-          s.activeTier === 3
-            ? `
-          <div class="stack">
-            <div class="field">
-              <label class="field-label">Modèle embarqué navigateur (WebGPU / WASM)</label>
-              <select id="ai-t3-model" class="select">
-                ${TIER3_MODELS.map((m) => `<option value="${esc(m.id)}" ${s.tier3ModelId === m.id ? 'selected' : ''}>${esc(m.label)}</option>`).join('')}
-              </select>
-            </div>
             ${
-              webCap.warning
-                ? `<div class="notice notice-danger"><span>${esc(webCap.warning)}</span></div>`
-                : `<div class="notice notice-ok"><span>WebGPU détecté (${webCap.deviceMemoryGb || '?'} Go RAM).</span></div>`
+              s.activeTier === 1
+                ? `<div class="panel-elevated stack-sm">
+                    <strong>Niveau 1 — Cloud Gratuit Sans Clé</strong>
+                    <div class="field">
+                      <label class="field-label" for="ai-t1-provider">Fournisseur gratuit</label>
+                      <select id="ai-t1-provider" class="select">
+                        <option value="puter" ${s.tier1Provider !== 'pollinations' ? 'selected' : ''}>Puter.js (défaut, repli Local)</option>
+                        <option value="pollinations" ${s.tier1Provider === 'pollinations' ? 'selected' : ''}>Pollinations.ai direct</option>
+                      </select>
+                    </div>
+                    <label class="row" style="cursor: pointer;">
+                      <input type="checkbox" id="ai-allow-public-body" ${s.allowPublicBodyPhotos ? 'checked' : ''} />
+                      <span class="panel-subtitle">Autoriser l’envoi de photos corporelles sur Pollinations (bloqué par défaut)</span>
+                    </label>
+                  </div>`
+                : ''
             }
-            <label class="row" style="cursor:pointer;">
-              <input type="checkbox" id="ai-t3-accept" ${s.tier3AcceptedRamWarning ? 'checked' : ''} />
-              <span class="panel-subtitle">Je comprends l’impact mémoire (0,9–1,5 Go) avant téléchargement.</span>
-            </label>
-          </div>`
-            : ''
-        }
 
-        <div class="grid-2">
-          <button type="button" class="btn btn-primary btn-block" id="btn-probe-ai">Tester la connexion maintenant</button>
-          <button type="button" class="btn btn-block" id="btn-save-ai">Forcer l'enregistrement</button>
-        </div>
+            ${
+              s.activeTier === 2
+                ? `<div class="stack">
+                    <div class="field">
+                      <label class="field-label" for="ai-preset-sel">Connecteur avancé</label>
+                      <select id="ai-preset-sel" class="select">
+                        ${Object.values(TIER2_PRESETS)
+                          .map((pr) => `<option value="${pr.id}" ${s.tier2Preset === pr.id ? 'selected' : ''}>${esc(pr.label)}</option>`)
+                          .join('')}
+                      </select>
+                    </div>
+                    ${
+                      s.tier2Preset !== 'gemini'
+                        ? `<div class="field">
+                            <label class="field-label" for="ai-key">Clé API (${esc(preset.label)})</label>
+                            <input id="ai-key" class="input mono" type="${state.showApiKey ? 'text' : 'password'}" autocomplete="off" spellcheck="false" placeholder="gsk_… / sk-or-… / sk-… (vide si Ollama/LM Studio)" value="${esc(s.apiKey)}" />
+                          </div>`
+                        : ''
+                    }
+                    <div class="field"><label class="field-label" for="ai-url">URL de base</label><input id="ai-url" class="input mono" value="${esc(s.baseUrl)}" /></div>
+                    <div class="grid-2">
+                      <div class="field"><label class="field-label" for="ai-mod">Modèle texte</label><input id="ai-mod" class="input mono" value="${esc(s.model)}" /></div>
+                      <div class="field"><label class="field-label" for="ai-vmod">Modèle vision</label><input id="ai-vmod" class="input mono" value="${esc(s.visionModel)}" /></div>
+                    </div>
+                    ${
+                      s.tier2Preset === 'groq'
+                        ? `<label class="row" style="cursor:pointer;"><input type="checkbox" id="ai-whisper" ${s.groqWhisperEnabled ? 'checked' : ''} /><span class="panel-subtitle">Activer Groq Whisper pour la dictée vocale en salle</span></label>`
+                        : ''
+                    }
+                    <div class="notice notice-accent"><span>${esc(preset.corsNote)}</span></div>
+                  </div>`
+                : ''
+            }
 
-        <div id="ai-probe-result">
-          ${
-            probe
-              ? `<div class="probe-card ${probe.ok ? 'is-ok' : 'is-err'}">
+            ${
+              s.activeTier === 3
+                ? `<div class="stack">
+                    <div class="field">
+                      <label class="field-label">Modèle embarqué navigateur (WebGPU / WASM)</label>
+                      <select id="ai-t3-model" class="select">
+                        ${TIER3_MODELS.map((m) => `<option value="${esc(m.id)}" ${s.tier3ModelId === m.id ? 'selected' : ''}>${esc(m.label)}</option>`).join('')}
+                      </select>
+                    </div>
+                    ${
+                      webCap.warning
+                        ? `<div class="notice notice-danger"><span>${esc(webCap.warning)}</span></div>`
+                        : `<div class="notice notice-ok"><span>WebGPU détecté (${webCap.deviceMemoryGb || '?'} Go RAM).</span></div>`
+                    }
+                    <label class="row" style="cursor:pointer;">
+                      <input type="checkbox" id="ai-t3-accept" ${s.tier3AcceptedRamWarning ? 'checked' : ''} />
+                      <span class="panel-subtitle">Je comprends l’impact mémoire (0,9–1,5 Go) avant téléchargement.</span>
+                    </label>
+                  </div>`
+                : ''
+            }
+          </div>
+        </details>
+
+        <!-- 3. ÉCOSYSTÈME DE SOURCES PUBLIQUES PRÉ-CÂBLÉES (0 CLÉ) -->
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Sources publiques pré-câblées (0 clé)</h2>
+              <p class="panel-subtitle">Bases scientifiques, API publiques gratuites et CDN officiels mis en cache dans IndexedDB pour le mode hors-ligne.</p>
+            </div>
+            <button type="button" class="btn btn-sm" id="btn-sync-external-cache">Synchroniser le cache</button>
+          </div>
+          <div class="sources-grid" id="external-sources-grid">
+            ${EXTERNAL_SOURCES_REGISTRY.map((src) => {
+              let detail = src.role || src.scope;
+              if (src.id === 'free_exercise_db' && extStat.freeExerciseCount) {
+                detail = `${extStat.freeExerciseCount} exercices en cache local`;
+              } else if (src.id === 'wger_v2' && extStat.wgerMusclesCount) {
+                detail = `${extStat.wgerMusclesCount} muscles & calques SVG en cache`;
+              } else if (src.id === 'open_meteo' && state.weather) {
+                detail = `${state.weather.city || 'Local'} · ${state.weather.temperatureC ?? state.weather.tempC}°C · +${state.weather.heatBonusMl ?? state.weather.heatHydrationBonusMl ?? 0}ml`;
+              } else if (src.id === 'ciqual') {
+                detail = `${207 + (state.ciqualExtension?.length || 0)} aliments de référence locaux`;
+              } else if (src.id === 'off_v2') {
+                detail = `${state.cachedFoods?.length || 0} produits scannés en cache + live v2`;
+              }
+              return `
+                <div class="source-status-card">
                   <div class="row-between">
-                    <span class="state-tag ${probe.ok ? 'is-ok' : 'is-danger'}">${probe.ok ? 'CONNEXION VALIDÉE' : 'ÉCHEC CONNEXION'}</span>
-                    <span class="mono metric-xs">${probe.latencyMs ?? 0} ms · HTTP ${probe.httpStatus ?? 'Réseau'}${probe.ok ? ` · Vision ${probe.visionSupported ? 'Oui' : 'Non'}` : ''}</span>
+                    <strong style="font-size: 0.8rem;">${esc(src.label)}</strong>
+                    <span class="mono metric-xs text-ok">0 CLÉ</span>
                   </div>
-                  <span class="mono metric-xs text-secondary">Moteur : ${esc(probe.provider || '')}${probe.visionModelUsed ? ` · Vision : ${esc(probe.visionModelUsed)}` : ''}${probe.authMode ? ` · ${esc(probe.authMode)}` : ''}</span>
-                  ${
-                    probe.endpointUrl
-                      ? `<div class="stack-sm" style="gap: 2px;">
-                          <span class="label-tech">URL appelée (sans clé)</span>
-                          <code class="code-box" style="padding: 6px 8px;">${esc(probe.endpointUrl)}</code>
-                        </div>`
-                      : ''
-                  }
-                  ${
-                    !probe.ok && probe.rawError
-                      ? `<div class="stack-sm" style="gap: 2px;">
-                          <span class="label-tech">Réponse brute serveur (HTTP ${probe.httpStatus ?? 'Réseau/CORS'})</span>
-                          <pre class="code-box" style="padding: 6px 8px;">${esc(probe.rawError)}</pre>
-                        </div>`
-                      : ''
-                  }
-                  ${
-                    probe.ok && !probe.visionSupported && probe.visionError
-                      ? `<div class="stack-sm" style="gap: 2px;">
-                          <span class="label-tech">Échec micro-test Vision (HTTP ${probe.visionHttpStatus ?? 'Réseau/CORS'})</span>
-                          ${probe.visionEndpointUrl ? `<code class="code-box" style="padding: 6px 8px;">${esc(probe.visionEndpointUrl)}</code>` : ''}
-                          <pre class="code-box" style="padding: 6px 8px;">${esc(probe.visionError)}</pre>
-                        </div>`
-                      : ''
-                  }
-                  <span style="font-size: 0.82rem;">${esc(probe.diagnostic || '')}</span>
-                  ${
-                    !probe.ok && Array.isArray(probe.suggestedModels) && probe.suggestedModels.length > 0
-                      ? `<div class="stack-sm" style="gap: 6px; margin-top: 2px;">
-                          <span class="label-tech text-accent">Modèles Gemini actifs recommandés (1 clic pour appliquer)</span>
-                          <div class="row-wrap">
-                            ${probe.suggestedModels
-                              .map(
-                                (mName) =>
-                                  `<button type="button" class="btn btn-xs btn-primary mono" data-pick-gemini-model="${esc(mName)}">Utiliser ${esc(mName)}</button>`
-                              )
-                              .join('')}
-                          </div>
-                        </div>`
-                      : ''
-                  }
-                  ${
-                    probe.ok && !probe.visionSupported && Array.isArray(probe.visionSuggestedModels) && probe.visionSuggestedModels.length > 0
-                      ? `<div class="stack-sm" style="gap: 6px; margin-top: 2px;">
-                          <span class="label-tech text-accent">Modèles Gemini actifs pour la Vision (1 clic)</span>
-                          <div class="row-wrap">
-                            ${probe.visionSuggestedModels
-                              .map(
-                                (mName) =>
-                                  `<button type="button" class="btn btn-xs btn-primary mono" data-pick-gemini-vision="${esc(mName)}">Vision : ${esc(mName)}</button>`
-                              )
-                              .join('')}
-                          </div>
-                        </div>`
-                      : ''
-                  }
-                </div>`
-              : `<div class="probe-card"><span class="panel-subtitle">Appuyez sur "Tester la connexion maintenant" pour vérifier votre clé et mesurer la latence réelle.</span></div>`
-          }
-        </div>
-      </section>
+                  <span class="mono metric-xs text-secondary">${esc(detail)}</span>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </section>
+      </div>
     `;
 
+    const cleanKeyValue = (val) =>
+      String(val || '')
+        .trim()
+        .replace(/^["'`]+|["'`]+$/g, '')
+        .replace(/[\r\n\t\s]+/g, '');
+
     const persistCurrentAI = async ({ silent = false } = {}) => {
+      const geminiField = document.getElementById('ai-gemini-key');
+      const advancedKeyField = document.getElementById('ai-key');
+
       if (s.activeTier === 1) {
         s.tier1Provider = document.getElementById('ai-t1-provider')?.value || 'puter';
         s.allowPublicBodyPhotos = Boolean(document.getElementById('ai-allow-public-body')?.checked);
       } else if (s.activeTier === 2) {
-        const rawUrl = (document.getElementById('ai-url')?.value || '').trim();
+        const rawUrl = (document.getElementById('ai-url')?.value || s.baseUrl || '').trim();
         const isGeminiUrl = s.tier2Preset === 'gemini' || rawUrl.includes('generativelanguage.googleapis.com');
         s.baseUrl = isGeminiUrl ? normalizeGeminiBaseUrl(rawUrl) : rawUrl;
         if (isGeminiUrl) {
@@ -6045,12 +6938,13 @@ function renderProfilSubTab(slot) {
             if (urlEl) urlEl.value = s.baseUrl;
           }
         }
-        s.model = (document.getElementById('ai-mod')?.value || '').trim();
-        s.visionModel = (document.getElementById('ai-vmod')?.value || '').trim();
-        s.apiKey = (document.getElementById('ai-key')?.value || '')
-          .trim()
-          .replace(/^["'`]+|["'`]+$/g, '')
-          .replace(/[\r\n\t\s]+/g, '');
+        s.model = (document.getElementById('ai-mod')?.value || s.model || '').trim();
+        s.visionModel = (document.getElementById('ai-vmod')?.value || s.visionModel || '').trim();
+        if (s.tier2Preset === 'gemini' && geminiField) {
+          s.apiKey = cleanKeyValue(geminiField.value);
+        } else if (advancedKeyField) {
+          s.apiKey = cleanKeyValue(advancedKeyField.value);
+        }
         s.groqWhisperEnabled = Boolean(document.getElementById('ai-whisper')?.checked);
       } else if (s.activeTier === 3) {
         s.tier3ModelId = document.getElementById('ai-t3-model')?.value || TIER3_MODELS[0].id;
@@ -6060,7 +6954,7 @@ function renderProfilSubTab(slot) {
       state.aiSettings = await saveAISettings(state.profile.id, s);
       const statusEl = document.getElementById('ai-autosave-status');
       if (statusEl && silent) {
-        statusEl.textContent = 'Enregistré automatiquement dans IndexedDB.';
+        statusEl.textContent = 'Enregistré automatiquement dans IndexedDB (x-goog-api-key).';
       }
     };
 
@@ -6070,6 +6964,20 @@ function renderProfilSubTab(slot) {
         persistCurrentAI({ silent: true });
       }, 300);
     };
+
+    // Champ unique Clé API Gemini : auto-active Gemini natif + auto-save debouncé SANS jamais détruire le focus
+    const geminiKeyInput = document.getElementById('ai-gemini-key');
+    geminiKeyInput?.addEventListener('input', () => {
+      const cleaned = cleanKeyValue(geminiKeyInput.value);
+      s.activeTier = 2;
+      s.tier2Preset = 'gemini';
+      s.protocol = 'gemini_native';
+      s.baseUrl = normalizeGeminiBaseUrl(TIER2_PRESETS.gemini.baseUrl);
+      if (!s.model || !s.model.includes('gemini')) s.model = TIER2_PRESETS.gemini.model;
+      if (!s.visionModel || !s.visionModel.includes('gemini')) s.visionModel = TIER2_PRESETS.gemini.visionModel;
+      s.apiKey = cleaned;
+      scheduleSilentAIPersist();
+    });
 
     slot.querySelectorAll('[data-set-tier]').forEach((btn) => {
       btn.addEventListener('click', async () => {
@@ -6099,13 +7007,9 @@ function renderProfilSubTab(slot) {
       renderProfilSubTab(slot);
     });
 
-    // Auto-sauvegarde debouncée + auto-détection du fournisseur SANS jamais détruire #ai-key (zéro perte de focus)
-    const keyInput = document.getElementById('ai-key');
-    keyInput?.addEventListener('input', () => {
-      const cleaned = keyInput.value
-        .trim()
-        .replace(/^["'`]+|["'`]+$/g, '')
-        .replace(/[\r\n\t\s]+/g, '');
+    const advKeyInput = document.getElementById('ai-key');
+    advKeyInput?.addEventListener('input', () => {
+      const cleaned = cleanKeyValue(advKeyInput.value);
       const detected = detectPresetFromApiKey(cleaned);
       s.apiKey = cleaned;
       if (detected && detected !== s.tier2Preset) {
@@ -6140,16 +7044,43 @@ function renderProfilSubTab(slot) {
 
     document.getElementById('btn-save-ai')?.addEventListener('click', async () => {
       await persistCurrentAI({ silent: false });
-      showToast('Paramètres IA enregistrés dans IndexedDB.');
+      showToast('Configuration IA enregistrée dans IndexedDB.');
     });
 
     document.getElementById('btn-probe-ai')?.addEventListener('click', async () => {
       await persistCurrentAI({ silent: true });
       const box = document.getElementById('ai-probe-result');
-      box.innerHTML = `<div class="probe-card"><span class="mono metric-xs text-accent">Test de connexion en cours...</span></div>`;
+      box.innerHTML = `<div class="probe-card"><span class="mono metric-xs text-accent">Test de connexion en cours (texte + vision)…</span></div>`;
       const res = await testAIConnection(state.aiSettings);
       state.lastProbeResult = res;
       renderProfilSubTab(slot);
+    });
+
+    document.getElementById('btn-sync-external-cache')?.addEventListener('click', async () => {
+      const btn = document.getElementById('btn-sync-external-cache');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Synchronisation…';
+      }
+      try {
+        await Promise.allSettled([
+          loadFreeExerciseCatalog({ forceRefresh: true }),
+          fetchWgerAnatomyCatalog({ forceRefresh: true }),
+          syncCiqualRemoteDataset(),
+          fetchWeatherHydrationContext(state.profile?.lifestyle || {}, { forceRefresh: true }).then((w) => {
+            if (w) state.weather = w;
+          }),
+        ]);
+        state.ciqualExtension = await getCachedCiqualExtension().catch(() => state.ciqualExtension);
+        state.externalStatus = await getExternalSourcesStatus().catch(() => state.externalStatus);
+        renderProfilSubTab(slot);
+        showToast('Cache hors-ligne synchronisé (free-exercise-db, wger, Ciqual, Open-Meteo).');
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Synchroniser le cache';
+        }
+      }
     });
 
     slot.querySelectorAll('[data-pick-gemini-model]').forEach((btn) => {
@@ -6161,7 +7092,7 @@ function renderProfilSubTab(slot) {
         state.aiSettings = await saveAISettings(state.profile.id, s);
         state.lastProbeResult = null;
         renderProfilSubTab(slot);
-        showToast(`Modèle ${picked} sélectionné — lancez "Tester la connexion".`);
+        showToast(`Modèle ${picked} sélectionné — clique sur "Tester la clé".`);
       });
     });
 
@@ -6173,7 +7104,7 @@ function renderProfilSubTab(slot) {
         state.aiSettings = await saveAISettings(state.profile.id, s);
         state.lastProbeResult = null;
         renderProfilSubTab(slot);
-        showToast(`Modèle vision ${picked} sélectionné — lancez "Tester la connexion".`);
+        showToast(`Modèle vision ${picked} sélectionné — clique sur "Tester la clé".`);
       });
     });
     return;
@@ -6181,47 +7112,112 @@ function renderProfilSubTab(slot) {
 
   if (state.profilSubTab === 'p2p') {
     const bridge = getHealthBridgeTemplates();
+    const capCfg = normalizeCapacitiesSettings(state.capacitiesSettings);
+    const capReady = isCapacitiesActive(capCfg);
     slot.innerHTML = `
-      <div class="grid-2">
-        <section class="panel">
-          <div class="panel-header">
-            <h2>Partage P2P Sans Serveur (LZ-String + QR)</h2>
-          </div>
-          <div class="row-wrap">
-            <button type="button" class="btn btn-sm btn-primary" data-share-type="program">Partager Programme</button>
-            <button type="button" class="btn btn-sm" data-share-type="stats_card">Partager Carte Streak</button>
-            <button type="button" class="btn btn-sm" data-share-type="workout">Partager Dernière Séance</button>
-          </div>
-          <div id="p2p-qr-box" style="display:flex;justify-content:center;"></div>
-          <div id="p2p-link-area" class="stack-sm"></div>
-          <hr class="divider" />
-          <div class="field">
-            <label class="field-label">Importer un lien P2P reçu</label>
-            <div class="input-action-row">
-              <input id="p2p-import-input" class="input mono" placeholder="Coller URL #share=..." />
-              <button type="button" class="btn btn-sm" id="btn-p2p-import">Importer</button>
+      <div class="stack">
+        <div class="grid-2">
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Partage P2P Sans Serveur (LZ-String + QR)</h2>
             </div>
-          </div>
-        </section>
+            <div class="row-wrap">
+              <button type="button" class="btn btn-sm btn-primary" data-share-type="program">Partager Programme</button>
+              <button type="button" class="btn btn-sm" data-share-type="stats_card">Partager Carte Streak</button>
+              <button type="button" class="btn btn-sm" data-share-type="workout">Partager Dernière Séance</button>
+            </div>
+            <div id="p2p-qr-box" style="display:flex;justify-content:center;"></div>
+            <div id="p2p-link-area" class="stack-sm"></div>
+            <hr class="divider" />
+            <div class="field">
+              <label class="field-label">Importer un lien P2P reçu</label>
+              <div class="input-action-row">
+                <input id="p2p-import-input" class="input mono" placeholder="Coller URL #share=..." />
+                <button type="button" class="btn btn-sm" id="btn-p2p-import">Importer</button>
+              </div>
+            </div>
+          </section>
 
-        <section class="panel">
-          <div class="panel-header">
-            <h2>Apple Santé / Health Connect & ntfy.sh</h2>
-          </div>
-          <div class="stack-sm">
-            <span class="label-tech">Raccourci iOS (Apple Santé) — Ouvrir URL :</span>
-            <pre class="code-box">${esc(bridge.iosShortcutUrl)}</pre>
-            <span class="label-tech">MacroDroid Android (Health Connect) :</span>
-            <pre class="code-box">${esc(bridge.androidMacroDroidUrl)}</pre>
-          </div>
-          <hr class="divider" />
-          <div class="field">
-            <label class="field-label">Canal privé ntfy.sh (rappels push gratuits, 0 clé)</label>
-            <div class="input-action-row">
-              <input id="ntfy-topic-input" class="input mono" placeholder="ex. kinetix-prive-8492" value="${esc(state.profile.ntfyTopic || '')}" />
-              <button type="button" class="btn btn-sm btn-primary" id="btn-test-ntfy">Tester</button>
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Apple Santé / Health Connect & ntfy.sh</h2>
             </div>
+            <div class="stack-sm">
+              <span class="label-tech">Raccourci iOS (Apple Santé) — Ouvrir URL :</span>
+              <pre class="code-box">${esc(bridge.iosShortcutUrl)}</pre>
+              <span class="label-tech">MacroDroid Android (Health Connect) :</span>
+              <pre class="code-box">${esc(bridge.androidMacroDroidUrl)}</pre>
+            </div>
+            <hr class="divider" />
+            <div class="field">
+              <label class="field-label">Canal privé ntfy.sh (rappels push gratuits, 0 clé)</label>
+              <div class="input-action-row">
+                <input id="ntfy-topic-input" class="input mono" placeholder="ex. kinetix-prive-8492" value="${esc(state.profile.ntfyTopic || '')}" />
+                <button type="button" class="btn btn-sm btn-primary" id="btn-test-ntfy">Tester</button>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- Export Capacities : Mode 0-Clé actif par défaut + API Automatique repliée -->
+        <section class="panel capacities-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Capacities · Daily Notes</h2>
+              <p class="panel-subtitle">
+                <strong>Mode 0-Clé actif par défaut</strong> : les boutons « Exporter vers Capacities » (Séance, Nutrition, Coach) copient le bilan Markdown propre et ouvrent <code>capacities://</code> ou le partage natif sans aucun réglage.
+              </p>
+            </div>
+            <span class="state-tag ${capReady ? 'is-ok' : 'is-accent'}">${capReady ? 'API AUTO' : 'MODE 0-CLÉ'}</span>
           </div>
+
+          <details class="advanced-accordion" ${capCfg.enabled ? 'open' : ''}>
+            <summary>Intégrations avancées · Capacities API Automatique (Optionnel)</summary>
+            <div class="advanced-accordion-body">
+              <label class="row" style="cursor: pointer;">
+                <input id="cap-enabled" type="checkbox" ${capCfg.enabled ? 'checked' : ''} />
+                <span style="font-size: 0.86rem; font-weight: 600;">Activer l’envoi direct via API Capacities (repli 0-Clé si bloqué)</span>
+              </label>
+
+              <div class="grid-2">
+                <div class="field">
+                  <label class="field-label" for="cap-token">API Token Capacities (stocké uniquement en local IndexedDB)</label>
+                  <input id="cap-token" class="input mono" type="password" autocomplete="off" placeholder="Coller ton token API Capacities..." value="${esc(capCfg.apiToken)}" />
+                </div>
+                <div class="field">
+                  <label class="field-label" for="cap-proxy">URL Proxy CORS (optionnel, ex. Cloudflare Worker)</label>
+                  <input id="cap-proxy" class="input mono" type="url" autocomplete="off" placeholder="Optionnel : https://mon-worker.workers.dev" value="${esc(capCfg.corsProxyUrl)}" />
+                </div>
+              </div>
+
+              <div class="grid-2">
+                <div class="field">
+                  <label class="field-label" for="cap-space-select">Espace Capacities cible</label>
+                  <select id="cap-space-select" class="select">
+                    <option value="">— Charger tes espaces ou coller un ID —</option>
+                    ${(capCfg.spaces || [])
+                      .map(
+                        (sp) =>
+                          `<option value="${esc(sp.id)}" ${sp.id === capCfg.spaceId ? 'selected' : ''}>${esc(sp.title)} (${esc(sp.id.slice(0, 8))}…)</option>`
+                      )
+                      .join('')}
+                  </select>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="cap-space-manual">Ou Space ID manuel</label>
+                  <input id="cap-space-manual" class="input mono" type="text" autocomplete="off" placeholder="UUID de l’espace" value="${esc(capCfg.spaceId)}" />
+                </div>
+              </div>
+
+              <div class="row-wrap">
+                <button type="button" class="btn btn-sm" id="btn-cap-load-spaces">Charger mes Espaces</button>
+                <button type="button" class="btn btn-sm btn-primary" id="btn-cap-save">Enregistrer</button>
+                <button type="button" class="btn btn-sm" id="btn-cap-test">Tester l’envoi</button>
+              </div>
+
+              <div id="cap-status-slot"></div>
+            </div>
+          </details>
         </section>
       </div>
     `;
@@ -6298,6 +7294,91 @@ function renderProfilSubTab(slot) {
         showToast(`Notification envoyée sur ntfy.sh/${topic}.`);
       } catch (err) {
         showToast(err.message);
+      }
+    });
+
+    // Contrôles Capacities (100 % optionnel)
+    const readCapForm = () => {
+      const selectVal = (document.getElementById('cap-space-select')?.value || '').trim();
+      const manualVal = (document.getElementById('cap-space-manual')?.value || '').trim();
+      const spaceId = selectVal || manualVal;
+      const existingSpaces = state.capacitiesSettings?.spaces || [];
+      const matchedSpace = existingSpaces.find((s) => s.id === spaceId);
+      return normalizeCapacitiesSettings({
+        enabled: Boolean(document.getElementById('cap-enabled')?.checked),
+        apiToken: (document.getElementById('cap-token')?.value || '').trim(),
+        corsProxyUrl: (document.getElementById('cap-proxy')?.value || '').trim(),
+        spaceId,
+        spaceTitle: matchedSpace?.title || state.capacitiesSettings?.spaceTitle || '',
+        spaces: existingSpaces,
+      });
+    };
+
+    const setCapStatus = (html) => {
+      const el = document.getElementById('cap-status-slot');
+      if (el) el.innerHTML = html;
+    };
+
+    document.getElementById('cap-space-select')?.addEventListener('change', (e) => {
+      const manualEl = document.getElementById('cap-space-manual');
+      if (manualEl && e.target.value) manualEl.value = e.target.value;
+    });
+
+    document.getElementById('btn-cap-load-spaces')?.addEventListener('click', async () => {
+      const draft = readCapForm();
+      setCapStatus(`<p class="panel-subtitle mono">Chargement de tes Espaces Capacities...</p>`);
+      const res = await fetchCapacitiesSpaces(draft);
+      if (!res.ok) {
+        setCapStatus(
+          `<div class="notice notice-danger"><span>${esc(res.message)}${
+            res.corsBlocked
+              ? ' — Solution : renseigne une URL de proxy CORS (ex. Cloudflare Worker) ou utilise le bouton "Copier bilan Markdown" intégré.'
+              : ''
+          }</span></div>`
+        );
+        return;
+      }
+      const nextCfg = normalizeCapacitiesSettings({
+        ...draft,
+        spaces: res.spaces,
+        spaceId: draft.spaceId || res.spaces[0]?.id || '',
+        spaceTitle: res.spaces.find((s) => s.id === (draft.spaceId || res.spaces[0]?.id))?.title || '',
+      });
+      await saveCapacitiesSettings(state.profile.id, nextCfg);
+      state.capacitiesSettings = nextCfg;
+      renderProfilSubTab(slot);
+      showToast(`${res.spaces.length} espace(s) Capacities chargé(s).`);
+    });
+
+    document.getElementById('btn-cap-save')?.addEventListener('click', async () => {
+      const nextCfg = readCapForm();
+      await saveCapacitiesSettings(state.profile.id, nextCfg);
+      state.capacitiesSettings = nextCfg;
+      renderProfilSubTab(slot);
+      showToast(isCapacitiesActive(nextCfg) ? 'Intégration Capacities enregistrée et active.' : 'Réglages Capacities enregistrés.');
+    });
+
+    document.getElementById('btn-cap-test')?.addEventListener('click', async () => {
+      const nextCfg = readCapForm();
+      await saveCapacitiesSettings(state.profile.id, nextCfg);
+      state.capacitiesSettings = nextCfg;
+      const sampleMd = `### Test Kinetix Lab (${getTodayISO()})\n- **Athlète** : ${state.profile.name}\n- **Connexion Capacities** : opérationnelle.`;
+      setCapStatus(`<p class="panel-subtitle mono">Envoi test vers Capacities Daily Note...</p>`);
+      const res = await saveToCapacitiesDailyNote(nextCfg, sampleMd);
+      if (res.ok) {
+        setCapStatus(`<div class="notice notice-accent"><span>Envoi réussi dans ta Daily Note Capacities (HTTP ${res.status || 200}).</span></div>`);
+        showToast('Test Capacities réussi.');
+      } else {
+        setCapStatus(
+          `<div class="notice notice-danger">
+            <span>${esc(res.message)}</span>
+            <button type="button" class="btn btn-xs btn-primary" id="btn-cap-test-copy">Copier bilan Markdown</button>
+          </div>`
+        );
+        document.getElementById('btn-cap-test-copy')?.addEventListener('click', async () => {
+          const ok = await copyMarkdownFallback(sampleMd);
+          showToast(ok ? 'Markdown test copié dans le presse-papiers.' : 'Copie non supportée par ce navigateur.');
+        });
       }
     });
     return;

@@ -31,6 +31,7 @@ import {
   computeCoherentMacrosForCalories,
   getProfileAdaptiveAdjustmentKcal,
 } from './nutrition-db.js';
+import { buildCoachFullContext } from './coach-context.js';
 
 export const ACTIONS_START_MARKER = '<<<KINETIX_ACTIONS>>>';
 export const ACTIONS_END_MARKER = '<<<END_ACTIONS>>>';
@@ -182,83 +183,42 @@ export function buildAgenticCoachSystemPrompt({
   profile,
   program,
   telemetry,
+  proIntel = null,
+  weather = null,
   workouts = [],
+  biometrics = [],
+  nutritionAll = [],
   nutritionToday = [],
   hydration = { totalMl: 0 },
   activeSession = null,
+  lastPhysiqueAnalysis = null,
 }) {
-  const { ewma, adaptive, macros, consumed } = telemetry;
-  const trainingSummary = buildCoachRuntimeContext(profile, program, workouts);
-  const adaptiveAdj = getProfileAdaptiveAdjustmentKcal(profile);
-  const memoryItems = Array.isArray(profile?.coachMemory) ? profile.coachMemory : [];
+  const fullContext = buildCoachFullContext({
+    profile,
+    program,
+    telemetry,
+    proIntel,
+    weather,
+    workouts,
+    biometrics,
+    nutritionAll,
+    nutritionToday,
+    hydration,
+    activeSession,
+    lastPhysiqueAnalysis,
+  });
 
-  // Résumé compact des séances du programme actif avec exerciseId réels
-  const programLines = (program?.days || [])
-    .map((day, dIdx) => {
-      const exList = (day.exercises || [])
-        .map(
-          (ex) =>
-            `${ex.exerciseId} ("${ex.name}", ${ex.sets}×${ex.repRange?.[0] || 8}-${ex.repRange?.[1] || 12} @ ${ex.suggestedLoadKg}kg, RIR ${ex.targetRir})`
-        )
-        .join(' ; ');
-      return `  - Jour ${dIdx + 1} [${day.name}] : ${exList}`;
-    })
-    .join('\n');
-
-  // Repas logués aujourd'hui
-  const todayMealsLine =
-    (nutritionToday || []).length > 0
-      ? nutritionToday
-          .slice(0, 8)
-          .map((m) => `${m.label} (${m.kcal} kcal, P ${m.proteinG}g/G ${m.carbsG}g/L ${m.fatG}g)`)
-          .join(' | ')
-      : 'aucun repas logué';
-
-  // Mémoire du Coach avec IDs pour permettre REMOVE_COACH_MEMORY
-  const memoryLines =
-    memoryItems.length > 0
-      ? memoryItems.map((m) => `[${m.id}] ${m.text}`).join(' | ')
-      : 'aucun repère mémorisé';
-
-  // Catalogue compact des IDs valides d'exercices pour SWAP_EXERCISE
+  // Catalogue compact des IDs valides d'exercices pour SWAP_EXERCISE / UPDATE_WORKOUT_EXERCISE
   const validExerciseIdsLine = EXERCISES_DB.map((e) => `${e.id}:${e.name}`).join(' | ');
-
-  const morph = profile?.morphology || {};
-  const morphSummary = [
-    morph.morphotype ? `Morphotype ${morph.morphotype}` : null,
-    `Fémur/Buste: ${morph.femurTorsoRatio || 'balanced'}`,
-    `Envergure: ${morph.armSpanRatio || 'balanced'}`,
-    `Clavicules: ${morph.claviclePelvisRatio || 'balanced'}`,
-    `Cage: ${morph.ribcageType || 'medium'}`,
-    Array.isArray(morph.postureFlags) && morph.postureFlags.length ? `Posture: ${morph.postureFlags.join(', ')}` : 'Posture: neutre',
-  ]
-    .filter(Boolean)
-    .join(' · ');
 
   return `Tu es le Coach IA Biomécanique & Nutritionnel de Kinetix Lab. Tu réponds en français concis, structuré (puces courtes, chiffres précis, zéro blabla).
 Tu as un VÉRITABLE contrôle lecture + écriture sur la base de données locale de l'application via un bloc d'actions JSON.
 
 === RÈGLE CRITIQUE ANTI-BLUFF ===
-Tu n'as JAMAIS le droit d'affirmer avoir modifié la nutrition, le programme, un exercice, le profil, un repas ou ta mémoire SANS émettre le bloc d'actions JSON correspondant à la toute fin de ta réponse.
+Tu n'as JAMAIS le droit d'affirmer avoir modifié la nutrition, le programme, un exercice, le profil, un repas, un favori, la liste de courses ou ta mémoire SANS émettre le bloc d'actions JSON correspondant à la toute fin de ta réponse.
 Si l'utilisateur demande une modification (ou te donne une information durable à retenir comme une douleur, un objectif, une préférence), ou t'envoie une photo contenant des données exploitables, tu DOIS inclure le bloc JSON exact ci-dessous. Si tu réponds à une simple question informative sans rien modifier, n'émets aucun bloc JSON.
 
-=== ÉTAT TEMPS RÉEL DE L'ATHLÈTE ===
-- Profil : ${profile?.name || 'Athlète'}, ${profile?.sex || 'male'}, ${profile?.age || 28} ans, ${profile?.heightCm || 176} cm, ${profile?.weightKg || 75} kg (Masse maigre est. ${macros.leanMassKg} kg)
-- Morpho & Posture : ${morphSummary}
-- Objectif : ${profile?.goal || 'recomp'} · Niveau : ${profile?.level || 'intermediate'} · Activité NEAT : ${profile?.lifestyle?.neatLevel || 'mixed'}
-- Régime : ${profile?.nutritionPrefs?.dietType || 'omnivore'} · Allergies : ${(profile?.nutritionPrefs?.allergies || []).join(', ') || 'aucune'} · Repas/j : ${profile?.nutritionPrefs?.mealsPerDay || 3}
-- Matériel : ${(profile?.equipment || []).join(', ') || 'bodyweight'}
-- Blessures/Sensibilités : ${(profile?.injuries || []).map((i) => `${i.zone}(sev ${i.severity})`).join(', ') || 'aucune'}
-- Priorités [LAG] : ${(profile?.lagPriorities || []).join(', ') || 'aucune'}
-- EWMA : ${ewma?.latestEwmaKg ?? profile?.weightKg} kg · Tendance : ${ewma?.weeklyDeltaKg ?? 0} kg/sem · Ajustement adaptatif actif : ${adaptiveAdj} kcal (borné [-400, +400])
-- Nutrition Cible : ${macros.kcal} kcal (P ${macros.proteinG}g · G ${macros.carbsG}g · L ${macros.fatG}g · Eau ${macros.waterTargetMl} ml) · Mode : ${macros.isOverride ? `SURCHARGE (${macros.overrideSource}${macros.overrideLocked ? ', VERROUILLÉE' : ''})` : 'AUTO'} · TDEE : ${adaptive.estimatedTdeeKcal} kcal · Plancher sûr : ${macros.safeFloorKcal} kcal
-- Nutrition Aujourd'hui : ${consumed.kcal} kcal (P ${consumed.proteinG}g · G ${consumed.carbsG}g · L ${consumed.fatG}g) · Eau : ${hydration?.totalMl || 0} ml
-- Repas du jour : ${todayMealsLine}
-- Programme actif : ${trainingSummary.activeSplitLabel} (${program?.splitType || 'auto'}) · Méthode : ${trainingSummary.activeMethodLabel} (${program?.progressionMethod || 'double_progression'}) · Phase : ${program?.phase || 'calibration'} (Sem. ${program?.weekNumber || 1}) · ${profile?.sessionsPerWeek || 4} j/sem · ${profile?.sessionDurationMin || 60} min${activeSession ? ` · Séance en cours : ${activeSession.dayName}` : ''}
-- Exercices du programme actif :
-${programLines || '  (aucun)'}
-- Retours séances récentes (${trainingSummary.recentWorkoutsCount} séances, Readiness moyen ${trainingSummary.readinessAvg ?? 'N/A'}/100) : Douleurs [${trainingSummary.painExercises.join(', ') || 'aucune'}] · Limites [${trainingSummary.limitExercises.join(', ') || 'aucun'}] · Faciles [${trainingSummary.easyExercises.join(', ') || 'aucun'}]
-- Mémoire du Coach (${memoryItems.length} repères) : ${memoryLines}
+${fullContext.promptText}
 
 === PROTOCOLE VISION MULTIMODALE (SI PHOTO JOINTE) ===
 Lorsque l'utilisateur t'envoie une photo, identifie automatiquement sa catégorie et émets les actions structurées correspondantes (qui seront présentées en carte de confirmation sélective avant écriture) :
@@ -283,14 +243,17 @@ Catalogue des actions supportées :
 5. DELETE_LAST_MEAL : {}
 6. LOG_BIOMETRICS : {"weightKg": 78.4, "bodyFatPct": 16.2, "muscleMassKg": 62.1, "skeletalMuscleKg": 36.4, "visceralFat": 6, "hydrationPct": 58.2, "bmrKcal": 1810, "waistCm": 82}
 7. SAVE_CUSTOM_FOOD : {"name": "Skyr nature", "brand": "Yoplait", "kcal": 62, "protein": 9.8, "carbs": 4.0, "fat": 0.2, "fiber": 0, "portionLabel": "1 pot", "portionGrams": 150}
-8. UPDATE_PROFILE : {"goal": "fat_loss|recomp|lean_bulk|hypertrophy|strength|health_posture", "weight": 82, "bodyFat": 16, "waistCm": 82, "bmrKcal": 1810, "activityLevel": "sedentary|mixed|active", "sessionsPerWeek": 4, "sessionDuration": 60, "equipment": ["barbell","dumbbells","cables","machines","bench","pullup_bar"], "addEquipment": ["kettlebell"], "diet": "omnivore|vegetarian|vegan|pescatarian|halal|gluten_free", "allergies": ["dairy"], "injuries": [{"zone":"shoulder","severity":2}], "lagPriorities": ["delts_lat","pecs_upper"], "dominantGroups": ["quads"], "morphology": {"morphotype": "mesomorph", "femurTorsoRatio": "long_femur|balanced|short_femur", "armSpanRatio": "long_arms|balanced|short_arms", "claviclePelvisRatio": "broad_shoulders|balanced|narrow_shoulders", "ribcageType": "narrow|medium|wide", "postureFlags": ["anterior_pelvic_tilt","kyphosis","forward_head","protracted_shoulders"]}}
-9. APPLY_PHYSIQUE_ASSESSMENT : {"lagPriorities": ["delts_lat","lats_width"], "dominantGroups": ["delts_ant"], "asymmetries": [{"zone": "Ceinture scapulaire", "description": "Épaule droite plus basse"}], "rebuildProgram": true}
-10. MUTATE_PROGRAM : {"split": "full_body|upper_lower|ppl|hybrid|arnold|bro_split", "method": "double_progression|reverse_pyramid|top_set_backoff|classic_pyramid|rest_pause|dup", "sessionsPerWeek": 3, "sessionDurationMin": 45, "phase": "calibration|accumulation|intensification|deload", "preservationMode": true, "setsDelta": -1, "repsDelta": 2, "rirDelta": 1, "regenerate": true}
-11. SWAP_EXERCISE : {"fromExerciseId": "id_existant", "toExerciseId": "id_valide_ci_dessous"} OU {"painZone": "shoulder|lumbar|knee|elbow|wrist|neck"}
-12. SAVE_COACH_MEMORY : {"text": "Préfère les haltères au squat barre", "category": "preference|pain|nutrition|training|posture"}
-13. REMOVE_COACH_MEMORY : {"id": "mem_xxx"} ou {"match": "texte à oublier"}
+8. SAVE_FAVORITE_MEAL : {"name": "Bowl Post-Séance", "kcal": 620, "protein": 48, "carbs": 75, "fat": 14, "fiber": 6}
+9. ADD_SHOPPING_ITEMS : {"items": [{"name": "Skyr 0%", "quantity": "4", "unit": "pots", "aisle": "Crèmerie & Œufs"}]}
+10. UPDATE_PROFILE : {"goal": "fat_loss|recomp|lean_bulk|hypertrophy|strength|health_posture", "weight": 82, "bodyFat": 16, "waistCm": 82, "bmrKcal": 1810, "activityLevel": "sedentary|mixed|active", "sessionsPerWeek": 4, "sessionDuration": 60, "equipment": ["barbell","dumbbells","cables","machines","bench","pullup_bar"], "addEquipment": ["kettlebell"], "diet": "omnivore|vegetarian|vegan|pescatarian|halal|gluten_free", "allergies": ["dairy"], "injuries": [{"zone":"shoulder","severity":2}], "lagPriorities": ["delts_lat","pecs_upper"], "dominantGroups": ["quads"], "morphology": {"morphotype": "mesomorph", "femurTorsoRatio": "long_femur|balanced|short_femur", "armSpanRatio": "long_arms|balanced|short_arms", "claviclePelvisRatio": "broad_shoulders|balanced|narrow_shoulders", "ribcageType": "narrow|medium|wide", "postureFlags": ["anterior_pelvic_tilt","kyphosis","forward_head","protracted_shoulders"]}}
+11. APPLY_PHYSIQUE_ASSESSMENT : {"lagPriorities": ["delts_lat","lats_width"], "dominantGroups": ["delts_ant"], "asymmetries": [{"zone": "Ceinture scapulaire", "description": "Épaule droite plus basse"}], "rebuildProgram": true}
+12. MUTATE_PROGRAM : {"split": "full_body|upper_lower|ppl|hybrid|arnold|bro_split", "method": "double_progression|reverse_pyramid|top_set_backoff|classic_pyramid|rest_pause|dup", "sessionsPerWeek": 3, "sessionDurationMin": 45, "phase": "calibration|accumulation|intensification|deload", "preservationMode": true, "setsDelta": -1, "repsDelta": 2, "rirDelta": 1, "regenerate": true}
+13. UPDATE_WORKOUT_EXERCISE : {"exerciseId": "id_existant", "dayIndex": 0, "sets": 4, "repMin": 6, "repMax": 10, "suggestedLoadKg": 85, "targetRir": 1, "restSec": 150}
+14. SWAP_EXERCISE : {"fromExerciseId": "id_existant", "toExerciseId": "id_valide_ci_dessous"} OU {"painZone": "shoulder|lumbar|knee|elbow|wrist|neck"}
+15. SAVE_COACH_MEMORY : {"text": "Préfère les haltères au squat barre", "category": "preference|pain|nutrition|training|posture"}
+16. REMOVE_COACH_MEMORY : {"id": "mem_xxx"} ou {"match": "texte à oublier"}
 
-IDs d'exercices valides pour SWAP_EXERCISE :
+IDs d'exercices valides pour SWAP_EXERCISE / UPDATE_WORKOUT_EXERCISE :
 ${validExerciseIdsLine}`;
 }
 
@@ -306,13 +269,22 @@ export function parseCoachActionsResponse(rawText) {
   }
 
   const afterStart = text.slice(startIdx + ACTIONS_START_MARKER.length);
-  const endIdx = afterStart.indexOf(ACTIONS_END_MARKER);
+  const endMarkerCandidates = [ACTIONS_END_MARKER, '<<<END_KINETIX_ACTIONS>>>'];
+  let endIdx = -1;
+  let matchedEndLen = ACTIONS_END_MARKER.length;
+  for (const marker of endMarkerCandidates) {
+    const idx = afterStart.indexOf(marker);
+    if (idx !== -1 && (endIdx === -1 || idx < endIdx)) {
+      endIdx = idx;
+      matchedEndLen = marker.length;
+    }
+  }
 
   let jsonSegment = '';
   let trailingText = '';
   if (endIdx !== -1) {
     jsonSegment = afterStart.slice(0, endIdx).trim();
-    trailingText = afterStart.slice(endIdx + ACTIONS_END_MARKER.length).trim();
+    trailingText = afterStart.slice(endIdx + matchedEndLen).trim();
   } else {
     jsonSegment = afterStart.trim();
   }
@@ -588,6 +560,8 @@ export async function executeCoachActions(actions = [], deps = {}) {
     addedMealIds: [],
     deletedMeals: [],
     addedCustomFoodIds: [],
+    addedFavoriteIds: [],
+    addedShoppingIds: [],
     biometricsModified: false,
     programModified: false,
     profileModified: false,
@@ -847,6 +821,65 @@ export async function executeCoachActions(actions = [], deps = {}) {
         snapshot.addedCustomFoodIds.push(savedFood.id);
         changedModules.add('nutrition');
         executedBadges.push(`EXÉCUTÉ · Aliment perso : ${savedFood.name} (${savedFood.kcal} kcal/100g)`);
+        continue;
+      }
+
+      /* ---------------- 4c-bis. SAVE_FAVORITE_MEAL ---------------- */
+      if (type === 'SAVE_FAVORITE_MEAL') {
+        if (typeof db.saveFavorite !== 'function') {
+          errors.push('SAVE_FAVORITE_MEAL indisponible.');
+          continue;
+        }
+        const name = String(payload.name || payload.label || '').trim().slice(0, 90);
+        if (!name) {
+          errors.push('SAVE_FAVORITE_MEAL ignoré : nom manquant.');
+          continue;
+        }
+        const proteinG = Math.max(0, Math.round((Number(payload.protein ?? payload.proteinG) || 0) * 10) / 10);
+        const carbsG = Math.max(0, Math.round((Number(payload.carbs ?? payload.carbsG) || 0) * 10) / 10);
+        const fatG = Math.max(0, Math.round((Number(payload.fat ?? payload.fatG) || 0) * 10) / 10);
+        const fiberG = Math.max(0, Math.round((Number(payload.fiber ?? payload.fiberG) || 0) * 10) / 10);
+        const kcal = Math.max(0, Math.round(Number(payload.kcal ?? payload.calories) || proteinG * 4 + carbsG * 4 + fatG * 9));
+        const savedFav = await db.saveFavorite(curProfile.id, {
+          name,
+          kcal,
+          proteinG,
+          carbsG,
+          fatG,
+          fiberG,
+          ingredients: Array.isArray(payload.ingredients) ? payload.ingredients : undefined,
+        });
+        snapshot.addedFavoriteIds.push(savedFav.id);
+        changedModules.add('nutrition');
+        executedBadges.push(`EXÉCUTÉ · Favori enregistré : ${savedFav.name} (${savedFav.kcal} kcal)`);
+        continue;
+      }
+
+      /* ---------------- 4c-ter. ADD_SHOPPING_ITEMS ---------------- */
+      if (type === 'ADD_SHOPPING_ITEMS') {
+        if (typeof db.saveShoppingItem !== 'function') {
+          errors.push('ADD_SHOPPING_ITEMS indisponible.');
+          continue;
+        }
+        const rawItems = Array.isArray(payload.items) ? payload.items : payload.name ? [payload] : [];
+        let added = 0;
+        for (const it of rawItems.slice(0, 20)) {
+          const itemName = String(typeof it === 'string' ? it : it?.name || '').trim().slice(0, 80);
+          if (!itemName) continue;
+          const savedItem = await db.saveShoppingItem(curProfile.id, {
+            name: itemName,
+            quantity: String(it?.quantity ?? '1').trim(),
+            unit: String(it?.unit ?? '').trim(),
+            aisle: String(it?.aisle || 'Épicerie & Divers').trim(),
+            checked: false,
+          });
+          snapshot.addedShoppingIds.push(savedItem.id);
+          added += 1;
+        }
+        if (added > 0) {
+          changedModules.add('nutrition');
+          executedBadges.push(`EXÉCUTÉ · Liste de courses : +${added} article${added > 1 ? 's' : ''}`);
+        }
         continue;
       }
 
@@ -1224,6 +1257,83 @@ export async function executeCoachActions(actions = [], deps = {}) {
         continue;
       }
 
+      /* ---------------- 7b. UPDATE_WORKOUT_EXERCISE ---------------- */
+      if (type === 'UPDATE_WORKOUT_EXERCISE') {
+        if (!curProgram?.days?.length) {
+          errors.push('UPDATE_WORKOUT_EXERCISE : aucun programme actif.');
+          continue;
+        }
+        const matches = findProgramExerciseSlot(curProgram, {
+          fromExerciseId: payload.exerciseId || payload.fromExerciseId,
+          fromName: payload.name || payload.exerciseName,
+          dayIndex: payload.dayIndex,
+        });
+        if (matches.length === 0) {
+          errors.push('UPDATE_WORKOUT_EXERCISE : exercice ciblé introuvable dans le programme actif.');
+          continue;
+        }
+        const matchSet = new Set(matches.map((m) => `${m.dayIdx}:${m.exIdx}`));
+        const firstSlot = matches[0].slot;
+
+        const updatedDays = curProgram.days.map((day, dIdx) => ({
+          ...day,
+          exercises: (day.exercises || []).map((slot, eIdx) => {
+            if (!matchSet.has(`${dIdx}:${eIdx}`)) return slot;
+            const nextSets = Number.isFinite(Number(payload.sets))
+              ? Math.max(1, Math.min(8, Math.round(Number(payload.sets))))
+              : slot.sets;
+            const nextRepMin = Number.isFinite(Number(payload.repMin))
+              ? Math.max(2, Math.min(30, Math.round(Number(payload.repMin))))
+              : slot.repMin ?? slot.repRange?.[0] ?? 8;
+            const nextRepMax = Number.isFinite(Number(payload.repMax))
+              ? Math.max(nextRepMin, Math.min(35, Math.round(Number(payload.repMax))))
+              : Math.max(nextRepMin, slot.repMax ?? slot.repRange?.[1] ?? 12);
+            const nextLoad = Number.isFinite(Number(payload.suggestedLoadKg ?? payload.loadKg))
+              ? roundToIncrement(Math.max(0, Number(payload.suggestedLoadKg ?? payload.loadKg)), slot.incrementKg || 2.5)
+              : slot.suggestedLoadKg;
+            const nextRir = Number.isFinite(Number(payload.targetRir ?? payload.rir))
+              ? Math.max(0, Math.min(5, Math.round(Number(payload.targetRir ?? payload.rir))))
+              : slot.targetRir;
+            const nextRest = Number.isFinite(Number(payload.restSec))
+              ? Math.max(30, Math.min(300, Math.round(Number(payload.restSec))))
+              : slot.restSec;
+            const dbEx = getExerciseById(slot.exerciseId);
+            return {
+              ...slot,
+              sets: nextSets,
+              repMin: nextRepMin,
+              repMax: nextRepMax,
+              repRange: [nextRepMin, nextRepMax],
+              suggestedLoadKg: nextLoad,
+              targetRir: nextRir,
+              restSec: nextRest,
+              setScheme: dbEx
+                ? buildSetScheme(dbEx, {
+                    sets: nextSets,
+                    repMin: nextRepMin,
+                    repMax: nextRepMax,
+                    targetRir: nextRir,
+                    suggestedLoadKg: nextLoad,
+                    method: slot.method || curProgram.progressionMethod || 'double_progression',
+                    restSec: nextRest,
+                    dayIndex: dIdx,
+                  })
+                : slot.setScheme,
+            };
+          }),
+        }));
+
+        curProgram = await db.saveProgram(curProfile.id, {
+          ...curProgram,
+          days: updatedDays,
+          weeklyVolume: calculateWeeklyVolume(updatedDays),
+        });
+        snapshot.programModified = true;
+        changedModules.add('program');
+        executedBadges.push(`EXÉCUTÉ · Exercice ajusté : ${firstSlot.name}`);
+        continue;
+      }
+
       /* ---------------- 8. SWAP_EXERCISE ---------------- */
       if (type === 'SWAP_EXERCISE') {
         if (!curProgram?.days?.length) {
@@ -1411,6 +1521,16 @@ export async function executeCoachActions(actions = [], deps = {}) {
           if (typeof db.deleteCustomFood === 'function') {
             for (const cfId of snapshot.addedCustomFoodIds) {
               await db.deleteCustomFood(cfId);
+            }
+          }
+          if (typeof db.deleteFavorite === 'function') {
+            for (const favId of snapshot.addedFavoriteIds) {
+              await db.deleteFavorite(favId);
+            }
+          }
+          if (typeof db.deleteShoppingItem === 'function') {
+            for (const shId of snapshot.addedShoppingIds) {
+              await db.deleteShoppingItem(shId);
             }
           }
         }

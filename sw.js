@@ -8,7 +8,7 @@
  * - Network-Only strict pour tous les endpoints IA, GitHub API et ntfy.sh
  */
 
-const SHELL_CACHE = 'kinetix-shell-v1.7.0';
+const SHELL_CACHE = 'kinetix-shell-v1.9.1';
 const MEDIA_CACHE = 'kinetix-exercise-media-v2';
 const FONTS_CACHE = 'kinetix-fonts-v1';
 const CDN_CACHE = 'kinetix-cdn-v1';
@@ -31,11 +31,15 @@ const CORE_SHELL_ASSETS = [
 
 const OPTIONAL_MODULE_ASSETS = [
   './js/exercises-db.js',
+  './js/external-sources.js',
   './js/biomechanics-engine.js',
   './js/physique-lab.js',
   './js/nutrition-db.js',
   './js/nutrition-advisor.js',
+  './js/pro-intelligence.js',
+  './js/coach-context.js',
   './js/coach-actions.js',
+  './js/capacities-sync.js',
   './js/timer.js',
   './js/p2p-share.js',
   './js/ui.js',
@@ -55,6 +59,9 @@ const NETWORK_ONLY_HOSTS = [
   'api.puter.com',
   'world.openfoodfacts.org',
   'fr.openfoodfacts.org',
+  'api.capacities.io',
+  'api.open-meteo.com',
+  'geocoding-api.open-meteo.com',
 ];
 
 function isExerciseMediaRequest(url) {

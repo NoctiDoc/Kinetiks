@@ -75,12 +75,12 @@ export const TIER2_PRESETS = Object.freeze({
     protocol: 'gemini_native',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     model: 'gemini-flash-lite-latest',
-    visionModel: 'gemini-3.7-flash',
+    visionModel: 'gemini-flash-lite-latest',
     requiresApiKey: true,
     supportsVision: true,
     supportsWhisper: false,
     corsNote:
-      'CORS natif navigateur via x-goog-api-key. Compatible clés AQ. (Google AI Studio) et AIza…. Si HTTP 401 : vérifiez que "Generative Language API" est bien autorisée dans Google Cloud Console → Credentials.',
+      'Pré-câblé d’usine : en-tête x-goog-api-key uniquement, bascule auto gemini-flash-lite-latest → gemini-2.5-flash. Compatible clés AQ. et AIza…',
   },
   openai: {
     id: 'openai',
@@ -146,15 +146,20 @@ export const TIER3_MODELS = Object.freeze([
   },
 ]);
 
+export const GEMINI_FAILOVER_MODELS = Object.freeze([
+  'gemini-flash-lite-latest',
+  'gemini-2.5-flash',
+]);
+
 export const DEFAULT_AI_SETTINGS = Object.freeze({
-  activeTier: AI_TIERS.TIER_1_FREE_CLOUD,
+  activeTier: AI_TIERS.TIER_2_BYO,
   tier1Provider: 'puter', // 'puter' | 'pollinations'
   allowPublicBodyPhotos: false, // Garde-fou confidentialité strict par défaut
-  tier2Preset: 'ollama',
-  protocol: 'openai',
-  baseUrl: TIER2_PRESETS.ollama.baseUrl,
-  model: TIER2_PRESETS.ollama.model,
-  visionModel: TIER2_PRESETS.ollama.visionModel,
+  tier2Preset: 'gemini',
+  protocol: 'gemini_native',
+  baseUrl: TIER2_PRESETS.gemini.baseUrl,
+  model: TIER2_PRESETS.gemini.model,
+  visionModel: TIER2_PRESETS.gemini.visionModel,
   apiKey: '',
   groqWhisperEnabled: false,
   tier3ModelId: TIER3_MODELS[0].id,
@@ -1179,48 +1184,25 @@ export function buildGeminiGenerateUrl(rawBaseUrl, rawModel) {
 }
 
 /**
- * Exécute un appel Gemini REST natif en passant la clé via x-goog-api-key,
- * avec repli automatique en ?key= si le préflight CORS échoue sur navigateur mobile,
- * et jusqu'à 2 retries automatiques (espacés de 2 s) uniquement sur HTTP 503.
+ * Exécute un appel Gemini REST natif en passant OBLIGATOIREMENT la clé via l'en-tête HTTP
+ * `x-goog-api-key` (jamais `?key=` dans l'URL), avec retry léger sur HTTP 503.
  */
 async function fetchGeminiWithAuthFallback(
   safeUrl,
-  { method = 'POST', body = null, apiKey, signal, max503Retries = 2, retryDelayMs = 2000 }
+  { method = 'POST', body = null, apiKey, signal, max503Retries = 1, retryDelayMs = 1500 }
 ) {
   const executeOnce = async () => {
-    const primaryHeaders = { 'x-goog-api-key': apiKey };
+    const headers = { 'x-goog-api-key': apiKey };
     if (method !== 'GET') {
-      primaryHeaders['Content-Type'] = 'application/json';
+      headers['Content-Type'] = 'application/json';
     }
-
-    try {
-      const res = await fetch(safeUrl, {
-        method,
-        headers: primaryHeaders,
-        ...(body !== null ? { body: JSON.stringify(body) } : {}),
-        signal,
-      });
-      return { res, authMode: 'header:x-goog-api-key' };
-    } catch (err) {
-      // Ne pas retenter si délai expiré (AbortError)
-      if (err?.name === 'AbortError') throw err;
-      const isNetworkOrCors =
-        err instanceof TypeError ||
-        /failed to fetch|load failed|networkerror|cors/i.test(String(err?.message || ''));
-      if (!isNetworkOrCors) throw err;
-
-      // Repli mobile CORS : passage de la clé en paramètre ?key= sans header personnalisé
-      const sep = safeUrl.includes('?') ? '&' : '?';
-      const queryUrl = `${safeUrl}${sep}key=${encodeURIComponent(apiKey)}`;
-      const fallbackHeaders = method !== 'GET' ? { 'Content-Type': 'application/json' } : undefined;
-      const res = await fetch(queryUrl, {
-        method,
-        ...(fallbackHeaders ? { headers: fallbackHeaders } : {}),
-        ...(body !== null ? { body: JSON.stringify(body) } : {}),
-        signal,
-      });
-      return { res, authMode: 'query:?key=' };
-    }
+    const res = await fetch(safeUrl, {
+      method,
+      headers,
+      ...(body !== null ? { body: JSON.stringify(body) } : {}),
+      signal,
+    });
+    return { res, authMode: 'header:x-goog-api-key' };
   };
 
   let retriesUsed = 0;
@@ -1229,7 +1211,6 @@ async function fetchGeminiWithAuthFallback(
     if (result.res.status !== 503 || attempt === max503Retries) {
       return { ...result, retriesUsed };
     }
-    // Libère le flux de réponse avant retry
     try {
       await result.res.text();
     } catch {
@@ -1291,29 +1272,34 @@ export async function listAvailableGeminiModels(rawBaseUrl, rawApiKey, timeoutMs
   }
 }
 
-async function runGeminiNative({
+function buildGeminiCandidateModels(primaryModel) {
+  const cleanPrimary = normalizeGeminiModelName(primaryModel, GEMINI_FAILOVER_MODELS[0]);
+  const ordered = [cleanPrimary, ...GEMINI_FAILOVER_MODELS];
+  return Array.from(new Set(ordered.filter(Boolean)));
+}
+
+function shouldFailoverGeminiModel(err) {
+  if (!err) return false;
+  if (err.name === 'AbortError') return true;
+  const st = Number(err.httpStatus);
+  return st === 404 || st === 429 || st === 503;
+}
+
+async function runGeminiSingleModel({
   prompt,
   systemPrompt,
   history = [],
   images = [],
-  settings,
+  baseUrl,
+  rawModel,
+  apiKey,
   expectJson = false,
   isHealthProbe = false,
-  timeoutMs = 35000,
-  retryDelayMs = 2000,
+  timeoutMs = 24000,
+  retryDelayMs = 1500,
 }) {
-  const apiKey = cleanApiKey(settings.apiKey);
   const hasImages = Array.isArray(images) && images.length > 0;
-  const rawModel = hasImages
-    ? settings.visionModel || settings.model || TIER2_PRESETS.gemini.visionModel
-    : settings.model || TIER2_PRESETS.gemini.model;
-  const { base, modelName, safeUrl } = buildGeminiGenerateUrl(settings.baseUrl, rawModel);
-
-  if (!apiKey) {
-    const err = new Error('Clé API Gemini manquante. Collez votre clé Google AI Studio dans Profil → Clés IA.');
-    err.endpointUrl = safeUrl;
-    throw err;
-  }
+  const { base, modelName, safeUrl } = buildGeminiGenerateUrl(baseUrl, rawModel);
 
   const imageParts = [];
   if (hasImages) {
@@ -1332,7 +1318,6 @@ async function runGeminiNative({
 
   let body;
   if (isHealthProbe) {
-    // Schéma natif minimal officiel Gemini REST v1beta (texte ou micro-test vision inlineData)
     body = {
       contents: [
         {
@@ -1344,7 +1329,6 @@ async function runGeminiNative({
     };
   } else {
     const parts = [{ text: prompt }, ...imageParts];
-
     const priorContents = sanitizeHistoryMessages(history).map((m) => ({
       role: m.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: m.content }],
@@ -1368,7 +1352,7 @@ async function runGeminiNative({
       body,
       apiKey,
       signal: controller.signal,
-      max503Retries: 2,
+      max503Retries: 1,
       retryDelayMs,
     });
 
@@ -1416,6 +1400,66 @@ async function runGeminiNative({
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function runGeminiNative({
+  prompt,
+  systemPrompt,
+  history = [],
+  images = [],
+  settings,
+  expectJson = false,
+  isHealthProbe = false,
+  timeoutMs = 24000,
+  retryDelayMs = 1500,
+}) {
+  const apiKey = cleanApiKey(settings.apiKey);
+  const hasImages = Array.isArray(images) && images.length > 0;
+  const primaryModel = hasImages
+    ? settings.visionModel || settings.model || TIER2_PRESETS.gemini.visionModel
+    : settings.model || TIER2_PRESETS.gemini.model;
+  const candidates = buildGeminiCandidateModels(primaryModel);
+
+  if (!apiKey) {
+    const { safeUrl } = buildGeminiGenerateUrl(settings.baseUrl, candidates[0]);
+    const err = new Error('Clé API Gemini vide.');
+    err.endpointUrl = safeUrl;
+    err.missingGeminiKey = true;
+    throw err;
+  }
+
+  let lastErr = null;
+  for (let i = 0; i < candidates.length; i += 1) {
+    const candidateModel = candidates[i];
+    try {
+      const result = await runGeminiSingleModel({
+        prompt,
+        systemPrompt,
+        history,
+        images,
+        baseUrl: settings.baseUrl || TIER2_PRESETS.gemini.baseUrl,
+        rawModel: candidateModel,
+        apiKey,
+        expectJson,
+        isHealthProbe,
+        timeoutMs,
+        retryDelayMs,
+      });
+      return {
+        ...result,
+        failoverUsed: i > 0,
+        attemptedModels: candidates.slice(0, i + 1),
+      };
+    } catch (err) {
+      lastErr = err;
+      const hasMore = i < candidates.length - 1;
+      if (hasMore && shouldFailoverGeminiModel(err)) {
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
 }
 
 async function runOpenAICompatible({ prompt, systemPrompt, history = [], images, settings, expectJson, timeoutMs = 45000 }) {
@@ -1672,6 +1716,40 @@ export async function testAIConnection(rawSettings, { retryDelayMs = 2000 } = {}
       settings.tier2Preset === 'gemini' ||
       String(settings.baseUrl || '').includes('generativelanguage.googleapis.com'));
 
+  // Si aucune clé Gemini n'est renseignée, teste la bascule transparente Puter.js -> Local Niveau 0
+  if (isGeminiMode && !cleanApiKey(settings.apiKey)) {
+    try {
+      const pRes = await runTier1FreeCloud({
+        prompt: 'Réponds uniquement OK.',
+        systemPrompt: 'Réponds très brièvement.',
+        images: [],
+        taskType: 'healthcheck',
+        settings: { ...settings, tier1Provider: 'puter' },
+      });
+      const latencyMs = Math.round(performance.now() - started);
+      return {
+        ok: true,
+        tier: 1,
+        latencyMs,
+        visionSupported: true,
+        provider: pRes.provider,
+        httpStatus: 200,
+        diagnostic: `Clé Gemini vide — bascule transparente active sur ${pRes.provider} (${latencyMs} ms), puis Niveau 0 local hors-ligne.`,
+      };
+    } catch {
+      const latencyMs = Math.round(performance.now() - started);
+      return {
+        ok: true,
+        tier: 0,
+        latencyMs,
+        visionSupported: true,
+        provider: 'local_deterministic_mediapipe',
+        httpStatus: 200,
+        diagnostic: 'Clé Gemini vide et Puter.js indisponible — moteur Niveau 0 déterministe local 100 % opérationnel.',
+      };
+    }
+  }
+
   try {
     const probePrompt = isGeminiMode ? 'ping' : 'Réponds uniquement OK.';
     const res =
@@ -1690,7 +1768,7 @@ export async function testAIConnection(rawSettings, { retryDelayMs = 2000 } = {}
             settings,
             expectJson: false,
             isHealthProbe: isGeminiMode,
-            timeoutMs: 35000,
+            timeoutMs: 24000,
             retryDelayMs,
           });
 
@@ -1707,7 +1785,7 @@ export async function testAIConnection(rawSettings, { retryDelayMs = 2000 } = {}
     if (settings.activeTier === AI_TIERS.TIER_1_FREE_CLOUD) {
       visionSupported = true;
     } else {
-      const targetVisionModel = String(settings.visionModel || settings.model || '').trim();
+      const targetVisionModel = String(res.modelName || settings.visionModel || settings.model || '').trim();
       visionModelUsed = isGeminiMode
         ? normalizeGeminiModelName(targetVisionModel, TIER2_PRESETS.gemini.visionModel)
         : targetVisionModel;
@@ -1725,6 +1803,7 @@ export async function testAIConnection(rawSettings, { retryDelayMs = 2000 } = {}
             retryDelayMs,
           });
           visionSupported = true;
+          visionModelUsed = visionRes.modelName || visionModelUsed;
           visionEndpointUrl = visionRes.endpointUrl || null;
           visionHttpStatus = 200;
         } catch (vErr) {
@@ -1745,6 +1824,7 @@ export async function testAIConnection(rawSettings, { retryDelayMs = 2000 } = {}
       }
     }
 
+    const activeModelUsed = res.modelName || settings.model || null;
     const visionSummary = visionSupported
       ? `Vision : Oui${visionModelUsed ? ` (${visionModelUsed})` : ''}.`
       : visionError
@@ -1755,6 +1835,7 @@ export async function testAIConnection(rawSettings, { retryDelayMs = 2000 } = {}
       ok: true,
       tier: settings.activeTier,
       latencyMs,
+      modelUsed: activeModelUsed,
       visionSupported,
       visionModelUsed,
       visionEndpointUrl,
@@ -1769,7 +1850,7 @@ export async function testAIConnection(rawSettings, { retryDelayMs = 2000 } = {}
       rawError: null,
       suggestedModels: [],
       replyPreview: String(res.rawText || '').slice(0, 60),
-      diagnostic: `Connexion validée en ${latencyMs} ms via ${res.provider}${res.authMode ? ` (${res.authMode})` : ''}. ${visionSummary}`,
+      diagnostic: `Connexion validée en ${latencyMs} ms via ${res.provider}${activeModelUsed ? ` (${activeModelUsed})` : ''}${res.authMode ? ` · ${res.authMode}` : ''}. ${visionSummary}`,
     };
   } catch (err) {
     const latencyMs = Math.round(performance.now() - started);
@@ -1885,8 +1966,25 @@ export async function routeAIRequest({
   }
 
   let rawResult = null;
+  let effectiveTierUsed = settings.activeTier;
+  const isDefaultGeminiNoKey =
+    settings.activeTier === AI_TIERS.TIER_2_BYO &&
+    (settings.tier2Preset === 'gemini' || settings.protocol === 'gemini_native') &&
+    !cleanApiKey(settings.apiKey);
+
   try {
-    if (settings.activeTier === AI_TIERS.TIER_1_FREE_CLOUD) {
+    if (isDefaultGeminiNoKey) {
+      // Champ Gemini vide : bascule transparente sur Puter.js (Niveau 1 sans clé), puis Niveau 0 si indisponible
+      effectiveTierUsed = AI_TIERS.TIER_1_FREE_CLOUD;
+      rawResult = await runTier1FreeCloud({
+        prompt,
+        systemPrompt,
+        history,
+        images,
+        taskType,
+        settings: { ...settings, tier1Provider: 'puter' },
+      });
+    } else if (settings.activeTier === AI_TIERS.TIER_1_FREE_CLOUD) {
       rawResult = await runTier1FreeCloud({ prompt, systemPrompt, history, images, taskType, settings });
     } else if (settings.activeTier === AI_TIERS.TIER_2_BYO) {
       rawResult = await runTier2BYO({ prompt, systemPrompt, history, images, settings, expectJson });
@@ -1904,7 +2002,7 @@ export async function routeAIRequest({
       ok: true,
       usedFallback: false,
       fallbackReason: null,
-      tierUsed: settings.activeTier,
+      tierUsed: effectiveTierUsed,
       provider: rawResult.provider,
       latencyMs: Math.round(performance.now() - startedAt),
       data: rawResult.rawText,

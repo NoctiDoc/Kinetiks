@@ -7,7 +7,7 @@
  */
 
 export const DB_NAME = 'kinetix_lab_db';
-export const DB_VERSION = 2;
+export const DB_VERSION = 4;
 
 export const STORES = Object.freeze({
   META: 'meta',
@@ -19,6 +19,8 @@ export const STORES = Object.freeze({
   NUTRITION_LOGS: 'nutrition_logs',
   FAVORITES: 'favorites',
   CUSTOM_FOODS: 'customFoods',
+  CACHED_FOODS: 'cachedFoods',
+  EXTERNAL_CACHE: 'externalCache',
   HYDRATION_LOGS: 'hydration_logs',
   PHYSIQUE_PHOTOS: 'physique_photos',
   COACH_MESSAGES: 'coach_messages',
@@ -132,6 +134,18 @@ export function openDB() {
       if (!db.objectStoreNames.contains(STORES.CUSTOM_FOODS)) {
         const store = db.createObjectStore(STORES.CUSTOM_FOODS, { keyPath: 'id' });
         store.createIndex('by_profile', 'profileId', { unique: false });
+      }
+
+      // Migration v3 strictement non destructive : cache local Open Food Facts API v2
+      if (!db.objectStoreNames.contains(STORES.CACHED_FOODS)) {
+        const store = db.createObjectStore(STORES.CACHED_FOODS, { keyPath: 'code' });
+        store.createIndex('by_updated', 'updatedAt', { unique: false });
+      }
+
+      // Migration v4 strictement non destructive : cache persistant des sources publiques (free-exercise-db, wger, Ciqual, Open-Meteo)
+      if (!db.objectStoreNames.contains(STORES.EXTERNAL_CACHE)) {
+        const store = db.createObjectStore(STORES.EXTERNAL_CACHE, { keyPath: 'key' });
+        store.createIndex('by_updated', 'updatedAt', { unique: false });
       }
     };
 
@@ -748,6 +762,112 @@ export async function saveCustomFood(profileId, food) {
 
 export async function deleteCustomFood(foodId) {
   return deleteRecord(STORES.CUSTOM_FOODS, foodId);
+}
+
+/* --- CACHE LOCAL PRODUITS SCANNÉS (OPEN FOOD FACTS API V2) --- */
+
+export async function getCachedFood(code) {
+  const clean = String(code || '').replace(/\D+/g, '');
+  if (!clean) return null;
+  try {
+    return (await getRecord(STORES.CACHED_FOODS, clean)) || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function putCachedFood(product) {
+  const clean = String(product?.code || product?.barcode || '').replace(/\D+/g, '');
+  if (!clean) return null;
+  const record = {
+    ...product,
+    code: clean,
+    barcode: clean,
+    source: product?.source || 'off_cached',
+    updatedAt: Date.now(),
+  };
+  await putRecord(STORES.CACHED_FOODS, record);
+  return record;
+}
+
+export async function listCachedFoods(limit = 120) {
+  try {
+    const rows = await getAllRecords(STORES.CACHED_FOODS);
+    return rows
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+      .slice(0, limit);
+  } catch {
+    return [];
+  }
+}
+
+/* --- PARAMÈTRES CAPACITIES (OPTIONNEL, STOCKÉ UNIQUEMENT DANS INDEXEDDB) --- */
+
+export async function getCapacitiesSettings(profileId) {
+  if (!profileId) return null;
+  return getMeta(`capacities_settings_${profileId}`, null);
+}
+
+export async function saveCapacitiesSettings(profileId, config) {
+  if (!profileId) return null;
+  const record = {
+    enabled: Boolean(config?.enabled),
+    apiToken: String(config?.apiToken || '').trim(),
+    corsProxyUrl: String(config?.corsProxyUrl || '').trim(),
+    spaceId: String(config?.spaceId || '').trim(),
+    spaceTitle: String(config?.spaceTitle || '').trim(),
+    spaces: Array.isArray(config?.spaces) ? config.spaces.slice(0, 30) : [],
+    updatedAt: Date.now(),
+  };
+  await setMeta(`capacities_settings_${profileId}`, record);
+  return record;
+}
+
+/* --- CACHE PERSISTANT SOURCES PUBLIQUES (FREE-EXERCISE-DB, WGER, CIQUAL, OPEN-METEO) --- */
+
+export async function getExternalCache(key, maxAgeMs = null) {
+  const k = String(key || '').trim();
+  if (!k) return null;
+  try {
+    const rec = await getRecord(STORES.EXTERNAL_CACHE, k);
+    if (!rec) return null;
+    if (Number.isFinite(maxAgeMs) && maxAgeMs > 0) {
+      const age = Date.now() - (Number(rec.updatedAt) || 0);
+      if (age > maxAgeMs) {
+        return { ...rec, stale: true };
+      }
+    }
+    return { ...rec, stale: false };
+  } catch {
+    return null;
+  }
+}
+
+export async function putExternalCache(key, data, meta = {}) {
+  const k = String(key || '').trim();
+  if (!k) return null;
+  const record = {
+    key: k,
+    data,
+    meta: meta && typeof meta === 'object' ? meta : {},
+    updatedAt: Date.now(),
+  };
+  await putRecord(STORES.EXTERNAL_CACHE, record);
+  return record;
+}
+
+export async function listExternalCacheKeys() {
+  try {
+    const rows = await getAllRecords(STORES.EXTERNAL_CACHE);
+    return rows.map((r) => ({
+      key: r.key,
+      updatedAt: r.updatedAt || 0,
+      count: r.meta?.count ?? (Array.isArray(r.data) ? r.data.length : null),
+      label: r.meta?.label || r.key,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 /* ==========================================================================

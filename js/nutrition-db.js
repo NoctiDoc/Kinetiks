@@ -236,6 +236,20 @@ export const CIQUAL_DB = Object.freeze([
   { id: 'ciq_croissant', name: 'Croissant au beurre', kcal: 418, proteinG: 8.2, carbsG: 45.2, fatG: 22.4, fiberG: 2.1, portion: { label: '1 croissant', grams: 55 }, aisle: 'Boulangerie', diets: ['omnivore', 'vegetarian', 'halal'], allergens: ['gluten', 'dairy', 'eggs'] },
   { id: 'ciq_pain_chocolat', name: 'Pain au chocolat / Chocolatine', kcal: 424, proteinG: 7.8, carbsG: 46.8, fatG: 22.6, fiberG: 2.6, portion: { label: '1 pièce', grams: 65 }, aisle: 'Boulangerie', diets: ['omnivore', 'vegetarian', 'halal'], allergens: ['gluten', 'dairy', 'eggs'] },
   { id: 'ciq_frites', name: 'Frites de pomme de terre (cuites)', kcal: 288, proteinG: 3.8, carbsG: 36.5, fatG: 13.8, fiberG: 3.4, portion: { label: '1 portion moy.', grams: 140 }, aisle: 'Restauration & Plats', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_frites_four', name: 'Frites au four / Airfryer', kcal: 176, proteinG: 3.2, carbsG: 29.5, fatG: 4.8, fiberG: 3.0, portion: { label: '1 portion', grams: 150 }, aisle: 'Surgelés & Légumes', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_oeuf_plat', name: 'Œuf au plat / Brouillé (peu d’huile)', kcal: 176, proteinG: 12.6, carbsG: 0.9, fatG: 13.4, fiberG: 0, portion: { label: '1 œuf', grams: 60 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['eggs'] },
+  { id: 'ciq_omelette', name: 'Omelette nature (œufs battus)', kcal: 168, proteinG: 11.8, carbsG: 1.0, fatG: 12.8, fiberG: 0, portion: { label: '2 œufs', grams: 120 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['eggs'] },
+  { id: 'ciq_semoule_cru', name: 'Semoule de blé / Couscous (cru)', kcal: 356, proteinG: 12.0, carbsG: 71.8, fatG: 1.4, fiberG: 3.8, portion: { label: '1 portion crue', grams: 75 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS_GLUTEN, allergens: ['gluten'] },
+  { id: 'ciq_lentilles_cru', name: 'Lentilles vertes (poids cru)', kcal: 332, proteinG: 25.0, carbsG: 48.0, fatG: 1.2, fiberG: 16.5, portion: { label: '1 portion crue', grams: 70 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_quinoa_cru', name: 'Quinoa (poids cru)', kcal: 368, proteinG: 14.1, carbsG: 64.2, fatG: 6.1, fiberG: 7.0, portion: { label: '1 portion crue', grams: 70 }, aisle: 'Épicerie & Féculents', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_creme_dessert_prot', name: 'Crème dessert hyperprotéinée (choco/vanille)', kcal: 82, proteinG: 10.0, carbsG: 6.8, fatG: 1.5, fiberG: 0.6, portion: { label: '1 pot', grams: 200 }, aisle: 'Crèmerie & Œufs', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_pate_tartiner', name: 'Pâte à tartiner chocolat-noisettes', kcal: 539, proteinG: 6.3, carbsG: 57.5, fatG: 30.9, fiberG: 3.4, portion: { label: '1 c.à.s', grams: 20 }, aisle: 'Épicerie & Féculents', diets: DAIRY_DIETS, allergens: ['nuts', 'dairy'] },
+  { id: 'ciq_jus_orange', name: 'Jus d’orange 100 % pur jus', kcal: 44, proteinG: 0.7, carbsG: 9.8, fatG: 0.1, fiberG: 0.3, portion: { label: '1 verre', grams: 200 }, aisle: 'Boissons', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_soda_zero', name: 'Soda sans sucre (Cola Zéro / Light)', kcal: 1, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0, portion: { label: '1 canette', grams: 330 }, aisle: 'Boissons', diets: ALL_DIETS, allergens: [] },
+  { id: 'ciq_cafe_lait', name: 'Café au lait / Cappuccino (sans sucre)', kcal: 32, proteinG: 2.1, carbsG: 3.1, fatG: 1.1, fiberG: 0, portion: { label: '1 tasse', grams: 200 }, aisle: 'Boissons', diets: DAIRY_DIETS, allergens: ['dairy'] },
+  { id: 'ciq_pates_bolognaise', name: 'Pâtes à la bolognaise (maison)', kcal: 146, proteinG: 8.6, carbsG: 18.2, fatG: 4.1, fiberG: 1.8, portion: { label: '1 assiette', grams: 320 }, aisle: 'Restauration & Plats', diets: MEAT_HALAL, allergens: ['gluten'] },
+  { id: 'ciq_poulet_curry', name: 'Poulet curry & lait de coco (plat cuisiné)', kcal: 158, proteinG: 14.5, carbsG: 6.2, fatG: 8.4, fiberG: 1.2, portion: { label: '1 portion', grams: 220 }, aisle: 'Restauration & Plats', diets: MEAT_HALAL, allergens: [] },
+  { id: 'ciq_lasagnes', name: 'Lasagnes à la bolognaise', kcal: 162, proteinG: 8.4, carbsG: 15.8, fatG: 7.2, fiberG: 1.4, portion: { label: '1 part', grams: 300 }, aisle: 'Restauration & Plats', diets: ['omnivore', 'halal'], allergens: ['gluten', 'dairy'] },
 ]);
 
 /**
@@ -276,27 +290,50 @@ function scoreFoodMatch(nameNorm, haystack, tokens, fullQuery) {
   return score;
 }
 
-export function searchCiqualOffline(query = '', profile = null, { respectDietaryFilter = true } = {}) {
+export function searchCiqualOffline(
+  query = '',
+  profile = null,
+  { respectDietaryFilter = true, extraCiqualFoods = [] } = {}
+) {
   const normQ = normalizeFoodSearchText(query);
   const tokens = normQ ? normQ.split(' ').filter(Boolean) : [];
   const diet = profile?.nutritionPrefs?.dietType || 'omnivore';
   const allergies = new Set((profile?.nutritionPrefs?.allergies || []).map((a) => String(a).toLowerCase()));
 
   const matches = [];
-  for (const entry of CIQUAL_SEARCH_INDEX) {
-    const item = entry.item;
+  const seenNames = new Set();
+
+  const evaluateEntry = (item, nameNorm, haystack) => {
+    if (seenNames.has(nameNorm)) return;
     if (respectDietaryFilter && profile) {
-      const dietOk = diet === 'omnivore' || item.diets.includes(diet);
-      const allergyOk = !item.allergens.some((a) => allergies.has(a));
-      if (!dietOk || !allergyOk) continue;
+      const itemDiets = Array.isArray(item.diets) && item.diets.length > 0 ? item.diets : ['omnivore'];
+      const itemAllergens = Array.isArray(item.allergens) ? item.allergens : [];
+      const dietOk = diet === 'omnivore' || itemDiets.includes(diet);
+      const allergyOk = !itemAllergens.some((a) => allergies.has(String(a).toLowerCase()));
+      if (!dietOk || !allergyOk) return;
     }
     if (tokens.length === 0) {
+      seenNames.add(nameNorm);
       matches.push({ item, score: 1 });
-      continue;
+      return;
     }
-    const score = scoreFoodMatch(entry.nameNorm, entry.haystack, tokens, normQ);
+    const score = scoreFoodMatch(nameNorm, haystack, tokens, normQ);
     if (score > 0) {
+      seenNames.add(nameNorm);
       matches.push({ item, score });
+    }
+  };
+
+  for (const entry of CIQUAL_SEARCH_INDEX) {
+    evaluateEntry(entry.item, entry.nameNorm, entry.haystack);
+  }
+
+  if (Array.isArray(extraCiqualFoods) && extraCiqualFoods.length > 0 && tokens.length > 0) {
+    for (const extra of extraCiqualFoods) {
+      if (!extra || !extra.name) continue;
+      const nameNorm = normalizeFoodSearchText(extra.name);
+      const haystack = normalizeFoodSearchText(`${extra.name} ${extra.aisle || ''}`);
+      evaluateEntry(extra, nameNorm, haystack);
     }
   }
 
@@ -308,33 +345,73 @@ export function searchCiqualOffline(query = '', profile = null, { respectDietary
 
 /**
  * Recherche locale hybride instantanée (< 1 ms) :
- * 1) Aliments perso & produits Open Food Facts mis en cache ([PERSO])
- * 2) Base Ciqual enrichie ([CIQUAL], sans masquer un aliment explicitement tapé par l'utilisateur)
+ * 1) [MES ALIMENTS & FAVORIS] : aliments perso + favoris (si pertinents) + produits scannés en cache IndexedDB
+ * 2) [CIQUAL · RÉFÉRENCE] : 200+ aliments courants France + extension Ciqual en cache IndexedDB
  */
-export function searchHybridLocalFoods(query = '', customFoods = [], profile = null, { ciqualLimit = 18 } = {}) {
+export function searchHybridLocalFoods(
+  query = '',
+  customFoods = [],
+  profile = null,
+  { ciqualLimit = 18, cachedFoods = [], favorites = [], extraCiqualFoods = [] } = {}
+) {
   const normQ = normalizeFoodSearchText(query);
   const tokens = normQ ? normQ.split(' ').filter(Boolean) : [];
 
-  const customScored = [];
-  for (const cf of customFoods || []) {
-    const nameNorm = normalizeFoodSearchText(cf.name);
-    const haystack = normalizeFoodSearchText(`${cf.name} ${cf.brand || ''} ${cf.aisle || ''}`);
-    const score = tokens.length === 0 ? 1 : scoreFoodMatch(nameNorm, haystack, tokens, normQ);
+  const personalScored = [];
+  const seenKeys = new Set();
+
+  const tryPushPersonal = (item, kind) => {
+    const key = item.barcode ? `bc:${item.barcode}` : `${kind}:${normalizeFoodSearchText(item.name)}:${item.brand || ''}`;
+    if (seenKeys.has(key)) return;
+    const nameNorm = normalizeFoodSearchText(item.name);
+    const haystack = normalizeFoodSearchText(`${item.name} ${item.brand || ''} ${item.aisle || ''}`);
+    const score = tokens.length === 0 ? (kind === 'custom' ? 3 : kind === 'favorite' ? 2 : 1) : scoreFoodMatch(nameNorm, haystack, tokens, normQ);
     if (score > 0) {
-      customScored.push({ item: cf, score });
+      seenKeys.add(key);
+      personalScored.push({ item: { ...item, _personalKind: kind, _origin: kind }, score });
     }
+  };
+
+  for (const cf of customFoods || []) {
+    tryPushPersonal(cf, 'custom');
   }
   if (tokens.length > 0) {
-    customScored.sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name));
+    for (const fav of favorites || []) {
+      tryPushPersonal(
+        {
+          id: fav.id,
+          name: fav.name,
+          kcal: fav.kcal,
+          proteinG: fav.proteinG,
+          carbsG: fav.carbsG,
+          fatG: fav.fatG,
+          fiberG: fav.fiberG || 0,
+          isFavoriteMeal: true,
+          ingredients: fav.ingredients,
+          portion: { label: '1 repas favori', grams: 100 },
+        },
+        'favorite'
+      );
+    }
+  }
+  for (const cached of cachedFoods || []) {
+    tryPushPersonal(cached, 'cached');
   }
 
-  // Si requête vide : affiche les incontournables adaptés au régime ; si requête tapée : cherche toute la base Ciqual enrichie
+  if (tokens.length > 0) {
+    personalScored.sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name));
+  }
+
+  // Si requête vide : affiche les incontournables adaptés au régime ; si requête tapée : cherche toute la base Ciqual enrichie + extension
   const ciqualMatches = searchCiqualOffline(query, profile, {
     respectDietaryFilter: tokens.length === 0,
+    extraCiqualFoods,
   }).slice(0, ciqualLimit);
 
+  const personalMatches = personalScored.slice(0, 14).map((m) => m.item);
   return {
-    customMatches: customScored.slice(0, 12).map((m) => m.item),
+    customMatches: personalMatches,
+    personalMatches,
     ciqualMatches,
   };
 }
@@ -352,12 +429,20 @@ export function scaleFoodMacros(foodPer100g, grams = 100) {
 }
 
 /* ==========================================================================
-   2. OPEN FOOD FACTS API FRANCE (0 CLÉ + ABORTCONTROLLER) & SCANNER CODE-BARRES
+   2. OPEN FOOD FACTS API V2 (0 CLÉ, TIMEOUT 6S, CACHE INDEXEDDB) & SCANNER
    ========================================================================== */
 
 const barcodeCache = new Map();
 
-function parseServingPortion(servingSize) {
+function parseServingPortion(servingSize, servingQuantity = null) {
+  const qty = Number(servingQuantity);
+  if (Number.isFinite(qty) && qty >= 5 && qty <= 1200) {
+    const raw = String(servingSize || '').trim();
+    return {
+      label: raw && raw.length <= 24 ? raw : '1 portion',
+      grams: Math.round(qty),
+    };
+  }
   const raw = String(servingSize || '').trim();
   if (!raw) return null;
   const gMatch = raw.match(/(\d+(?:[.,]\d+)?)\s*(?:g|ml)\b/i);
@@ -365,36 +450,70 @@ function parseServingPortion(servingSize) {
   const grams = Math.round(Number(gMatch[1].replace(',', '.')));
   if (!Number.isFinite(grams) || grams < 5 || grams > 1200) return null;
   return {
-    label: raw.length <= 24 ? raw : `1 portion`,
+    label: raw.length <= 24 ? raw : '1 portion',
     grams,
   };
 }
 
-function normalizeOpenFoodFactsProduct(product) {
+export function normalizeOpenFoodFactsProduct(product) {
   if (!product) return null;
   const n = product.nutriments || {};
   const kcal =
     Number(n['energy-kcal_100g']) ||
     (Number(n['energy-kj_100g']) ? Math.round(Number(n['energy-kj_100g']) / 4.184) : 0);
+  const proteinG = Number((Number(n.proteins_100g) || 0).toFixed(1));
+  const carbsG = Number((Number(n.carbohydrates_100g) || 0).toFixed(1));
+  const fatG = Number((Number(n.fat_100g) || 0).toFixed(1));
+  const fiberG = Number((Number(n.fiber_100g) || 0).toFixed(1));
+  const computedKcal = Math.round(kcal) || Math.round(proteinG * 4 + carbsG * 4 + fatG * 9);
+  const hasMacros = computedKcal > 0 || proteinG > 0 || carbsG > 0 || fatG > 0;
+  const rawNova = Number(product.nova_group || n['nova-group_100g'] || n['nova-group']);
+  const novaGroup = Number.isFinite(rawNova) && rawNova >= 1 && rawNova <= 4 ? Math.round(rawNova) : null;
+  const allergens = Array.isArray(product.allergens_tags)
+    ? [...new Set(product.allergens_tags.map((t) => String(t || '').replace(/^[a-z]{2}:/i, '').trim()).filter(Boolean))]
+    : [];
 
   return {
-    barcode: product.code || '',
-    name: product.product_name_fr || product.product_name || 'Produit scanné',
-    brand: product.brands || '',
+    code: String(product.code || '').replace(/\D+/g, ''),
+    barcode: String(product.code || '').replace(/\D+/g, ''),
+    name: String(product.product_name_fr || product.product_name || 'Produit scanné').trim(),
+    brand: String(product.brands || '').trim(),
+    quantity: String(product.quantity || '').trim(),
     servingSize: product.serving_size || '100 g',
-    portion: parseServingPortion(product.serving_size),
+    portion: parseServingPortion(product.serving_size, product.serving_quantity),
     nutriscore: product.nutriscore_grade ? String(product.nutriscore_grade).toUpperCase() : null,
-    kcal: Math.round(kcal),
-    proteinG: Number((Number(n.proteins_100g) || 0).toFixed(1)),
-    carbsG: Number((Number(n.carbohydrates_100g) || 0).toFixed(1)),
-    fatG: Number((Number(n.fat_100g) || 0).toFixed(1)),
-    fiberG: Number((Number(n.fiber_100g) || 0).toFixed(1)),
+    novaGroup,
+    allergens,
+    kcal: computedKcal,
+    proteinG,
+    carbsG,
+    fatG,
+    fiberG,
+    missingMacros: !hasMacros,
     imageUrl: product.image_front_small_url || null,
     source: 'open_food_facts',
   };
 }
 
-export async function lookupBarcodeOpenFoodFacts(barcode) {
+function fetchWithTimeout(url, { timeoutMs = 6000, signal = null } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onExternalAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) {
+      clearTimeout(timer);
+      controller.abort();
+    } else {
+      signal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+  return fetch(url, { signal: controller.signal }).finally(() => {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onExternalAbort);
+  });
+}
+
+export async function lookupBarcodeOpenFoodFacts(barcode, { getCachedFood = null, putCachedFood = null } = {}) {
   const cleanCode = String(barcode || '').replace(/\D+/g, '');
   if (cleanCode.length < 6) {
     throw new Error('Code-barres invalide (minimum 6 chiffres).');
@@ -403,39 +522,89 @@ export async function lookupBarcodeOpenFoodFacts(barcode) {
     return barcodeCache.get(cleanCode);
   }
 
-  const url = `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(cleanCode)}.json?fields=code,product_name,product_name_fr,brands,serving_size,nutriscore_grade,nutriments,image_front_small_url`;
-  const res = await fetch(url);
+  // 1) Cache local IndexedDB (fonctionne instantanément hors-ligne)
+  if (typeof getCachedFood === 'function') {
+    const localHit = await getCachedFood(cleanCode);
+    if (localHit && !localHit.missingMacros) {
+      barcodeCache.set(cleanCode, localHit);
+      return localHit;
+    }
+  }
+
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    const err = new Error(`Hors-ligne : code ${cleanCode} absent du cache local. Utilise « Scanner l’étiquette ».`);
+    err.code = 'OFFLINE_MISS';
+    throw err;
+  }
+
+  const fields = 'code,product_name,product_name_fr,brands,serving_size,serving_quantity,nutriments,nutriscore_grade,nova_group,allergens_tags,quantity';
+  const url = `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(cleanCode)}.json?fields=${fields}`;
+
+  let res;
+  try {
+    res = await fetchWithTimeout(url, { timeoutMs: 6000 });
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      const te = new Error('Open Food Facts trop lent (délai 6 s dépassé). Tu peux scanner l’étiquette directement.');
+      te.code = 'TIMEOUT';
+      throw te;
+    }
+    throw new Error('Réseau indisponible pour Open Food Facts. Utilise « Scanner l’étiquette ».');
+  }
+
+  if (res.status === 404) {
+    const nf = new Error(`Produit introuvable pour le code ${cleanCode}.`);
+    nf.code = 'NOT_FOUND';
+    throw nf;
+  }
   if (!res.ok) {
     throw new Error(`Open Food Facts indisponible (HTTP ${res.status}).`);
   }
   const json = await res.json();
   if (json.status !== 1 || !json.product) {
-    throw new Error(`Produit introuvable pour le code ${cleanCode}.`);
+    const nf = new Error(`Produit introuvable pour le code ${cleanCode}.`);
+    nf.code = 'NOT_FOUND';
+    throw nf;
   }
+
   const normalized = normalizeOpenFoodFactsProduct(json.product);
+  if (!normalized) {
+    const nf = new Error(`Fiche produit vide pour le code ${cleanCode}.`);
+    nf.code = 'NOT_FOUND';
+    throw nf;
+  }
+
   barcodeCache.set(cleanCode, normalized);
+  if (typeof putCachedFood === 'function' && !normalized.missingMacros) {
+    try {
+      await putCachedFood(normalized);
+    } catch {
+      // Cache non bloquant
+    }
+  }
   return normalized;
 }
 
-export async function searchOpenFoodFactsText(query, options = 12) {
+export async function searchOpenFoodFactsText(query, options = 15) {
   const opts = typeof options === 'number' ? { pageSize: options, signal: null } : options || {};
-  const pageSize = Number(opts.pageSize) || 12;
+  const pageSize = Number(opts.pageSize) || 15;
   const signal = opts.signal || undefined;
 
   const q = String(query || '').trim();
   if (q.length < 2) return [];
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return [];
 
-  const url = `https://fr.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=${pageSize}&fields=code,product_name,product_name_fr,brands,serving_size,nutriscore_grade,nutriments`;
+  const fields = 'code,product_name,product_name_fr,brands,serving_size,serving_quantity,nutriments,nutriscore_grade,nova_group,allergens_tags';
+  const url = `https://fr.openfoodfacts.org/api/v2/search?search_terms=${encodeURIComponent(q)}&countries_tags_en=france&page_size=${pageSize}&sort_by=unique_scans_n&fields=${fields}`;
   try {
-    const res = await fetch(url, { signal });
+    const res = await fetchWithTimeout(url, { timeoutMs: 6000, signal });
     if (!res.ok) return [];
     const json = await res.json();
     return (json.products || [])
       .map(normalizeOpenFoodFactsProduct)
-      .filter((p) => p && p.name && (p.kcal > 0 || p.proteinG > 0));
+      .filter((p) => p && p.name && !p.missingMacros);
   } catch (err) {
-    if (err?.name === 'AbortError') {
+    if (err?.name === 'AbortError' && signal?.aborted) {
       throw err;
     }
     return [];
@@ -466,22 +635,154 @@ function ensureHtml5QrcodeLoaded() {
   return html5QrcodeScriptPromise;
 }
 
+const NATIVE_BARCODE_FORMATS = ['ean_13', 'ean_8', 'upc_a', 'upc_e'];
+
+async function canUseNativeBarcodeDetector() {
+  if (typeof window === 'undefined' || typeof window.BarcodeDetector !== 'function') return false;
+  if (!navigator?.mediaDevices?.getUserMedia) return false;
+  try {
+    if (typeof window.BarcodeDetector.getSupportedFormats === 'function') {
+      const supported = await window.BarcodeDetector.getSupportedFormats();
+      return supported.includes('ean_13') || supported.includes('ean_8');
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class BarcodeScannerController {
   constructor(elementId) {
     this.elementId = elementId;
     this.instance = null;
     this.running = false;
+    this.torchOn = false;
+    this.engine = null; // 'native' | 'html5-qrcode'
+    this.mediaStream = null;
+    this.videoTrack = null;
+    this.rafId = null;
   }
 
   async start(onDetected, onError = null) {
     await this.stop();
-    const Html5Qrcode = await ensureHtml5QrcodeLoaded();
-    this.instance = new Html5Qrcode(this.elementId);
+    const useNative = await canUseNativeBarcodeDetector();
+    if (useNative) {
+      try {
+        await this._startNativeDetector(onDetected, onError);
+        return;
+      } catch {
+        // Repli transparent vers html5-qrcode si BarcodeDetector échoue sur cet appareil
+        await this.stop();
+      }
+    }
+    await this._startHtml5Qrcode(onDetected, onError);
+  }
+
+  async _startNativeDetector(onDetected, onError = null) {
+    const container = document.getElementById(this.elementId);
+    if (!container) throw new Error('Conteneur scanner introuvable.');
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+      audio: false,
+    });
+
+    const track = stream.getVideoTracks()[0] || null;
+    this.mediaStream = stream;
+    this.videoTrack = track;
+    this.engine = 'native';
     this.running = true;
+    this.torchOn = false;
+
+    container.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.className = 'scanner-native-wrap';
+    const video = document.createElement('video');
+    video.className = 'scanner-native-video';
+    video.setAttribute('playsinline', 'true');
+    video.muted = true;
+    video.autoplay = true;
+    video.srcObject = stream;
+    const reticle = document.createElement('div');
+    reticle.className = 'scanner-reticle';
+    reticle.setAttribute('aria-hidden', 'true');
+    wrap.appendChild(video);
+    wrap.appendChild(reticle);
+    container.appendChild(wrap);
+
+    await video.play();
+
+    const detector = new window.BarcodeDetector({ formats: NATIVE_BARCODE_FORMATS });
+    let lastTick = 0;
+    let detecting = false;
+
+    const scanFrame = async (ts) => {
+      if (!this.running || this.engine !== 'native') return;
+      if (!detecting && ts - lastTick >= 85 && video.readyState >= 2) {
+        lastTick = ts;
+        detecting = true;
+        try {
+          const codes = await detector.detect(video);
+          const match = (codes || []).find((c) => c && c.rawValue && /\d{6,}/.test(String(c.rawValue)));
+          if (match && this.running) {
+            const value = String(match.rawValue).trim();
+            await this.stop();
+            if (typeof onDetected === 'function') onDetected(value);
+            return;
+          }
+        } catch (err) {
+          if (typeof onError === 'function') onError(err);
+        } finally {
+          detecting = false;
+        }
+      }
+      if (this.running) {
+        this.rafId = requestAnimationFrame(scanFrame);
+      }
+    };
+
+    this.rafId = requestAnimationFrame(scanFrame);
+  }
+
+  async _startHtml5Qrcode(onDetected, onError = null) {
+    const Html5Qrcode = await ensureHtml5QrcodeLoaded();
+    const formatsEnum = window.Html5QrcodeSupportedFormats;
+    const formatsToSupport = formatsEnum
+      ? [
+          formatsEnum.EAN_13,
+          formatsEnum.EAN_8,
+          formatsEnum.UPC_A,
+          formatsEnum.UPC_E,
+        ].filter((f) => f !== undefined)
+      : undefined;
+
+    this.instance = new Html5Qrcode(this.elementId, {
+      formatsToSupport,
+      verbose: false,
+    });
+    this.engine = 'html5-qrcode';
+    this.running = true;
+    this.torchOn = false;
 
     await this.instance.start(
-      { facingMode: 'environment' },
-      { fps: 10, qrbox: { width: 250, height: 130 } },
+      { facingMode: { ideal: 'environment' } },
+      {
+        fps: 12,
+        qrbox: (viewfinderWidth, viewfinderHeight) => ({
+          width: Math.min(300, Math.max(200, Math.round(viewfinderWidth * 0.82))),
+          height: Math.min(120, Math.max(84, Math.round(viewfinderHeight * 0.34))),
+        }),
+        aspectRatio: 1.777,
+        videoConstraints: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+      },
       async (decodedText) => {
         await this.stop();
         if (typeof onDetected === 'function') onDetected(decodedText);
@@ -492,9 +793,67 @@ export class BarcodeScannerController {
     );
   }
 
+  isTorchSupported() {
+    if (!this.running) return false;
+    try {
+      if (this.engine === 'native' && this.videoTrack) {
+        const caps = this.videoTrack.getCapabilities?.();
+        return Boolean(caps && caps.torch);
+      }
+      if (this.instance) {
+        const caps = this.instance.getRunningTrackCapabilities?.();
+        return Boolean(caps && caps.torch);
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  async toggleTorch() {
+    if (!this.running) return false;
+    const next = !this.torchOn;
+    try {
+      if (this.engine === 'native' && this.videoTrack) {
+        await this.videoTrack.applyConstraints({ advanced: [{ torch: next }] });
+        this.torchOn = next;
+        return this.torchOn;
+      }
+      if (this.instance) {
+        await this.instance.applyVideoConstraints({ advanced: [{ torch: next }] });
+        this.torchOn = next;
+        return this.torchOn;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   async stop() {
+    if (this.rafId) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = null;
+    }
+    if (this.engine === 'native') {
+      try {
+        if (this.torchOn && this.videoTrack) {
+          await this.videoTrack.applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
+        }
+        if (this.mediaStream) {
+          this.mediaStream.getTracks().forEach((t) => t.stop());
+        }
+        const container = typeof document !== 'undefined' ? document.getElementById(this.elementId) : null;
+        if (container) container.innerHTML = '';
+      } catch {
+        // Ignorer arrêt déjà effectif
+      }
+    }
     if (this.instance && this.running) {
       try {
+        if (this.torchOn) {
+          await this.instance.applyVideoConstraints({ advanced: [{ torch: false }] }).catch(() => {});
+        }
         await this.instance.stop();
         await this.instance.clear();
       } catch {
@@ -502,6 +861,10 @@ export class BarcodeScannerController {
       }
     }
     this.running = false;
+    this.torchOn = false;
+    this.engine = null;
+    this.mediaStream = null;
+    this.videoTrack = null;
     this.instance = null;
   }
 }
@@ -1203,6 +1566,231 @@ export async function extractScaleMetricsOCR(imageDataUrl, profile, aiSettings) 
     settings: aiSettings,
     expectJson: true,
   });
+}
+
+/**
+ * Analyse OCR d'une étiquette nutritionnelle (tableau valeurs pour 100 g) via Vision
+ * avec vérification mathématique 4*P + 4*G + 9*L.
+ */
+export async function analyzeNutritionLabelPhoto(imageDataUrl, profile, aiSettings) {
+  const systemPrompt =
+    'Tu es un module OCR spécialisé dans les étiquettes nutritionnelles européennes. Extrais les valeurs POUR 100 g (ou 100 ml) et renvoie STRICTEMENT un objet JSON valide sans texte autour.';
+  const prompt = `Lis le tableau des valeurs nutritionnelles POUR 100 g / 100 ml sur cette photo d’étiquette :
+{
+  "name": "Nom du produit",
+  "brand": "Marque si visible",
+  "kcal": 210,
+  "protein_g": 12.5,
+  "carbs_g": 22.0,
+  "fat_g": 7.5,
+  "fiber_g": 2.4,
+  "portion_label": "1 portion",
+  "portion_grams": 100
+}`;
+
+  const res = await routeAIRequest({
+    taskType: 'food_estimate',
+    prompt,
+    systemPrompt,
+    images: imageDataUrl ? [imageDataUrl] : [],
+    context: { profile, mode: 'nutrition_label_ocr' },
+    settings: aiSettings,
+    expectJson: true,
+  });
+
+  const d = res?.data && typeof res.data === 'object' ? res.data : {};
+  const proteinG = Math.max(0, Math.round((Number(d.protein_g ?? d.proteinG ?? d.protein) || 0) * 10) / 10);
+  const carbsG = Math.max(0, Math.round((Number(d.carbs_g ?? d.carbsG ?? d.carbs) || 0) * 10) / 10);
+  const fatG = Math.max(0, Math.round((Number(d.fat_g ?? d.fatG ?? d.fat) || 0) * 10) / 10);
+  const fiberG = Math.max(0, Math.round((Number(d.fiber_g ?? d.fiberG ?? d.fiber) || 0) * 10) / 10);
+  const macroKcal = Math.round(proteinG * 4 + carbsG * 4 + fatG * 9);
+  const rawKcal = Math.max(0, Math.round(Number(d.kcal ?? d.calories) || 0));
+  // Cohérence mathématique stricte : si l'OCR a manqué kcal ou diverge > 35 %, réconcilier
+  const kcal = rawKcal > 0 && (macroKcal === 0 || Math.abs(rawKcal - macroKcal) / Math.max(1, macroKcal) <= 0.35)
+    ? rawKcal
+    : macroKcal || rawKcal;
+  const portionGrams = Math.round(Number(d.portion_grams ?? d.portionGrams) || 0);
+
+  return {
+    tierUsed: res?.tierUsed ?? 0,
+    provider: res?.provider || null,
+    usedFallback: Boolean(res?.usedFallback),
+    fallbackReason: res?.fallbackReason || null,
+    food: {
+      name: String(d.name || 'Produit scanné (étiquette)').trim(),
+      brand: String(d.brand || '').trim(),
+      kcal,
+      proteinG,
+      carbsG,
+      fatG,
+      fiberG,
+      portion:
+        portionGrams >= 5 && portionGrams <= 1200
+          ? { label: String(d.portion_label || '1 portion').trim(), grams: portionGrams }
+          : null,
+      source: 'label_ocr',
+    },
+  };
+}
+
+/**
+ * Parseur local déterministe (Niveau 0, 100 % hors-ligne) + enrichissement IA optionnel
+ * pour la saisie en phrase libre / dictée :
+ * ex. "180g poulet grillé, 150g riz basmati cuit, 1 c.à.s huile d'olive, 2 œufs"
+ * Retourne un résultat normalisé directement compatible avec l'éditeur de vérification interactif.
+ */
+export async function parseFreeTextMeal(
+  freeText,
+  { customFoods = [], cachedFoods = [], profile = null, aiSettings = null, consumed = null, targets = null } = {}
+) {
+  const raw = String(freeText || '').trim();
+  if (!raw) {
+    throw new Error('Décris ton repas (ex. « 180g poulet, 150g riz cuit, 1 c.à.s huile »).');
+  }
+
+  // Découpe tolérante par virgule, +, point-virgule, retour ligne, ou " et "
+  const segments = raw
+    .split(/[,;+\n]+|\s+et\s+/i)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 2);
+
+  const localIngredients = [];
+  const unresolvedSegments = [];
+
+  for (const seg of segments) {
+    let grams = null;
+    let queryPart = seg;
+    let stateHint = /\bcru[es]?\b/i.test(seg) ? 'cru' : /\bcuit[es]?|grill[ée]e?s?|po[êe]l[ée]e?s?|vapeur\b/i.test(seg) ? 'cuit' : 'prêt';
+
+    // Détection unités explicites : g, kg, ml, cl, c.à.s, c.à.c, scoop, tranche, oeuf, banane...
+    const gramMatch = seg.match(/(\d+(?:[.,]\d+)?)\s*(kg|g|gr|grammes?|ml|cl)\b/i);
+    const casMatch = seg.match(/(\d+(?:[.,]\d+)?)\s*(?:c\.?\s*[aà]\.?\s*s\.?|cuill[èe]res?\s*[àa]\s*soupe)/i);
+    const cacMatch = seg.match(/(\d+(?:[.,]\d+)?)\s*(?:c\.?\s*[aà]\.?\s*c\.?|cuill[èe]res?\s*[àa]\s*caf[ée])/i);
+    const unitMatch = seg.match(/^(\d+(?:[.,]\d+)?)\s*(?:x\s*)?(scoops?|doses?|tranches?|pots?|verres?|bols?|bo[îi]tes?|barres?|pav[ée]s?|steaks?|filets?|escalopes?|cuisses?|poign[ée]es?)?\s+(.+)$/i);
+
+    if (gramMatch) {
+      const val = Number(gramMatch[1].replace(',', '.'));
+      const unit = gramMatch[2].toLowerCase();
+      grams = unit === 'kg' ? Math.round(val * 1000) : unit === 'cl' ? Math.round(val * 10) : Math.round(val);
+      queryPart = seg.replace(gramMatch[0], ' ').replace(/\bde\b|\bd['’]/gi, ' ').trim();
+    } else if (casMatch) {
+      const qty = Number(casMatch[1].replace(',', '.')) || 1;
+      grams = Math.round(qty * 12);
+      queryPart = seg.replace(casMatch[0], ' ').replace(/\bde\b|\bd['’]/gi, ' ').trim();
+    } else if (cacMatch) {
+      const qty = Number(cacMatch[1].replace(',', '.')) || 1;
+      grams = Math.round(qty * 5);
+      queryPart = seg.replace(cacMatch[0], ' ').replace(/\bde\b|\bd['’]/gi, ' ').trim();
+    } else if (unitMatch) {
+      const qty = Number(unitMatch[1].replace(',', '.')) || 1;
+      queryPart = unitMatch[3].replace(/\bde\b|\bd['’]/gi, ' ').trim();
+      const { personalMatches, ciqualMatches } = searchHybridLocalFoods(queryPart, customFoods, profile, {
+        cachedFoods,
+        ciqualLimit: 5,
+      });
+      const best = personalMatches[0] || ciqualMatches[0] || null;
+      if (best) {
+        const unitGrams = best.portion?.grams || 100;
+        grams = Math.round(qty * unitGrams);
+        localIngredients.push(createMealIngredientFromFood(best, grams, stateHint));
+        continue;
+      }
+    }
+
+    const cleanedQuery = queryPart.replace(/\b(un|une|du|de|des|la|le|les|avec)\b/gi, ' ').replace(/\s+/g, ' ').trim() || seg;
+    const { personalMatches, ciqualMatches } = searchHybridLocalFoods(cleanedQuery, customFoods, profile, {
+      cachedFoods,
+      ciqualLimit: 5,
+    });
+    const best = personalMatches[0] || ciqualMatches[0] || null;
+
+    if (best) {
+      const finalGrams = grams || best.portion?.grams || 100;
+      localIngredients.push(createMealIngredientFromFood(best, finalGrams, stateHint));
+    } else {
+      unresolvedSegments.push(seg);
+    }
+  }
+
+  // Si tous les segments ont été résolus localement (ou si Niveau 0 actif), retour instantané !
+  const aiActive = aiSettings && Number(aiSettings.activeTier) > 0;
+  if (localIngredients.length > 0 && (unresolvedSegments.length === 0 || !aiActive)) {
+    const normalized = normalizeMealVisionPayload({
+      dishName: localIngredients.slice(0, 3).map((i) => i.name.split('(')[0].trim()).join(' + '),
+      confidence: unresolvedSegments.length === 0 ? 'high' : 'medium',
+      confidenceReason:
+        unresolvedSegments.length === 0
+          ? 'Décomposition locale Ciqual / Perso exacte (0 appel réseau).'
+          : `Éléments non reconnus localement : ${unresolvedSegments.join(', ')}.`,
+      ingredients: localIngredients,
+      hiddenFatsWarning: !localIngredients.some((i) => /huile|beurre|sauce|mayo|vinaigrette/i.test(i.name)),
+      hiddenFatsMessage: 'Vérifie si une matière grasse de cuisson ou sauce a été ajoutée.',
+      coachTip: 'Ajuste les grammages si nécessaire avant d’ajouter au journal.',
+    });
+    return { ok: true, tierUsed: 0, provider: 'local_ciqual', usedFallback: false, data: normalized };
+  }
+
+  // Sinon, sollicite le routeur IA pour décomposer la phrase libre en JSON strict
+  if (aiActive) {
+    const systemPrompt =
+      'Tu es un diététicien du sport français (référentiel Ciqual / ANSES). Décompose ce repas décrit en texte libre en ingrédients précis et renvoie STRICTEMENT un objet JSON valide.';
+    const prompt = `Décompose ce repas en ingrédients (name, state: "cuit"|"cru"|"prêt", grams, kcal, protein, carbs, fat, fiber) :
+"${raw}"
+Schéma JSON strict :
+{
+  "dishName": "Nom synthétique du repas",
+  "confidence": "high",
+  "confidenceReason": "Décomposé depuis ta description",
+  "ingredients": [
+    { "name": "Blanc de poulet", "state": "cuit", "grams": 180, "kcal": 281, "protein": 55.8, "carbs": 0, "fat": 5.8, "fiber": 0 }
+  ],
+  "hiddenFatsWarning": false,
+  "coachTip": "Court conseil d'alignement."
+}`;
+
+    const routed = await routeAIRequest({
+      taskType: 'meal_analysis',
+      prompt,
+      systemPrompt,
+      context: { profile, targets, consumed, freeText: raw },
+      settings: aiSettings,
+      expectJson: true,
+    });
+    if (routed?.data && !routed.usedFallback) {
+      return {
+        ...routed,
+        data: normalizeMealVisionPayload(routed.data),
+      };
+    }
+  }
+
+  // Repli ultime si rien n'a matché
+  const fallbackList =
+    localIngredients.length > 0
+      ? localIngredients
+      : [
+          createMealIngredientFromFood(
+            { name: raw.slice(0, 48), kcal: 165, proteinG: 12, carbsG: 18, fatG: 5, fiberG: 2 },
+            250,
+            'cuit'
+          ),
+        ];
+
+  return {
+    ok: true,
+    tierUsed: 0,
+    provider: 'local_fallback',
+    usedFallback: localIngredients.length === 0,
+    fallbackReason: localIngredients.length === 0 ? 'Aucun aliment Ciqual reconnu — vérifie et ajuste la ligne.' : null,
+    data: normalizeMealVisionPayload({
+      dishName: raw.slice(0, 60),
+      confidence: 'low',
+      confidenceReason: 'Estimation locale à vérifier.',
+      ingredients: fallbackList,
+      hiddenFatsWarning: true,
+      coachTip: 'Tu peux ajuster les grammages ou ajouter un ingrédient manquant.',
+    }),
+  };
 }
 
 /**
