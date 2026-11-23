@@ -208,9 +208,6 @@ export function buildAgenticCoachSystemPrompt({
     lastPhysiqueAnalysis,
   });
 
-  // Catalogue compact des IDs valides d'exercices pour SWAP_EXERCISE / UPDATE_WORKOUT_EXERCISE
-  const validExerciseIdsLine = EXERCISES_DB.map((e) => `${e.id}:${e.name}`).join(' | ');
-
   return `Tu es le Coach IA Biomécanique & Nutritionnel de Kinetix Lab. Tu réponds en français concis, structuré (puces courtes, chiffres précis, zéro blabla).
 Tu as un VÉRITABLE contrôle lecture + écriture sur la base de données locale de l'application via un bloc d'actions JSON.
 
@@ -235,7 +232,7 @@ ${ACTIONS_START_MARKER}
 [{"type": "NOM_ACTION", "payload": {...}}]
 ${ACTIONS_END_MARKER}
 
-Catalogue des actions supportées :
+Catalogue des actions supportées (utilise EXCLUSIVEMENT les IDs exacts du catalogue EXERCISES_DB ci-dessus) :
 1. SET_NUTRITION_TARGETS : {"kcal": 2450, "protein": 185, "carbs": 245, "fat": 78, "hydrationMl": 3000, "resetAdaptiveAdjustment": true, "lockOverride": true}
 2. RESET_NUTRITION_AUTO : {}
 3. RESET_EWMA_BASELINE : {"weightKg": 82.0}
@@ -247,14 +244,14 @@ Catalogue des actions supportées :
 9. ADD_SHOPPING_ITEMS : {"items": [{"name": "Skyr 0%", "quantity": "4", "unit": "pots", "aisle": "Crèmerie & Œufs"}]}
 10. UPDATE_PROFILE : {"goal": "fat_loss|recomp|lean_bulk|hypertrophy|strength|health_posture", "weight": 82, "bodyFat": 16, "waistCm": 82, "bmrKcal": 1810, "activityLevel": "sedentary|mixed|active", "sessionsPerWeek": 4, "sessionDuration": 60, "equipment": ["barbell","dumbbells","cables","machines","bench","pullup_bar"], "addEquipment": ["kettlebell"], "diet": "omnivore|vegetarian|vegan|pescatarian|halal|gluten_free", "allergies": ["dairy"], "injuries": [{"zone":"shoulder","severity":2}], "lagPriorities": ["delts_lat","pecs_upper"], "dominantGroups": ["quads"], "morphology": {"morphotype": "mesomorph", "femurTorsoRatio": "long_femur|balanced|short_femur", "armSpanRatio": "long_arms|balanced|short_arms", "claviclePelvisRatio": "broad_shoulders|balanced|narrow_shoulders", "ribcageType": "narrow|medium|wide", "postureFlags": ["anterior_pelvic_tilt","kyphosis","forward_head","protracted_shoulders"]}}
 11. APPLY_PHYSIQUE_ASSESSMENT : {"lagPriorities": ["delts_lat","lats_width"], "dominantGroups": ["delts_ant"], "asymmetries": [{"zone": "Ceinture scapulaire", "description": "Épaule droite plus basse"}], "rebuildProgram": true}
-12. MUTATE_PROGRAM : {"split": "full_body|upper_lower|ppl|hybrid|arnold|bro_split", "method": "double_progression|reverse_pyramid|top_set_backoff|classic_pyramid|rest_pause|dup", "sessionsPerWeek": 3, "sessionDurationMin": 45, "phase": "calibration|accumulation|intensification|deload", "preservationMode": true, "setsDelta": -1, "repsDelta": 2, "rirDelta": 1, "regenerate": true}
-13. UPDATE_WORKOUT_EXERCISE : {"exerciseId": "id_existant", "dayIndex": 0, "sets": 4, "repMin": 6, "repMax": 10, "suggestedLoadKg": 85, "targetRir": 1, "restSec": 150}
-14. SWAP_EXERCISE : {"fromExerciseId": "id_existant", "toExerciseId": "id_valide_ci_dessous"} OU {"painZone": "shoulder|lumbar|knee|elbow|wrist|neck"}
-15. SAVE_COACH_MEMORY : {"text": "Préfère les haltères au squat barre", "category": "preference|pain|nutrition|training|posture"}
-16. REMOVE_COACH_MEMORY : {"id": "mem_xxx"} ou {"match": "texte à oublier"}
-
-IDs d'exercices valides pour SWAP_EXERCISE / UPDATE_WORKOUT_EXERCISE :
-${validExerciseIdsLine}`;
+12. MUTATE_PROGRAM : {"split": "full_body|upper_lower|ppl|hybrid|arnold|bro_split", "method": "double_progression|reverse_pyramid|top_set_backoff|classic_pyramid|rest_pause|dup", "sessionsPerWeek": 3, "sessionDurationMin": 45, "phase": "calibration|accumulation|intensification|deload", "preservationMode": true, "setsDelta": -1, "repsDelta": 2, "rirDelta": 1, "regenerate": true, "exercises": [{"dayIndex": 0, "exerciseId": "id_existant", "sets": 4, "repMin": 6, "repMax": 10, "suggestedLoadKg": 85}]}
+13. UPDATE_WORKOUT_EXERCISE : {"exerciseId": "id_existant", "dayIndex": 0, "exerciseIndex": 0, "sets": 4, "repMin": 6, "repMax": 10, "suggestedLoadKg": 85, "targetRir": 1, "restSec": 150}
+14. SWAP_EXERCISE : {"fromExerciseId": "id_existant", "toExerciseId": "id_catalogue", "dayIndex": 0} OU {"painZone": "shoulder|lumbar|knee|elbow|wrist|neck"}
+15. ADD_WORKOUT_EXERCISE : {"exerciseId": "id_catalogue", "dayIndex": 0, "sets": 3, "repMin": 10, "repMax": 15, "suggestedLoadKg": 20, "targetRir": 2}
+16. REMOVE_WORKOUT_EXERCISE : {"exerciseId": "id_existant", "dayIndex": 0, "exerciseIndex": 2}
+17. SET_WORKOUT_EXERCISES : {"dayIndex": 0, "replaceDay": false, "exercises": [{"exerciseId": "id_existant", "sets": 4, "repMin": 6, "repMax": 8, "suggestedLoadKg": 90}, {"fromExerciseId": "ancien_id", "toExerciseId": "nouveau_id", "sets": 3, "repMin": 10, "repMax": 12}]}
+18. SAVE_COACH_MEMORY : {"text": "Préfère les haltères au squat barre", "category": "preference|pain|nutrition|training|posture"}
+19. REMOVE_COACH_MEMORY : {"id": "mem_xxx"} ou {"match": "texte à oublier"}`;
 }
 
 /* ==========================================================================
@@ -482,30 +479,325 @@ export function parseTier0DeterministicActions(userText, { profile = null } = {}
    4. EXÉCUTEUR INDEXEDDB RÉEL AVEC SNAPSHOT & ANNULATION (UNDO 5S)
    ========================================================================== */
 
-function findProgramExerciseSlot(program, { fromExerciseId = null, fromName = null, dayIndex = null } = {}) {
+const EXERCISE_STOP_WORDS = new Set([
+  'de', 'du', 'des', 'la', 'le', 'les', 'au', 'aux', 'a', 'en', 'sur', 'avec', 'pour', 'un', 'une', 'et', 'ou', 'l', 'd', 'the', 'with', 'on', 'of',
+]);
+
+function tokenizeExerciseQuery(str) {
+  return normalizeSearch(str)
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter((t) => t.length >= 2 && !EXERCISE_STOP_WORDS.has(t));
+}
+
+function scoreExerciseCandidate(queryNorm, queryTokens, ex) {
+  const idNorm = normalizeSearch(ex.id).replace(/_/g, ' ');
+  const nameNorm = normalizeSearch(ex.name);
+  const enNorm = normalizeSearch(ex.englishName || '');
+  const musclesNorm = (ex.primaryMuscles || [])
+    .map((m) => `${m} ${MUSCLE_GROUPS[m]?.label || ''}`)
+    .map(normalizeSearch)
+    .join(' ');
+  const combined = `${nameNorm} ${enNorm} ${idNorm} ${musclesNorm}`;
+
+  if (queryNorm === normalizeSearch(ex.id) || queryNorm === nameNorm || (enNorm && queryNorm === enNorm)) {
+    return 1.0;
+  }
+
+  let score = 0;
+  if (queryNorm.length >= 3 && (nameNorm.includes(queryNorm) || idNorm.includes(queryNorm) || (enNorm && enNorm.includes(queryNorm)))) {
+    score = Math.max(score, 0.86);
+  }
+  if (nameNorm.length >= 4 && queryNorm.includes(nameNorm)) {
+    score = Math.max(score, 0.84);
+  }
+
+  if (queryTokens.length > 0) {
+    const candidateTokens = new Set([
+      ...tokenizeExerciseQuery(ex.name),
+      ...tokenizeExerciseQuery(ex.englishName || ''),
+      ...tokenizeExerciseQuery(idNorm),
+    ]);
+    const muscleTokens = new Set(tokenizeExerciseQuery(musclesNorm));
+
+    let matched = 0;
+    for (const qt of queryTokens) {
+      if (candidateTokens.has(qt)) {
+        matched += 1.0;
+      } else if (Array.from(candidateTokens).some((ct) => ct.startsWith(qt) || (qt.length >= 4 && ct.includes(qt)) || (ct.length >= 4 && qt.includes(ct)))) {
+        matched += 0.78;
+      } else if (muscleTokens.has(qt) || combined.includes(qt)) {
+        matched += 0.45;
+      }
+    }
+    const coverage = matched / queryTokens.length;
+    const precision = candidateTokens.size > 0 ? Math.min(1, matched / Math.max(queryTokens.length, candidateTokens.size)) : 0;
+    const tokenScore = coverage * 0.82 + precision * 0.18;
+    score = Math.max(score, tokenScore);
+  }
+
+  return Math.min(0.99, Number(score.toFixed(3)));
+}
+
+/**
+ * Résolution robuste par ID exact ou Fuzzy Match (nom français sans accents, casse,
+ * mots-clés / nom anglais) contre EXERCISES_DB.
+ * Retourne toujours les 3 exercices les plus proches en cas d'échec.
+ */
+export function resolveExerciseFuzzy(queryOrId) {
+  const raw = String(queryOrId || '').trim();
+  if (!raw) {
+    return {
+      match: null,
+      exact: false,
+      fuzzy: false,
+      score: 0,
+      suggestions: EXERCISES_DB.slice(0, 3).map((e) => ({
+        id: e.id,
+        name: e.name,
+        label: `${e.id} (${e.name})`,
+      })),
+    };
+  }
+
+  // 1) Correspondance ID exacte ou normalisée
+  const direct = getExerciseById(raw);
+  if (direct) {
+    return { match: direct, exact: true, fuzzy: false, score: 1, suggestions: [] };
+  }
+  const keyNorm = normalizeKey(raw);
+  const directByNormKey = EXERCISES_DB.find((e) => normalizeKey(e.id) === keyNorm || normalizeKey(e.name) === keyNorm);
+  if (directByNormKey) {
+    return { match: directByNormKey, exact: true, fuzzy: false, score: 1, suggestions: [] };
+  }
+
+  // 2) Scoring fuzzy sur tout EXERCISES_DB
+  const queryNorm = normalizeSearch(raw).replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const queryTokens = tokenizeExerciseQuery(raw);
+  const ranked = EXERCISES_DB.map((ex) => ({
+    ex,
+    score: scoreExerciseCandidate(queryNorm, queryTokens, ex),
+  })).sort((a, b) => b.score - a.score || a.ex.name.localeCompare(b.ex.name));
+
+  const top3 = ranked.slice(0, 3).map((r) => ({
+    id: r.ex.id,
+    name: r.ex.name,
+    score: r.score,
+    label: `${r.ex.id} (${r.ex.name})`,
+  }));
+
+  const best = ranked[0];
+  if (best && best.score >= 0.55) {
+    return {
+      match: best.ex,
+      exact: false,
+      fuzzy: true,
+      score: best.score,
+      suggestions: top3,
+    };
+  }
+
+  return {
+    match: null,
+    exact: false,
+    fuzzy: false,
+    score: best?.score || 0,
+    suggestions: top3,
+  };
+}
+
+function formatSuggestionsList(suggestions = []) {
+  if (!Array.isArray(suggestions) || suggestions.length === 0) return '';
+  return suggestions.slice(0, 3).map((s) => s.label || `${s.id} (${s.name})`).join(', ');
+}
+
+function suggestClosestProgramSlots(program, query = '', dayIndex = null) {
   const days = program?.days || [];
+  const allSlots = [];
+  days.forEach((day, dIdx) => {
+    if (dayIndex !== null && dayIndex !== undefined && Number.isFinite(Number(dayIndex)) && Number(dayIndex) !== dIdx) {
+      return;
+    }
+    (day.exercises || []).forEach((slot, eIdx) => {
+      allSlots.push({ dayIdx: dIdx, exIdx: eIdx, slot });
+    });
+  });
+
+  if (!query) {
+    return allSlots.slice(0, 3).map((item) => ({
+      id: item.slot.exerciseId,
+      name: item.slot.name,
+      label: `J${item.dayIdx + 1}[${item.exIdx}] ${item.slot.exerciseId} (${item.slot.name})`,
+    }));
+  }
+
+  const queryNorm = normalizeSearch(query).replace(/[_-]+/g, ' ').trim();
+  const queryTokens = tokenizeExerciseQuery(query);
+  return allSlots
+    .map((item) => {
+      const dbEx = getExerciseById(item.slot.exerciseId) || {
+        id: item.slot.exerciseId || '',
+        name: item.slot.name || '',
+        englishName: '',
+        primaryMuscles: item.slot.primaryMuscles || [],
+      };
+      return {
+        ...item,
+        score: scoreExerciseCandidate(queryNorm, queryTokens, dbEx),
+      };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3)
+    .map((item) => ({
+      id: item.slot.exerciseId,
+      name: item.slot.name,
+      label: `J${item.dayIdx + 1}[${item.exIdx}] ${item.slot.exerciseId} (${item.slot.name})`,
+    }));
+}
+
+function findProgramExerciseSlot(
+  program,
+  { fromExerciseId = null, fromName = null, dayIndex = null, exerciseIndex = null } = {}
+) {
+  const days = program?.days || [];
+  const hasDayIdx = dayIndex !== null && dayIndex !== undefined && dayIndex !== '' && Number.isFinite(Number(dayIndex));
+  const targetDayIdx = hasDayIdx ? Number(dayIndex) : null;
+  const hasExIdx =
+    exerciseIndex !== null && exerciseIndex !== undefined && exerciseIndex !== '' && Number.isFinite(Number(exerciseIndex));
+  const targetExIdx = hasExIdx ? Number(exerciseIndex) : null;
+
+  // 1) Ciblage direct par dayIndex + exerciseIndex
+  if (targetDayIdx !== null && targetExIdx !== null) {
+    const slot = days[targetDayIdx]?.exercises?.[targetExIdx];
+    if (slot) return [{ dayIdx: targetDayIdx, exIdx: targetExIdx, slot }];
+  }
+
+  const rawQuery = String(fromExerciseId || fromName || '').trim();
+  if (!rawQuery) return [];
+
   const normId = fromExerciseId ? String(fromExerciseId).trim().toLowerCase() : '';
   const normName = fromName ? normalizeSearch(fromName) : '';
-  const matches = [];
+  const exactMatches = [];
 
   days.forEach((day, dIdx) => {
-    if (dayIndex !== null && dayIndex !== undefined && Number(dayIndex) !== dIdx) return;
+    if (targetDayIdx !== null && targetDayIdx !== dIdx) return;
     (day.exercises || []).forEach((slot, eIdx) => {
       const slotExId = String(slot.exerciseId || '').toLowerCase();
       const slotName = normalizeSearch(slot.name || '');
       if (
         (normId && slotExId === normId) ||
-        (normName && (slotName.includes(normName) || normName.includes(slotName)))
+        (normName && (slotName === normName || slotName.includes(normName) || normName.includes(slotName)))
       ) {
-        matches.push({ dayIdx: dIdx, exIdx: eIdx, slot });
+        exactMatches.push({ dayIdx: dIdx, exIdx: eIdx, slot });
+      }
+    });
+  });
+  if (exactMatches.length > 0) return exactMatches;
+
+  // 2) Résolution fuzzy via le catalogue EXERCISES_DB -> cherche l'ID résolu dans le programme
+  const fuzzyDb = resolveExerciseFuzzy(rawQuery);
+  if (fuzzyDb.match) {
+    const resolvedId = fuzzyDb.match.id.toLowerCase();
+    const resolvedMatches = [];
+    days.forEach((day, dIdx) => {
+      if (targetDayIdx !== null && targetDayIdx !== dIdx) return;
+      (day.exercises || []).forEach((slot, eIdx) => {
+        if (String(slot.exerciseId || '').toLowerCase() === resolvedId) {
+          resolvedMatches.push({ dayIdx: dIdx, exIdx: eIdx, slot });
+        }
+      });
+    });
+    if (resolvedMatches.length > 0) return resolvedMatches;
+  }
+
+  // 3) Fuzzy match direct sur les exercices présents dans le programme actif
+  const queryNorm = normalizeSearch(rawQuery).replace(/[_-]+/g, ' ').trim();
+  const queryTokens = tokenizeExerciseQuery(rawQuery);
+  const scored = [];
+  days.forEach((day, dIdx) => {
+    if (targetDayIdx !== null && targetDayIdx !== dIdx) return;
+    (day.exercises || []).forEach((slot, eIdx) => {
+      const dbEx = getExerciseById(slot.exerciseId) || {
+        id: slot.exerciseId || '',
+        name: slot.name || '',
+        englishName: '',
+        primaryMuscles: slot.primaryMuscles || [],
+      };
+      const score = scoreExerciseCandidate(queryNorm, queryTokens, dbEx);
+      if (score >= 0.55) {
+        scored.push({ dayIdx: dIdx, exIdx: eIdx, slot, score });
       }
     });
   });
 
-  return matches;
+  if (scored.length === 0) return [];
+  scored.sort((a, b) => b.score - a.score);
+  const bestScore = scored[0].score;
+  return scored
+    .filter((s) => s.score >= bestScore - 0.05)
+    .map(({ dayIdx, exIdx, slot }) => ({ dayIdx, exIdx, slot }));
 }
 
-function buildSwappedSlot(oldSlot, targetEx, profile, program) {
+function buildNewProgramSlot(targetEx, profile, program, overrides = {}, dayIndex = 0) {
+  const methodId = overrides.method || program?.progressionMethod || profile?.progressionMethod || 'double_progression';
+  const setsCount = Number.isFinite(Number(overrides.sets))
+    ? Math.max(1, Math.min(8, Math.round(Number(overrides.sets))))
+    : targetEx.category === 'compound'
+      ? 3
+      : 3;
+  const repMin = Number.isFinite(Number(overrides.repMin))
+    ? Math.max(2, Math.min(30, Math.round(Number(overrides.repMin))))
+    : targetEx.category === 'compound'
+      ? 6
+      : 10;
+  const repMax = Number.isFinite(Number(overrides.repMax))
+    ? Math.max(repMin, Math.min(35, Math.round(Number(overrides.repMax))))
+    : Math.max(repMin, targetEx.category === 'compound' ? 10 : 15);
+  const targetRir = Number.isFinite(Number(overrides.targetRir ?? overrides.rir))
+    ? Math.max(0, Math.min(5, Math.round(Number(overrides.targetRir ?? overrides.rir))))
+    : 2;
+  const restSec = Number.isFinite(Number(overrides.restSec))
+    ? Math.max(30, Math.min(300, Math.round(Number(overrides.restSec))))
+    : targetEx.category === 'compound'
+      ? 120
+      : 75;
+  const rawLoad = Number(overrides.suggestedLoadKg ?? overrides.loadKg);
+  const suggestedLoadKg = Number.isFinite(rawLoad)
+    ? roundToIncrement(Math.max(0, rawLoad), targetEx.incrementKg || 2.5)
+    : targetEx.loadMode === 'bodyweight_plus'
+      ? 0
+      : Math.max(targetEx.barWeightKg || targetEx.incrementKg || 2, 20);
+
+  return {
+    exerciseId: targetEx.id,
+    name: targetEx.name,
+    category: targetEx.category,
+    primaryMuscles: [...(targetEx.primaryMuscles || [])],
+    loadMode: targetEx.loadMode,
+    incrementKg: targetEx.incrementKg,
+    sets: setsCount,
+    repMin,
+    repMax,
+    repRange: [repMin, repMax],
+    targetRir,
+    restSec,
+    method: methodId,
+    suggestedLoadKg,
+    setScheme: buildSetScheme(targetEx, {
+      sets: setsCount,
+      repMin,
+      repMax,
+      targetRir,
+      suggestedLoadKg,
+      method: methodId,
+      restSec,
+      dayIndex,
+    }),
+  };
+}
+
+function buildSwappedSlot(oldSlot, targetEx, profile, program, dayIndex = 0) {
   const sourceEx = getExerciseById(oldSlot.exerciseId);
   const ratio = (targetEx.loadTransferFactor || 1) / (sourceEx?.loadTransferFactor || 1);
   const rawConverted = Number(oldSlot.suggestedLoadKg) > 0 ? Number(oldSlot.suggestedLoadKg) * ratio : 20;
@@ -514,9 +806,12 @@ function buildSwappedSlot(oldSlot, targetEx, profile, program) {
       ? 0
       : Math.max(targetEx.barWeightKg || targetEx.incrementKg || 2, roundToIncrement(rawConverted, targetEx.incrementKg));
 
-  const methodId = program?.progressionMethod || profile?.progressionMethod || 'double_progression';
-  const repRange = Array.isArray(oldSlot.repRange) && oldSlot.repRange.length === 2 ? oldSlot.repRange : [8, 12];
+  const methodId = oldSlot.method || program?.progressionMethod || profile?.progressionMethod || 'double_progression';
+  const repMin = oldSlot.repMin ?? oldSlot.repRange?.[0] ?? 8;
+  const repMax = Math.max(repMin, oldSlot.repMax ?? oldSlot.repRange?.[1] ?? 12);
   const setsCount = Number(oldSlot.sets) || 3;
+  const targetRir = oldSlot.targetRir ?? 2;
+  const restSec = oldSlot.restSec || (targetEx.category === 'compound' ? 120 : 75);
 
   return {
     ...oldSlot,
@@ -526,8 +821,23 @@ function buildSwappedSlot(oldSlot, targetEx, profile, program) {
     primaryMuscles: [...(targetEx.primaryMuscles || [])],
     loadMode: targetEx.loadMode,
     incrementKg: targetEx.incrementKg,
+    repMin,
+    repMax,
+    repRange: [repMin, repMax],
+    targetRir,
+    restSec,
+    method: methodId,
     suggestedLoadKg: convertedLoadKg,
-    setScheme: buildSetScheme(methodId, setsCount, repRange, convertedLoadKg, targetEx, oldSlot.targetRir ?? 2),
+    setScheme: buildSetScheme(targetEx, {
+      sets: setsCount,
+      repMin,
+      repMax,
+      targetRir,
+      suggestedLoadKg: convertedLoadKg,
+      method: methodId,
+      restSec,
+      dayIndex,
+    }),
   };
 }
 
@@ -1218,17 +1528,21 @@ export async function executeCoachActions(actions = [], deps = {}) {
                     return {
                       ...ex,
                       sets: nextSets,
+                      repMin,
+                      repMax,
                       repRange: [repMin, repMax],
                       targetRir: nextRir,
                       setScheme: dbEx
-                        ? buildSetScheme(
-                            curProgram.progressionMethod || 'double_progression',
-                            nextSets,
-                            [repMin, repMax],
-                            ex.suggestedLoadKg,
-                            dbEx,
-                            nextRir
-                          )
+                        ? buildSetScheme(dbEx, {
+                            sets: nextSets,
+                            repMin,
+                            repMax,
+                            targetRir: nextRir,
+                            suggestedLoadKg: ex.suggestedLoadKg,
+                            method: ex.method || curProgram.progressionMethod || 'double_progression',
+                            restSec: ex.restSec || 90,
+                            dayIndex: dIdx,
+                          })
                         : ex.setScheme,
                     };
                   }),
@@ -1240,6 +1554,99 @@ export async function executeCoachActions(actions = [], deps = {}) {
             if (repsDelta) badgeParts.push(`Reps ${repsDelta > 0 ? '+' : ''}${repsDelta}`);
             if (rirDelta) badgeParts.push(`RIR ${rirDelta > 0 ? '+' : ''}${rirDelta}`);
             fineTuned = true;
+          }
+
+          // Mise à jour par lots d'exercices directement depuis MUTATE_PROGRAM.exercises
+          if (Array.isArray(payload.exercises) && payload.exercises.length > 0) {
+            let batchApplied = 0;
+            for (const item of payload.exercises) {
+              const targetDay = item.dayIndex ?? payload.dayIndex ?? null;
+              const matches = findProgramExerciseSlot(curProgram, {
+                fromExerciseId: item.fromExerciseId || item.exerciseId,
+                fromName: item.fromName || item.name || item.exerciseName,
+                dayIndex: targetDay,
+                exerciseIndex: item.exerciseIndex,
+              });
+              const swapQuery = item.toExerciseId || item.newExerciseId || item.toName;
+              const resolvedSwap = swapQuery ? resolveExerciseFuzzy(swapQuery) : null;
+
+              if (matches.length > 0) {
+                const matchSet = new Set(matches.map((m) => `${m.dayIdx}:${m.exIdx}`));
+                curProgram.days = curProgram.days.map((day, dIdx) => ({
+                  ...day,
+                  exercises: (day.exercises || []).map((slot, eIdx) => {
+                    if (!matchSet.has(`${dIdx}:${eIdx}`)) return slot;
+                    const baseSlot = resolvedSwap?.match
+                      ? buildSwappedSlot(slot, resolvedSwap.match, curProfile, curProgram, dIdx)
+                      : slot;
+                    const nextSets = Number.isFinite(Number(item.sets))
+                      ? Math.max(1, Math.min(8, Math.round(Number(item.sets))))
+                      : baseSlot.sets;
+                    const nextRepMin = Number.isFinite(Number(item.repMin))
+                      ? Math.max(2, Math.min(30, Math.round(Number(item.repMin))))
+                      : baseSlot.repMin ?? baseSlot.repRange?.[0] ?? 8;
+                    const nextRepMax = Number.isFinite(Number(item.repMax))
+                      ? Math.max(nextRepMin, Math.min(35, Math.round(Number(item.repMax))))
+                      : Math.max(nextRepMin, baseSlot.repMax ?? baseSlot.repRange?.[1] ?? 12);
+                    const nextLoad = Number.isFinite(Number(item.suggestedLoadKg ?? item.loadKg))
+                      ? roundToIncrement(Math.max(0, Number(item.suggestedLoadKg ?? item.loadKg)), baseSlot.incrementKg || 2.5)
+                      : baseSlot.suggestedLoadKg;
+                    const nextRir = Number.isFinite(Number(item.targetRir ?? item.rir))
+                      ? Math.max(0, Math.min(5, Math.round(Number(item.targetRir ?? item.rir))))
+                      : baseSlot.targetRir;
+                    const nextRest = Number.isFinite(Number(item.restSec))
+                      ? Math.max(30, Math.min(300, Math.round(Number(item.restSec))))
+                      : baseSlot.restSec;
+                    const dbEx = getExerciseById(baseSlot.exerciseId);
+                    return {
+                      ...baseSlot,
+                      sets: nextSets,
+                      repMin: nextRepMin,
+                      repMax: nextRepMax,
+                      repRange: [nextRepMin, nextRepMax],
+                      suggestedLoadKg: nextLoad,
+                      targetRir: nextRir,
+                      restSec: nextRest,
+                      setScheme: dbEx
+                        ? buildSetScheme(dbEx, {
+                            sets: nextSets,
+                            repMin: nextRepMin,
+                            repMax: nextRepMax,
+                            targetRir: nextRir,
+                            suggestedLoadKg: nextLoad,
+                            method: baseSlot.method || curProgram.progressionMethod || 'double_progression',
+                            restSec: nextRest,
+                            dayIndex: dIdx,
+                          })
+                        : baseSlot.setScheme,
+                    };
+                  }),
+                }));
+                batchApplied += 1;
+              } else if (item.exerciseId || item.name) {
+                const resolvedNew = resolveExerciseFuzzy(item.exerciseId || item.name);
+                const dIdx = Number.isFinite(Number(targetDay))
+                  ? Math.max(0, Math.min(curProgram.days.length - 1, Number(targetDay)))
+                  : 0;
+                if (resolvedNew.match && curProgram.days[dIdx]) {
+                  curProgram.days[dIdx].exercises = [
+                    ...(curProgram.days[dIdx].exercises || []),
+                    buildNewProgramSlot(resolvedNew.match, curProfile, curProgram, item, dIdx),
+                  ];
+                  batchApplied += 1;
+                } else {
+                  const hint = formatSuggestionsList(resolvedNew.suggestions);
+                  errors.push(
+                    `MUTATE_PROGRAM : exercice "${item.exerciseId || item.name}" introuvable. Exercices proches disponibles : ${hint}`
+                  );
+                }
+              }
+            }
+            if (batchApplied > 0) {
+              curProgram.weeklyVolume = calculateWeeklyVolume(curProgram.days);
+              badgeParts.push(`${batchApplied} exercice(s) mis à jour`);
+              fineTuned = true;
+            }
           }
 
           if (fineTuned) {
@@ -1263,15 +1670,34 @@ export async function executeCoachActions(actions = [], deps = {}) {
           errors.push('UPDATE_WORKOUT_EXERCISE : aucun programme actif.');
           continue;
         }
+        const queryLabel = payload.exerciseId || payload.fromExerciseId || payload.name || payload.exerciseName || '';
         const matches = findProgramExerciseSlot(curProgram, {
           fromExerciseId: payload.exerciseId || payload.fromExerciseId,
           fromName: payload.name || payload.exerciseName,
           dayIndex: payload.dayIndex,
+          exerciseIndex: payload.exerciseIndex,
         });
         if (matches.length === 0) {
-          errors.push('UPDATE_WORKOUT_EXERCISE : exercice ciblé introuvable dans le programme actif.');
+          const progHints = formatSuggestionsList(suggestClosestProgramSlots(curProgram, queryLabel, payload.dayIndex));
+          errors.push(
+            `UPDATE_WORKOUT_EXERCISE : exercice "${queryLabel || 'non précisé'}" introuvable dans le programme actif. Exercices proches dans la séance : ${progHints}`
+          );
           continue;
         }
+
+        const swapTargetQuery = payload.toExerciseId || payload.newExerciseId || payload.toName || '';
+        let swapTargetEx = null;
+        if (swapTargetQuery) {
+          const resolvedSwap = resolveExerciseFuzzy(swapTargetQuery);
+          if (!resolvedSwap.match) {
+            errors.push(
+              `UPDATE_WORKOUT_EXERCISE : exercice de remplacement "${swapTargetQuery}" introuvable. Exercices proches disponibles : ${formatSuggestionsList(resolvedSwap.suggestions)}`
+            );
+            continue;
+          }
+          swapTargetEx = resolvedSwap.match;
+        }
+
         const matchSet = new Set(matches.map((m) => `${m.dayIdx}:${m.exIdx}`));
         const firstSlot = matches[0].slot;
 
@@ -1279,27 +1705,28 @@ export async function executeCoachActions(actions = [], deps = {}) {
           ...day,
           exercises: (day.exercises || []).map((slot, eIdx) => {
             if (!matchSet.has(`${dIdx}:${eIdx}`)) return slot;
+            const baseSlot = swapTargetEx ? buildSwappedSlot(slot, swapTargetEx, curProfile, curProgram, dIdx) : slot;
             const nextSets = Number.isFinite(Number(payload.sets))
               ? Math.max(1, Math.min(8, Math.round(Number(payload.sets))))
-              : slot.sets;
+              : baseSlot.sets;
             const nextRepMin = Number.isFinite(Number(payload.repMin))
               ? Math.max(2, Math.min(30, Math.round(Number(payload.repMin))))
-              : slot.repMin ?? slot.repRange?.[0] ?? 8;
+              : baseSlot.repMin ?? baseSlot.repRange?.[0] ?? 8;
             const nextRepMax = Number.isFinite(Number(payload.repMax))
               ? Math.max(nextRepMin, Math.min(35, Math.round(Number(payload.repMax))))
-              : Math.max(nextRepMin, slot.repMax ?? slot.repRange?.[1] ?? 12);
+              : Math.max(nextRepMin, baseSlot.repMax ?? baseSlot.repRange?.[1] ?? 12);
             const nextLoad = Number.isFinite(Number(payload.suggestedLoadKg ?? payload.loadKg))
-              ? roundToIncrement(Math.max(0, Number(payload.suggestedLoadKg ?? payload.loadKg)), slot.incrementKg || 2.5)
-              : slot.suggestedLoadKg;
+              ? roundToIncrement(Math.max(0, Number(payload.suggestedLoadKg ?? payload.loadKg)), baseSlot.incrementKg || 2.5)
+              : baseSlot.suggestedLoadKg;
             const nextRir = Number.isFinite(Number(payload.targetRir ?? payload.rir))
               ? Math.max(0, Math.min(5, Math.round(Number(payload.targetRir ?? payload.rir))))
-              : slot.targetRir;
+              : baseSlot.targetRir;
             const nextRest = Number.isFinite(Number(payload.restSec))
               ? Math.max(30, Math.min(300, Math.round(Number(payload.restSec))))
-              : slot.restSec;
-            const dbEx = getExerciseById(slot.exerciseId);
+              : baseSlot.restSec;
+            const dbEx = getExerciseById(baseSlot.exerciseId);
             return {
-              ...slot,
+              ...baseSlot,
               sets: nextSets,
               repMin: nextRepMin,
               repMax: nextRepMax,
@@ -1314,11 +1741,11 @@ export async function executeCoachActions(actions = [], deps = {}) {
                     repMax: nextRepMax,
                     targetRir: nextRir,
                     suggestedLoadKg: nextLoad,
-                    method: slot.method || curProgram.progressionMethod || 'double_progression',
+                    method: baseSlot.method || curProgram.progressionMethod || 'double_progression',
                     restSec: nextRest,
                     dayIndex: dIdx,
                   })
-                : slot.setScheme,
+                : baseSlot.setScheme,
             };
           }),
         }));
@@ -1330,7 +1757,264 @@ export async function executeCoachActions(actions = [], deps = {}) {
         });
         snapshot.programModified = true;
         changedModules.add('program');
-        executedBadges.push(`EXÉCUTÉ · Exercice ajusté : ${firstSlot.name}`);
+        executedBadges.push(
+          swapTargetEx
+            ? `EXÉCUTÉ · Exercice ajusté : ${firstSlot.name} → ${swapTargetEx.name}`
+            : `EXÉCUTÉ · Exercice ajusté : ${firstSlot.name}`
+        );
+        continue;
+      }
+
+      /* ---------------- 7c. ADD_WORKOUT_EXERCISE ---------------- */
+      if (type === 'ADD_WORKOUT_EXERCISE') {
+        if (!curProgram?.days?.length) {
+          errors.push('ADD_WORKOUT_EXERCISE : aucun programme actif.');
+          continue;
+        }
+        const query = payload.exerciseId || payload.name || payload.exerciseName || '';
+        const resolved = resolveExerciseFuzzy(query);
+        if (!resolved.match) {
+          errors.push(
+            `ADD_WORKOUT_EXERCISE : exercice "${query}" introuvable. Exercices proches disponibles : ${formatSuggestionsList(resolved.suggestions)}`
+          );
+          continue;
+        }
+        const dayIdx = Number.isFinite(Number(payload.dayIndex))
+          ? Math.max(0, Math.min(curProgram.days.length - 1, Number(payload.dayIndex)))
+          : 0;
+        const newSlot = buildNewProgramSlot(resolved.match, curProfile, curProgram, payload, dayIdx);
+
+        const updatedDays = curProgram.days.map((day, dIdx) => {
+          if (dIdx !== dayIdx) return day;
+          const nextExs = [...(day.exercises || [])];
+          const insertIdx = Number.isFinite(Number(payload.insertIndex))
+            ? Math.max(0, Math.min(nextExs.length, Number(payload.insertIndex)))
+            : nextExs.length;
+          nextExs.splice(insertIdx, 0, newSlot);
+          return { ...day, exercises: nextExs };
+        });
+
+        curProgram = await db.saveProgram(curProfile.id, {
+          ...curProgram,
+          days: updatedDays,
+          weeklyVolume: calculateWeeklyVolume(updatedDays),
+        });
+        snapshot.programModified = true;
+        changedModules.add('program');
+        executedBadges.push(`EXÉCUTÉ · Ajout J${dayIdx + 1} : ${resolved.match.name}`);
+        continue;
+      }
+
+      /* ---------------- 7d. REMOVE_WORKOUT_EXERCISE ---------------- */
+      if (type === 'REMOVE_WORKOUT_EXERCISE') {
+        if (!curProgram?.days?.length) {
+          errors.push('REMOVE_WORKOUT_EXERCISE : aucun programme actif.');
+          continue;
+        }
+        const queryLabel = payload.exerciseId || payload.fromExerciseId || payload.name || payload.exerciseName || '';
+        const matches = findProgramExerciseSlot(curProgram, {
+          fromExerciseId: payload.exerciseId || payload.fromExerciseId,
+          fromName: payload.name || payload.exerciseName,
+          dayIndex: payload.dayIndex,
+          exerciseIndex: payload.exerciseIndex,
+        });
+        if (matches.length === 0) {
+          const progHints = formatSuggestionsList(suggestClosestProgramSlots(curProgram, queryLabel, payload.dayIndex));
+          errors.push(
+            `REMOVE_WORKOUT_EXERCISE : exercice "${queryLabel || 'non précisé'}" introuvable dans le programme actif. Exercices proches dans la séance : ${progHints}`
+          );
+          continue;
+        }
+        const matchSet = new Set(matches.map((m) => `${m.dayIdx}:${m.exIdx}`));
+        const removedName = matches[0].slot.name;
+        const updatedDays = curProgram.days.map((day, dIdx) => ({
+          ...day,
+          exercises: (day.exercises || []).filter((_, eIdx) => !matchSet.has(`${dIdx}:${eIdx}`)),
+        }));
+
+        curProgram = await db.saveProgram(curProfile.id, {
+          ...curProgram,
+          days: updatedDays,
+          weeklyVolume: calculateWeeklyVolume(updatedDays),
+        });
+        snapshot.programModified = true;
+        changedModules.add('program');
+        executedBadges.push(`EXÉCUTÉ · Exercice retiré : ${removedName}`);
+        continue;
+      }
+
+      /* ---------------- 7e. SET_WORKOUT_EXERCISES (MISE À JOUR PAR LOTS) ---------------- */
+      if (type === 'SET_WORKOUT_EXERCISES') {
+        if (!curProgram?.days?.length) {
+          errors.push('SET_WORKOUT_EXERCISES : aucun programme actif.');
+          continue;
+        }
+        const items = Array.isArray(payload.exercises) ? payload.exercises : [];
+        if (items.length === 0) {
+          errors.push('SET_WORKOUT_EXERCISES : liste "exercises" vide.');
+          continue;
+        }
+
+        let workingDays = structuredClone(curProgram.days);
+        let appliedCount = 0;
+
+        if (payload.replaceDay === true) {
+          const dayIdx = Number.isFinite(Number(payload.dayIndex))
+            ? Math.max(0, Math.min(workingDays.length - 1, Number(payload.dayIndex)))
+            : 0;
+          const nextSlots = [];
+          for (const item of items) {
+            const q = item.exerciseId || item.toExerciseId || item.name || item.exerciseName || '';
+            const resolved = resolveExerciseFuzzy(q);
+            if (!resolved.match) {
+              errors.push(
+                `SET_WORKOUT_EXERCISES : exercice "${q}" introuvable. Exercices proches disponibles : ${formatSuggestionsList(resolved.suggestions)}`
+              );
+              continue;
+            }
+            nextSlots.push(buildNewProgramSlot(resolved.match, curProfile, curProgram, item, dayIdx));
+            appliedCount += 1;
+          }
+          if (nextSlots.length > 0) {
+            workingDays[dayIdx] = { ...workingDays[dayIdx], exercises: nextSlots };
+          }
+        } else {
+          for (const item of items) {
+            const op = String(item.op || item.action || '').toLowerCase();
+            const targetDay = item.dayIndex ?? payload.dayIndex ?? null;
+
+            if (op === 'remove' || op === 'delete') {
+              const matches = findProgramExerciseSlot({ days: workingDays }, {
+                fromExerciseId: item.exerciseId || item.fromExerciseId,
+                fromName: item.name || item.fromName,
+                dayIndex: targetDay,
+                exerciseIndex: item.exerciseIndex,
+              });
+              if (matches.length === 0) {
+                const hints = formatSuggestionsList(suggestClosestProgramSlots({ days: workingDays }, item.exerciseId || item.name, targetDay));
+                errors.push(`SET_WORKOUT_EXERCISES (suppression) : "${item.exerciseId || item.name}" introuvable. Proches : ${hints}`);
+                continue;
+              }
+              const mSet = new Set(matches.map((m) => `${m.dayIdx}:${m.exIdx}`));
+              workingDays = workingDays.map((day, dIdx) => ({
+                ...day,
+                exercises: (day.exercises || []).filter((_, eIdx) => !mSet.has(`${dIdx}:${eIdx}`)),
+              }));
+              appliedCount += 1;
+              continue;
+            }
+
+            const swapQuery = item.toExerciseId || item.newExerciseId || item.toName || '';
+            let swapEx = null;
+            if (swapQuery) {
+              const resSwap = resolveExerciseFuzzy(swapQuery);
+              if (!resSwap.match) {
+                errors.push(
+                  `SET_WORKOUT_EXERCISES : remplacement "${swapQuery}" introuvable. Exercices proches disponibles : ${formatSuggestionsList(resSwap.suggestions)}`
+                );
+                continue;
+              }
+              swapEx = resSwap.match;
+            }
+
+            const matches =
+              op === 'add'
+                ? []
+                : findProgramExerciseSlot({ days: workingDays }, {
+                    fromExerciseId: item.fromExerciseId || item.exerciseId,
+                    fromName: item.fromName || item.name || item.exerciseName,
+                    dayIndex: targetDay,
+                    exerciseIndex: item.exerciseIndex,
+                  });
+
+            if (matches.length > 0) {
+              const mSet = new Set(matches.map((m) => `${m.dayIdx}:${m.exIdx}`));
+              workingDays = workingDays.map((day, dIdx) => ({
+                ...day,
+                exercises: (day.exercises || []).map((slot, eIdx) => {
+                  if (!mSet.has(`${dIdx}:${eIdx}`)) return slot;
+                  const baseSlot = swapEx ? buildSwappedSlot(slot, swapEx, curProfile, curProgram, dIdx) : slot;
+                  const nextSets = Number.isFinite(Number(item.sets))
+                    ? Math.max(1, Math.min(8, Math.round(Number(item.sets))))
+                    : baseSlot.sets;
+                  const nextRepMin = Number.isFinite(Number(item.repMin))
+                    ? Math.max(2, Math.min(30, Math.round(Number(item.repMin))))
+                    : baseSlot.repMin ?? baseSlot.repRange?.[0] ?? 8;
+                  const nextRepMax = Number.isFinite(Number(item.repMax))
+                    ? Math.max(nextRepMin, Math.min(35, Math.round(Number(item.repMax))))
+                    : Math.max(nextRepMin, baseSlot.repMax ?? baseSlot.repRange?.[1] ?? 12);
+                  const nextLoad = Number.isFinite(Number(item.suggestedLoadKg ?? item.loadKg))
+                    ? roundToIncrement(Math.max(0, Number(item.suggestedLoadKg ?? item.loadKg)), baseSlot.incrementKg || 2.5)
+                    : baseSlot.suggestedLoadKg;
+                  const nextRir = Number.isFinite(Number(item.targetRir ?? item.rir))
+                    ? Math.max(0, Math.min(5, Math.round(Number(item.targetRir ?? item.rir))))
+                    : baseSlot.targetRir;
+                  const nextRest = Number.isFinite(Number(item.restSec))
+                    ? Math.max(30, Math.min(300, Math.round(Number(item.restSec))))
+                    : baseSlot.restSec;
+                  const dbEx = getExerciseById(baseSlot.exerciseId);
+                  return {
+                    ...baseSlot,
+                    sets: nextSets,
+                    repMin: nextRepMin,
+                    repMax: nextRepMax,
+                    repRange: [nextRepMin, nextRepMax],
+                    suggestedLoadKg: nextLoad,
+                    targetRir: nextRir,
+                    restSec: nextRest,
+                    setScheme: dbEx
+                      ? buildSetScheme(dbEx, {
+                          sets: nextSets,
+                          repMin: nextRepMin,
+                          repMax: nextRepMax,
+                          targetRir: nextRir,
+                          suggestedLoadKg: nextLoad,
+                          method: baseSlot.method || curProgram.progressionMethod || 'double_progression',
+                          restSec: nextRest,
+                          dayIndex: dIdx,
+                        })
+                      : baseSlot.setScheme,
+                  };
+                }),
+              }));
+              appliedCount += 1;
+            } else if (op === 'add' || item.addIfMissing === true) {
+              const q = item.exerciseId || item.toExerciseId || item.name || item.exerciseName || '';
+              const resolved = resolveExerciseFuzzy(q);
+              if (!resolved.match) {
+                errors.push(
+                  `SET_WORKOUT_EXERCISES (ajout) : "${q}" introuvable. Exercices proches disponibles : ${formatSuggestionsList(resolved.suggestions)}`
+                );
+                continue;
+              }
+              const dIdx = Number.isFinite(Number(targetDay))
+                ? Math.max(0, Math.min(workingDays.length - 1, Number(targetDay)))
+                : 0;
+              workingDays[dIdx].exercises = [
+                ...(workingDays[dIdx].exercises || []),
+                buildNewProgramSlot(resolved.match, curProfile, curProgram, item, dIdx),
+              ];
+              appliedCount += 1;
+            } else {
+              const q = item.fromExerciseId || item.exerciseId || item.name || '';
+              const hints = formatSuggestionsList(suggestClosestProgramSlots({ days: workingDays }, q, targetDay));
+              errors.push(`SET_WORKOUT_EXERCISES : "${q}" introuvable dans la séance. Exercices proches : ${hints}`);
+            }
+          }
+        }
+
+        if (appliedCount > 0) {
+          curProgram = await db.saveProgram(curProfile.id, {
+            ...curProgram,
+            days: workingDays,
+            weeklyVolume: calculateWeeklyVolume(workingDays),
+          });
+          snapshot.programModified = true;
+          changedModules.add('program');
+          executedBadges.push(
+            `EXÉCUTÉ · Séance mise à jour par lots (${appliedCount} exercice${appliedCount > 1 ? 's' : ''})`
+          );
+        }
         continue;
       }
 
@@ -1362,7 +2046,7 @@ export async function executeCoachActions(actions = [], deps = {}) {
           let swappedCount = 0;
           const swappedNames = [];
 
-          const updatedDays = curProgram.days.map((day) => ({
+          const updatedDays = curProgram.days.map((day, dIdx) => ({
             ...day,
             exercises: (day.exercises || []).map((slot) => {
               const dbEx = getExerciseById(slot.exerciseId);
@@ -1375,7 +2059,7 @@ export async function executeCoachActions(actions = [], deps = {}) {
 
               swappedCount += 1;
               swappedNames.push(`${slot.name} → ${safePick.name}`);
-              return buildSwappedSlot(slot, safePick, curProfile, curProgram);
+              return buildSwappedSlot(slot, safePick, curProfile, curProgram, dIdx);
             }),
           }));
 
@@ -1394,22 +2078,30 @@ export async function executeCoachActions(actions = [], deps = {}) {
           continue;
         }
 
-        // Mode A : swap ciblé validé strictement contre js/exercises-db.js
-        const toId = String(payload.toExerciseId || payload.newExerciseId || payload.exercise_id || '').trim();
-        const targetEx = getExerciseById(toId);
-        if (!targetEx) {
-          errors.push(`SWAP_EXERCISE rejeté : exercise_id inconnu ("${toId}").`);
+        // Mode A : swap ciblé avec Fuzzy Match + 3 suggestions explicites en cas d'échec
+        const toQuery = String(payload.toExerciseId || payload.newExerciseId || payload.toName || payload.exercise_id || '').trim();
+        const resolvedTarget = resolveExerciseFuzzy(toQuery);
+        if (!resolvedTarget.match) {
+          errors.push(
+            `SWAP_EXERCISE rejeté : exercice cible "${toQuery || 'vide'}" introuvable. Exercices proches disponibles : ${formatSuggestionsList(resolvedTarget.suggestions)}`
+          );
           continue;
         }
+        const targetEx = resolvedTarget.match;
 
+        const fromQuery = payload.fromExerciseId || payload.oldExerciseId || payload.fromName || payload.oldName || '';
         const matches = findProgramExerciseSlot(curProgram, {
           fromExerciseId: payload.fromExerciseId || payload.oldExerciseId,
           fromName: payload.fromName || payload.oldName,
           dayIndex: payload.dayIndex,
+          exerciseIndex: payload.exerciseIndex,
         });
 
         if (matches.length === 0) {
-          errors.push(`SWAP_EXERCISE : exercice source introuvable dans le programme actif.`);
+          const progHints = formatSuggestionsList(suggestClosestProgramSlots(curProgram, fromQuery, payload.dayIndex));
+          errors.push(
+            `SWAP_EXERCISE : exercice source "${fromQuery || 'non précisé'}" introuvable dans le programme actif. Exercices proches dans la séance : ${progHints}`
+          );
           continue;
         }
 
@@ -1418,7 +2110,7 @@ export async function executeCoachActions(actions = [], deps = {}) {
         const updatedDays = curProgram.days.map((day, dIdx) => ({
           ...day,
           exercises: (day.exercises || []).map((slot, eIdx) =>
-            matchSet.has(`${dIdx}:${eIdx}`) ? buildSwappedSlot(slot, targetEx, curProfile, curProgram) : slot
+            matchSet.has(`${dIdx}:${eIdx}`) ? buildSwappedSlot(slot, targetEx, curProfile, curProgram, dIdx) : slot
           ),
         }));
 

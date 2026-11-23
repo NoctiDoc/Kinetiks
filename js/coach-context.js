@@ -11,7 +11,7 @@
  * - Mémoire complète du Coach avec IDs
  */
 
-import { MUSCLE_GROUPS } from './exercises-db.js';
+import { EXERCISES_DB, MUSCLE_GROUPS } from './exercises-db.js';
 import { buildCoachRuntimeContext, estimate1RM } from './biomechanics-engine.js';
 import { getProfileAdaptiveAdjustmentKcal } from './nutrition-db.js';
 import { computeProIntelligence } from './pro-intelligence.js';
@@ -121,18 +121,24 @@ export function buildCoachFullContext({
     .filter(Boolean)
     .join(' | ');
 
-  // 4. Programme actif
+  // 4. Programme actif (avec dayIndex, index exercice, exercise_id, séries, réps et charge)
   const programLines = (program?.days || [])
     .map((day, dIdx) => {
       const exList = (day.exercises || [])
         .map(
-          (ex) =>
-            `${ex.exerciseId} ("${ex.name}", ${ex.sets}×${ex.repRange?.[0] || ex.repMin || 8}-${ex.repRange?.[1] || ex.repMax || 12} @ ${ex.suggestedLoadKg}kg, RIR ${ex.targetRir})`
+          (ex, eIdx) =>
+            `[${eIdx}] ${ex.exerciseId} ("${ex.name}", ${ex.sets}×${ex.repRange?.[0] || ex.repMin || 8}-${ex.repRange?.[1] || ex.repMax || 12} @ ${ex.suggestedLoadKg}kg, RIR ${ex.targetRir})`
         )
         .join(' ; ');
-      return `  - Jour ${dIdx + 1} [${day.name}] : ${exList}`;
+      return `  - Jour dayIndex=${dIdx} [${day.name}] : ${exList}`;
     })
     .join('\n');
+
+  // Catalogue exact de tous les exercices disponibles (id: Nom Français (groupe))
+  const exerciseCatalogLine = EXERCISES_DB.map((e) => {
+    const grp = MUSCLE_GROUPS[e.primaryMuscles?.[0]]?.label || e.primaryMuscles?.[0] || 'Général';
+    return `${e.id}: ${e.name} (${grp})`;
+  }).join(' | ');
 
   // 5. 10 dernières séances réelles
   const last10Workouts = [...(workouts || [])]
@@ -207,8 +213,10 @@ export function buildCoachFullContext({
 - Vigilance articulaire 14j : ${jointAlertLine} · Corrélations : ${intel.correlations.join(' ; ') || 'en cours de calibration'}
 - Bilan Labo Physique : ${laboLine}
 - Programme actif : ${trainingSummary.activeSplitLabel} (${program?.splitType || 'auto'}) · Méthode ${trainingSummary.activeMethodLabel} (${program?.progressionMethod || 'double_progression'}) · Phase ${program?.phase || 'calibration'} (Sem. ${program?.weekNumber || 1}) · ${profile?.sessionsPerWeek || 4} j/sem · ${profile?.sessionDurationMin || 60} min${activeSession ? ` · Séance en cours : ${activeSession.dayName}` : ''}
-- Exercices du programme actif :
+- Exercices du programme actif (dayIndex + [index] + exercise_id) :
 ${programLines || '  (aucun)'}
+- Catalogue exercices valides (${EXERCISES_DB.length} · format id: Nom Français (groupe)) :
+  ${exerciseCatalogLine}
 - 10 dernières séances réelles :
 ${workoutHistoryLines}
 - Mémoire du Coach (${memoryItems.length} repères) : ${memoryLines}`;

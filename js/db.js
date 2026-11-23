@@ -428,12 +428,83 @@ export async function deleteProfile(profileId) {
    ACCESSEURS MÉTIER PAR PROFIL
    ========================================================================== */
 
+export const GEMINI_LOCALSTORAGE_KEY = 'kinetiks_gemini_api_key';
+
+function sanitizeStoredKey(raw) {
+  return String(raw || '')
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .replace(/[\r\n\t\s]+/g, '');
+}
+
+export function getStoredGeminiApiKey() {
+  try {
+    if (typeof localStorage === 'undefined') return '';
+    return sanitizeStoredKey(localStorage.getItem(GEMINI_LOCALSTORAGE_KEY) || '');
+  } catch {
+    return '';
+  }
+}
+
+export function setStoredGeminiApiKey(rawKey) {
+  const cleaned = sanitizeStoredKey(rawKey);
+  try {
+    if (typeof localStorage === 'undefined') return cleaned;
+    if (cleaned) {
+      localStorage.setItem(GEMINI_LOCALSTORAGE_KEY, cleaned);
+    } else {
+      localStorage.removeItem(GEMINI_LOCALSTORAGE_KEY);
+    }
+  } catch {
+    // Stockage localStorage indisponible (navigation privée stricte)
+  }
+  return cleaned;
+}
+
 export async function getAISettings(profileId) {
-  return (await getRecord(STORES.AI_SETTINGS, profileId)) || null;
+  const saved = (await getRecord(STORES.AI_SETTINGS, profileId)) || null;
+  const lsGeminiKey = getStoredGeminiApiKey();
+
+  if (!saved) {
+    if (lsGeminiKey) {
+      return {
+        profileId,
+        activeTier: 2,
+        tier2Preset: 'gemini',
+        protocol: 'gemini_native',
+        apiKey: lsGeminiKey,
+      };
+    }
+    return null;
+  }
+
+  const isGeminiCfg =
+    saved.tier2Preset === 'gemini' ||
+    saved.protocol === 'gemini_native' ||
+    (!saved.tier2Preset && !saved.protocol);
+
+  const dbKey = sanitizeStoredKey(saved.apiKey);
+  if (isGeminiCfg && !dbKey && lsGeminiKey) {
+    return { ...saved, apiKey: lsGeminiKey };
+  }
+  if (isGeminiCfg && dbKey && dbKey !== lsGeminiKey) {
+    setStoredGeminiApiKey(dbKey);
+  }
+  return dbKey !== saved.apiKey ? { ...saved, apiKey: dbKey } : saved;
 }
 
 export async function saveAISettings(profileId, settings) {
-  const record = { ...settings, profileId, updatedAt: Date.now() };
+  const cleanedKey = sanitizeStoredKey(settings?.apiKey);
+  const isGeminiCfg =
+    settings?.tier2Preset === 'gemini' ||
+    settings?.protocol === 'gemini_native' ||
+    (!settings?.tier2Preset && !settings?.protocol);
+
+  if (isGeminiCfg) {
+    setStoredGeminiApiKey(cleanedKey);
+  }
+
+  const record = { ...settings, apiKey: cleanedKey, profileId, updatedAt: Date.now() };
   await putRecord(STORES.AI_SETTINGS, record);
   return record;
 }

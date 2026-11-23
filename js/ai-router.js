@@ -925,6 +925,33 @@ async function runPollinationsFallback({ prompt, systemPrompt, history = [], ima
   return { rawText: content, provider: 'pollinations' };
 }
 
+export function isIOSStandalonePWA() {
+  if (typeof window === 'undefined') return false;
+  if (window.navigator?.standalone === true) return true;
+  const isIOS = /iPhone|iPad|iPod/i.test(window.navigator?.userAgent || '');
+  const isStandalone = Boolean(window.matchMedia?.('(display-mode: standalone)')?.matches);
+  return isIOS && isStandalone;
+}
+
+function isPuterAlreadyAuthenticated() {
+  try {
+    return Boolean(typeof window !== 'undefined' && window.puter?.auth?.isSignedIn?.());
+  } catch {
+    return false;
+  }
+}
+
+export function detectGeminiKeyFormat(rawKey) {
+  const k = cleanApiKey(rawKey);
+  if (!k) return 'absente';
+  if (/^AQ\./.test(k)) return 'Google AI Studio (AQ.)';
+  if (/^AIza[0-9A-Za-z_-]{20,}$/.test(k)) return 'Google API Key (AIza)';
+  if (/^gsk_/.test(k)) return 'Groq (gsk_)';
+  if (/^sk-or-/.test(k)) return 'OpenRouter (sk-or-)';
+  if (/^sk-/.test(k)) return 'OpenAI (sk-)';
+  return `Personnalisée (${k.length} car.)`;
+}
+
 async function runTier1FreeCloud({ prompt, systemPrompt, history = [], images, taskType, settings }) {
   const prior = sanitizeHistoryMessages(history);
   const historyTranscript =
@@ -933,7 +960,10 @@ async function runTier1FreeCloud({ prompt, systemPrompt, history = [], images, t
       : '';
   const fullPrompt = `${systemPrompt ? `${systemPrompt}\n\n` : ''}${historyTranscript}Nouvelle demande : ${prompt}`;
 
-  if (settings.tier1Provider !== 'pollinations') {
+  // Garde-fou PWA iOS standalone : ne jamais déclencher une popup auth Puter.js bloquée par WebKit
+  const skipPuterOnIOS = isIOSStandalonePWA() && !isPuterAlreadyAuthenticated();
+
+  if (settings.tier1Provider !== 'pollinations' && !skipPuterOnIOS) {
     try {
       const puter = await ensurePuterLoaded();
       const response =
@@ -948,6 +978,10 @@ async function runTier1FreeCloud({ prompt, systemPrompt, history = [], images, t
       }
       return runPollinationsFallback({ prompt, systemPrompt, history, images, taskType, settings });
     }
+  }
+
+  if (skipPuterOnIOS && taskType === 'physique_analysis' && images.length > 0 && !settings.allowPublicBodyPhotos) {
+    throw new Error('Puter.js désactivé en PWA iOS standalone sans session active.');
   }
 
   return runPollinationsFallback({ prompt, systemPrompt, history, images, taskType, settings });
@@ -1272,9 +1306,39 @@ export async function listAvailableGeminiModels(rawBaseUrl, rawApiKey, timeoutMs
   }
 }
 
+const GEMINI_VALID_MODEL_LS_KEY = 'kinetiks_gemini_valid_model';
+let cachedDiscoveredGeminiModel = '';
+
+export function getCachedValidGeminiModel() {
+  if (cachedDiscoveredGeminiModel) return cachedDiscoveredGeminiModel;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      cachedDiscoveredGeminiModel = String(localStorage.getItem(GEMINI_VALID_MODEL_LS_KEY) || '').trim();
+    }
+  } catch {
+    // ignore
+  }
+  return cachedDiscoveredGeminiModel;
+}
+
+export function setCachedValidGeminiModel(modelName) {
+  const clean = normalizeGeminiModelName(modelName, '');
+  if (!clean) return '';
+  cachedDiscoveredGeminiModel = clean;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(GEMINI_VALID_MODEL_LS_KEY, clean);
+    }
+  } catch {
+    // ignore
+  }
+  return clean;
+}
+
 function buildGeminiCandidateModels(primaryModel) {
   const cleanPrimary = normalizeGeminiModelName(primaryModel, GEMINI_FAILOVER_MODELS[0]);
-  const ordered = [cleanPrimary, ...GEMINI_FAILOVER_MODELS];
+  const cached = getCachedValidGeminiModel();
+  const ordered = [cleanPrimary, ...GEMINI_FAILOVER_MODELS, cached];
   return Array.from(new Set(ordered.filter(Boolean)));
 }
 
@@ -1429,8 +1493,12 @@ async function runGeminiNative({
   }
 
   let lastErr = null;
+  let saw404 = false;
+  const attempted = [];
+
   for (let i = 0; i < candidates.length; i += 1) {
     const candidateModel = candidates[i];
+    attempted.push(candidateModel);
     try {
       const result = await runGeminiSingleModel({
         prompt,
@@ -1445,20 +1513,72 @@ async function runGeminiNative({
         timeoutMs,
         retryDelayMs,
       });
+      if (i > 0) {
+        setCachedValidGeminiModel(result.modelName);
+      }
       return {
         ...result,
         failoverUsed: i > 0,
-        attemptedModels: candidates.slice(0, i + 1),
+        autoRepairedModel: null,
+        attemptedModels: attempted,
       };
     } catch (err) {
       lastErr = err;
+      if (Number(err?.httpStatus) === 404) saw404 = true;
       const hasMore = i < candidates.length - 1;
       if (hasMore && shouldFailoverGeminiModel(err)) {
         continue;
       }
-      throw err;
+      if (!saw404) {
+        throw err;
+      }
     }
   }
+
+  // Auto-réparation HTTP 404 : interroge GET /v1beta/models avec x-goog-api-key,
+  // sélectionne le premier modèle flash compatible generateContent, le mémorise et relance immédiatement
+  if (saw404) {
+    const listed = await listAvailableGeminiModels(
+      settings.baseUrl || TIER2_PRESETS.gemini.baseUrl,
+      apiKey,
+      Math.min(15000, timeoutMs),
+      Math.min(800, retryDelayMs)
+    );
+    if (listed.ok && listed.models.length > 0) {
+      const preferredFlash =
+        listed.models.find((m) => /flash/i.test(m) && !attempted.includes(m)) ||
+        listed.models.find((m) => !attempted.includes(m)) ||
+        null;
+      if (preferredFlash) {
+        attempted.push(preferredFlash);
+        const repairedResult = await runGeminiSingleModel({
+          prompt,
+          systemPrompt,
+          history,
+          images,
+          baseUrl: settings.baseUrl || TIER2_PRESETS.gemini.baseUrl,
+          rawModel: preferredFlash,
+          apiKey,
+          expectJson,
+          isHealthProbe,
+          timeoutMs,
+          retryDelayMs,
+        });
+        setCachedValidGeminiModel(repairedResult.modelName);
+        if (settings && typeof settings === 'object') {
+          settings.model = repairedResult.modelName;
+          settings.visionModel = repairedResult.modelName;
+        }
+        return {
+          ...repairedResult,
+          failoverUsed: true,
+          autoRepairedModel: repairedResult.modelName,
+          attemptedModels: attempted,
+        };
+      }
+    }
+  }
+
   throw lastErr;
 }
 
@@ -1918,6 +2038,25 @@ export async function testAIConnection(rawSettings, { retryDelayMs = 2000 } = {}
    POINT D'ENTRÉE UNIFIÉ DU ROUTEUR IA (AVEC FILET DE SÉCURITÉ NIVEAU 0)
    ========================================================================== */
 
+function formatExplicitApiError(err, settings) {
+  const isGemini =
+    settings?.tier2Preset === 'gemini' ||
+    settings?.protocol === 'gemini_native' ||
+    Boolean(err?.isGeminiNative);
+  const label = isGemini ? 'Gemini' : (TIER2_PRESETS[settings?.tier2Preset]?.label || 'API IA');
+  const st = Number(err?.httpStatus);
+  const raw = String(err?.googleMessage || err?.rawError || err?.message || 'Erreur inconnue').slice(0, 260);
+
+  if (st === 400) return `${label} HTTP 400 : requête ou paramètre invalide (${raw})`;
+  if (st === 401 || st === 403) return `${label} HTTP ${st} : clé invalide ou restreinte (${raw})`;
+  if (st === 404) return `${label} HTTP 404 : modèle ou endpoint introuvable (${raw})`;
+  if (st === 429) return `${label} HTTP 429 : quota dépassé ou limite de requêtes atteinte (${raw})`;
+  if (st === 503) return `${label} HTTP 503 : service temporairement saturé (${raw})`;
+  if (st > 0) return `${label} HTTP ${st} : ${raw}`;
+  if (err?.name === 'AbortError') return `${label} : délai d’attente dépassé (timeout réseau).`;
+  return `${label} : erreur réseau ou CORS (${raw})`;
+}
+
 export async function routeAIRequest({
   taskType = 'coach_chat',
   prompt = '',
@@ -1942,7 +2081,7 @@ export async function routeAIRequest({
     data: runTier0Fallback(taskType, prompt, context),
   });
 
-  // Niveau 0 explicite ou appareil hors-ligne sur niveaux réseau
+  // Niveau 0 explicite
   if (settings.activeTier === AI_TIERS.TIER_0_LOCAL) {
     return {
       ok: true,
@@ -1954,6 +2093,8 @@ export async function routeAIRequest({
       data: runTier0Fallback(taskType, prompt, context),
     };
   }
+
+  const hasExplicitKey = settings.activeTier === AI_TIERS.TIER_2_BYO && Boolean(cleanApiKey(settings.apiKey));
 
   if (
     typeof navigator !== 'undefined' &&
@@ -1974,6 +2115,10 @@ export async function routeAIRequest({
 
   try {
     if (isDefaultGeminiNoKey) {
+      // En PWA iOS standalone sans Puter connecté : passage direct au moteur local Niveau 0 sans popup WebKit
+      if (isIOSStandalonePWA() && !isPuterAlreadyAuthenticated()) {
+        return buildFallback('Clé Gemini non configurée (PWA iOS standalone) : moteur local Niveau 0 actif.');
+      }
       // Champ Gemini vide : bascule transparente sur Puter.js (Niveau 1 sans clé), puis Niveau 0 si indisponible
       effectiveTierUsed = AI_TIERS.TIER_1_FREE_CLOUD;
       rawResult = await runTier1FreeCloud({
@@ -1994,6 +2139,24 @@ export async function routeAIRequest({
       return buildFallback('Niveau IA inconnu.');
     }
   } catch (err) {
+    // Transparence totale : si une clé API explicite (ex. Gemini) est configurée,
+    // NE JAMAIS déguiser son échec sous l'étiquette "Niveau 0"
+    if (hasExplicitKey) {
+      const explicitMsg = formatExplicitApiError(err, settings);
+      return {
+        ok: false,
+        apiError: explicitMsg,
+        httpStatus: err?.httpStatus ?? null,
+        rawError: err?.rawError || err?.message || explicitMsg,
+        endpointUrl: err?.endpointUrl || null,
+        usedFallback: false,
+        fallbackReason: explicitMsg,
+        tierUsed: settings.activeTier,
+        provider: err?.geminiModel ? `gemini:${err.geminiModel}` : `${settings.tier2Preset || 'api'}:error`,
+        latencyMs: Math.round(performance.now() - startedAt),
+        data: expectJson ? runTier0Fallback(taskType, prompt, context) : explicitMsg,
+      };
+    }
     return buildFallback(err?.message || 'Erreur réseau ou fournisseur IA.');
   }
 
@@ -2004,6 +2167,8 @@ export async function routeAIRequest({
       fallbackReason: null,
       tierUsed: effectiveTierUsed,
       provider: rawResult.provider,
+      modelUsed: rawResult.modelName || null,
+      autoRepairedModel: rawResult.autoRepairedModel || null,
       latencyMs: Math.round(performance.now() - startedAt),
       data: rawResult.rawText,
     };
@@ -2027,8 +2192,10 @@ export async function routeAIRequest({
     usedFallback: false,
     fallbackReason: null,
     jsonRepaired: parsed.repaired,
-    tierUsed: settings.activeTier,
+    tierUsed: effectiveTierUsed,
     provider: rawResult.provider,
+    modelUsed: rawResult.modelName || null,
+    autoRepairedModel: rawResult.autoRepairedModel || null,
     latencyMs: Math.round(performance.now() - startedAt),
     data: finalData,
   };

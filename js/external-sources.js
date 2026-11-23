@@ -14,8 +14,28 @@
  * 7. Web Speech API native (dictée vocale séances/repas + synthèse vocale chrono)
  */
 
-import { getExternalCache, putExternalCache, listExternalCacheKeys } from './db.js';
-import { WGER_MUSCLES, FREE_EXERCISE_DB_BASE } from './exercises-db.js';
+import {
+  getExternalCache,
+  putExternalCache,
+  listExternalCacheKeys,
+  getStoredGeminiApiKey,
+  GEMINI_LOCALSTORAGE_KEY,
+} from './db.js';
+import { WGER_MUSCLES, FREE_EXERCISE_DB_BASE, EXERCISES_DB } from './exercises-db.js';
+import {
+  testAIConnection,
+  listAvailableGeminiModels,
+  detectGeminiKeyFormat,
+  isIOSStandalonePWA,
+  normalizeAISettings,
+  normalizeGeminiBaseUrl,
+} from './ai-router.js';
+import { CIQUAL_DB } from './nutrition-db.js';
+import {
+  fetchCapacitiesSpaces,
+  normalizeCapacitiesSettings,
+  buildCapacitiesEndpoint,
+} from './capacities-sync.js';
 
 export const EXTERNAL_ENDPOINTS = Object.freeze({
   OPEN_FOOD_FACTS_PRODUCT: 'https://world.openfoodfacts.org/api/v2/product',
@@ -623,3 +643,403 @@ export async function getExternalSourcesStatus() {
     totalCachedEntries: keys.length,
   };
 }
+
+/* ==========================================================================
+   7. AUDIT COMPLET DES ACCÈS, STOCKAGE, CLÉS & CONNECTIVITÉ RÉSEAU
+   ========================================================================== */
+
+async function probePublicEndpoint(label, url, { method = 'GET', timeoutMs = 6500, parseJson = true, corsFallbackNote = '' } = {}) {
+  const t0 = Date.now();
+  if (!isOnline()) {
+    return {
+      label,
+      url,
+      status: 'ALERTE',
+      httpStatus: null,
+      latencyMs: 0,
+      corsBlocked: false,
+      detail: 'Appareil hors-ligne (mode cache local actif).',
+    };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    let res = await fetch(url, {
+      method,
+      headers: method === 'GET' ? { Accept: 'application/json' } : {},
+      signal: controller.signal,
+    });
+    if (method === 'HEAD' && res.status === 405) {
+      res = await fetch(url, { method: 'GET', signal: controller.signal });
+    }
+    const latencyMs = Date.now() - t0;
+    if (!res.ok) {
+      return {
+        label,
+        url,
+        status: res.status >= 500 || res.status === 404 ? 'ERREUR' : 'ALERTE',
+        httpStatus: res.status,
+        latencyMs,
+        corsBlocked: false,
+        detail: `HTTP ${res.status} (${res.statusText || 'erreur serveur'}).`,
+      };
+    }
+    let extra = '';
+    if (method === 'GET' && parseJson) {
+      const json = await res.json().catch(() => null);
+      if (json?.product?.product_name) extra = ` · Produit test : ${json.product.product_name}`;
+      else if (Array.isArray(json?.results)) extra = ` · ${json.results.length} entrées reçues`;
+      else if (json?.current && Number.isFinite(Number(json.current.temperature_2m))) {
+        extra = ` · Temp. test : ${json.current.temperature_2m}°C`;
+      }
+    }
+    return {
+      label,
+      url,
+      status: 'OK',
+      httpStatus: res.status,
+      latencyMs,
+      corsBlocked: false,
+      detail: `HTTP ${res.status} joignable${extra}`,
+    };
+  } catch (err) {
+    const latencyMs = Date.now() - t0;
+    if (err?.name === 'AbortError') {
+      return {
+        label,
+        url,
+        status: 'ERREUR',
+        httpStatus: null,
+        latencyMs,
+        corsBlocked: false,
+        detail: `Délai dépassé (${Math.round(timeoutMs / 1000)} s).`,
+      };
+    }
+    const raw = String(err?.message || err || '');
+    const looksLikeCors = err?.name === 'TypeError' || /failed to fetch|load failed|networkerror|cors/i.test(raw);
+    return {
+      label,
+      url,
+      status: corsFallbackNote ? 'ALERTE' : 'ERREUR',
+      httpStatus: null,
+      latencyMs,
+      corsBlocked: looksLikeCors,
+      detail: looksLikeCors
+        ? `Blocage CORS ou réseau (${raw || 'Failed to fetch'})${corsFallbackNote ? ` — ${corsFallbackNote}` : ''}`
+        : raw || 'Erreur réseau inconnue.',
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Exécute un audit technique complet en 4 volets :
+ * 1. Stockage local (localStorage R/W, IndexedDB persistance, catalogues EXERCISES_DB & Ciqual)
+ * 2. Clé & API Gemini (présence, format AQ./AIza, generateContent réel, GET /v1beta/models)
+ * 3. APIs Publiques 0 clé (Open Food Facts v2, free-exercise-db, wger.de + détection CORS, Open-Meteo)
+ * 4. Capacities (format token, test CORS/connectivité api.capacities.io, rappel mode 0-clé Markdown)
+ */
+export async function runFullAccessAudit({
+  aiSettings = null,
+  capacitiesSettings = null,
+  ciqualExtensionCount = 0,
+} = {}) {
+  const startedAt = Date.now();
+  const normalizedAI = normalizeAISettings(aiSettings || {});
+  const normalizedCap = normalizeCapacitiesSettings(capacitiesSettings || {});
+
+  // 1) Volet Stockage local
+  const storageStart = Date.now();
+  let localStorageRW = false;
+  let localStorageError = null;
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const probeKey = '__kinetiks_audit_rw__';
+      window.localStorage.setItem(probeKey, '1');
+      localStorageRW = window.localStorage.getItem(probeKey) === '1';
+      window.localStorage.removeItem(probeKey);
+    }
+  } catch (err) {
+    localStorageError = err?.message || 'localStorage bloqué';
+  }
+
+  const mirrorGeminiKey = getStoredGeminiApiKey();
+  let persisted = null;
+  let usageMb = null;
+  let quotaMb = null;
+  try {
+    if (typeof navigator !== 'undefined' && navigator.storage) {
+      if (typeof navigator.storage.persisted === 'function') {
+        persisted = await navigator.storage.persisted();
+      }
+      if (typeof navigator.storage.estimate === 'function') {
+        const est = await navigator.storage.estimate();
+        if (Number.isFinite(est?.usage)) usageMb = Number((est.usage / (1024 * 1024)).toFixed(2));
+        if (Number.isFinite(est?.quota)) quotaMb = Number((est.quota / (1024 * 1024)).toFixed(0));
+      }
+    }
+  } catch {
+    // ignore storage estimate failure
+  }
+
+  const extCacheStatus = await getExternalSourcesStatus().catch(() => ({ totalCachedEntries: 0 }));
+  const ciqualTotal = CIQUAL_DB.length + (Number(ciqualExtensionCount) || 0);
+  const iosStandalone = isIOSStandalonePWA();
+
+  const storageSection = {
+    id: 'storage',
+    title: '1. Stockage local & Catalogues embarqués',
+    status: localStorageRW && EXERCISES_DB.length > 0 && ciqualTotal > 0 ? (persisted === false ? 'ALERTE' : 'OK') : 'ERREUR',
+    latencyMs: Date.now() - storageStart,
+    checks: [
+      {
+        label: 'localStorage lecture/écriture',
+        status: localStorageRW ? 'OK' : 'ERREUR',
+        detail: localStorageRW
+          ? `Opérationnel · Miroir ${GEMINI_LOCALSTORAGE_KEY} : ${mirrorGeminiKey ? 'présent' : 'vide'}`
+          : localStorageError || 'Indisponible (navigation privée ou quota)',
+      },
+      {
+        label: 'IndexedDB & Persistance',
+        status: persisted === true ? 'OK' : persisted === false ? 'ALERTE' : 'OK',
+        detail:
+          persisted === true
+            ? `Persistance garantie${usageMb !== null ? ` · ${usageMb} Mo / ${quotaMb ?? '?'} Mo` : ''}`
+            : persisted === false
+              ? `Non persistant (Safari/OS peut purger hors-écran)${usageMb !== null ? ` · ${usageMb} Mo utilisés` : ''}`
+              : `Base locale active · ${extCacheStatus.totalCachedEntries || 0} caches externes`,
+      },
+      {
+        label: 'Catalogues locaux (0 réseau)',
+        status: EXERCISES_DB.length > 0 && ciqualTotal > 0 ? 'OK' : 'ERREUR',
+        detail: `${EXERCISES_DB.length} exercices EXERCISES_DB · ${ciqualTotal} aliments Ciqual (${CIQUAL_DB.length} socle${ciqualExtensionCount ? ` + ${ciqualExtensionCount} ext.` : ''})`,
+      },
+      {
+        label: 'Environnement PWA',
+        status: 'OK',
+        detail: iosStandalone
+          ? 'iOS PWA autonome (mode standalone) — Puter.js auto-désactivé pour éviter le blocage popup WebKit.'
+          : 'Navigateur standard / PWA',
+      },
+    ],
+  };
+
+  // 2) Volet Clé & API Gemini
+  const effectiveGeminiKey = (
+    normalizedAI.tier2Preset === 'gemini' && normalizedAI.apiKey ? normalizedAI.apiKey : mirrorGeminiKey
+  ).trim();
+  const keyFormatLabel = detectGeminiKeyFormat(effectiveGeminiKey);
+  const keyRecognized = /^Google /i.test(keyFormatLabel);
+
+  const geminiAuditPromise = (async () => {
+    const t0 = Date.now();
+    if (!effectiveGeminiKey) {
+      return {
+        id: 'gemini',
+        title: '2. Clé & API Google Gemini (x-goog-api-key)',
+        status: 'ALERTE',
+        latencyMs: Date.now() - t0,
+        keyPresent: false,
+        keyFormat: keyFormatLabel,
+        accessibleModels: [],
+        checks: [
+          {
+            label: 'Présence & format de la clé',
+            status: 'ALERTE',
+            detail: 'Aucune clé Gemini enregistrée. Le moteur déterministe Niveau 0 reste 100 % actif hors-ligne.',
+          },
+        ],
+      };
+    }
+
+    const geminiProbeSettings = normalizeAISettings({
+      ...normalizedAI,
+      activeTier: 2,
+      tier2Preset: 'gemini',
+      protocol: 'gemini_native',
+      baseUrl: normalizeGeminiBaseUrl(normalizedAI.baseUrl),
+      apiKey: effectiveGeminiKey,
+    });
+
+    const [connRes, modelsRes] = await Promise.all([
+      testAIConnection(geminiProbeSettings),
+      listAvailableGeminiModels(geminiProbeSettings.baseUrl, effectiveGeminiKey),
+    ]);
+
+    const accessibleModels = Array.isArray(modelsRes?.models) ? modelsRes.models : [];
+    const flashModels = accessibleModels.filter((m) => /flash/i.test(m));
+    const overallStatus = connRes.ok ? (connRes.visionSupported ? 'OK' : 'ALERTE') : 'ERREUR';
+
+    return {
+      id: 'gemini',
+      title: '2. Clé & API Google Gemini (x-goog-api-key)',
+      status: overallStatus,
+      latencyMs: connRes.latencyMs || Date.now() - t0,
+      keyPresent: true,
+      keyFormat: keyFormatLabel,
+      httpStatus: connRes.httpStatus,
+      modelUsed: connRes.modelUsed,
+      visionSupported: connRes.visionSupported,
+      accessibleModels,
+      checks: [
+        {
+          label: 'Format de la clé',
+          status: keyRecognized ? 'OK' : 'ALERTE',
+          detail: `${keyFormatLabel} (${effectiveGeminiKey.length} car.) · Envoi exclusif via en-tête x-goog-api-key`,
+        },
+        {
+          label: 'Test generateContent (Texte + Vision)',
+          status: connRes.ok ? (connRes.visionSupported ? 'OK' : 'ALERTE') : 'ERREUR',
+          latencyMs: connRes.latencyMs,
+          httpStatus: connRes.httpStatus,
+          detail: connRes.ok
+            ? `HTTP ${connRes.httpStatus} · ${connRes.modelUsed} · Vision : ${connRes.visionSupported ? 'Oui' : 'Non'}${connRes.diagnostic ? ` · ${connRes.diagnostic}` : ''}`
+            : `HTTP ${connRes.httpStatus ?? 'Réseau'} · ${connRes.diagnostic || connRes.rawError || 'Échec connexion'}`,
+        },
+        {
+          label: 'Liste GET /v1beta/models',
+          status: modelsRes.ok && accessibleModels.length > 0 ? 'OK' : 'ALERTE',
+          detail: modelsRes.ok
+            ? `${accessibleModels.length} modèle(s) generateContent (${flashModels.length} Flash) : ${accessibleModels.slice(0, 6).join(', ')}${accessibleModels.length > 6 ? '…' : ''}`
+            : `Impossible de lister les modèles (${modelsRes.error || `HTTP ${modelsRes.status || 'Réseau'}`}).`,
+        },
+      ],
+    };
+  })();
+
+  // 3) Volet APIs Publiques (0 clé)
+  const publicApisPromise = (async () => {
+    const t0 = Date.now();
+    const [offRes, fedbRes, wgerRes, meteoRes] = await Promise.all([
+      probePublicEndpoint(
+        'Open Food Facts API v2',
+        `${EXTERNAL_ENDPOINTS.OPEN_FOOD_FACTS_PRODUCT}/3017620422003.json?fields=product_name`,
+        { method: 'GET', timeoutMs: 6500, parseJson: true }
+      ),
+      probePublicEndpoint('free-exercise-db (GitHub CDN)', EXTERNAL_ENDPOINTS.FREE_EXERCISE_DB_JSON, {
+        method: 'HEAD',
+        timeoutMs: 6500,
+        parseJson: false,
+      }),
+      probePublicEndpoint('wger.de REST API v2', `${EXTERNAL_ENDPOINTS.WGER_API_BASE}/muscle/?limit=5`, {
+        method: 'GET',
+        timeoutMs: 6500,
+        parseJson: true,
+        corsFallbackNote: 'calques anatomiques SVG locaux actifs en repli.',
+      }),
+      probePublicEndpoint(
+        'Open-Meteo API',
+        `${EXTERNAL_ENDPOINTS.OPEN_METEO_FORECAST}?latitude=48.8566&longitude=2.3522&current=temperature_2m`,
+        { method: 'GET', timeoutMs: 6500, parseJson: true }
+      ),
+    ]);
+
+    const probes = [offRes, fedbRes, wgerRes, meteoRes];
+    const hasError = probes.some((p) => p.status === 'ERREUR');
+    const hasAlert = probes.some((p) => p.status === 'ALERTE');
+
+    return {
+      id: 'public_apis',
+      title: '3. APIs Publiques pré-câblées (0 clé)',
+      status: hasError ? 'ERREUR' : hasAlert ? 'ALERTE' : 'OK',
+      latencyMs: Date.now() - t0,
+      checks: probes,
+    };
+  })();
+
+  // 4) Volet Capacities
+  const capacitiesPromise = (async () => {
+    const t0 = Date.now();
+    const hasToken = Boolean(normalizedCap.apiToken);
+    const tokenClean = normalizedCap.apiToken;
+    const tokenValidFormat = hasToken && tokenClean.length >= 16 && !/\s/.test(tokenClean);
+    const checks = [
+      {
+        label: 'Mode 0-clé (Copie Markdown / Partage)',
+        status: 'OK',
+        detail: 'Toujours actif hors-ligne et sans CORS — 1 tap sur séance, nutrition et Coach.',
+      },
+    ];
+
+    if (!hasToken) {
+      // Sonde légère pour détecter CORS sur api.capacities.io même sans token
+      const endpoint = buildCapacitiesEndpoint('/spaces', normalizedCap.corsProxyUrl);
+      const probe = await probePublicEndpoint('Connectivité api.capacities.io', endpoint, {
+        method: 'GET',
+        timeoutMs: 5500,
+        parseJson: false,
+        corsFallbackNote: 'utilisez le mode 0-clé Markdown ou un proxy CORS.',
+      });
+      const isExpected401 = probe.httpStatus === 401 || probe.httpStatus === 403;
+      checks.push({
+        label: 'Token API Capacities (optionnel)',
+        status: 'OK',
+        detail: 'Non configuré (optionnel). Activez-le uniquement pour la sync API directe.',
+      });
+      checks.push({
+        label: 'Connectivité / CORS api.capacities.io',
+        status: isExpected401 ? 'OK' : probe.corsBlocked ? 'ALERTE' : probe.status,
+        latencyMs: probe.latencyMs,
+        httpStatus: probe.httpStatus,
+        detail: isExpected401
+          ? `Endpoint joignable (HTTP ${probe.httpStatus} attendu sans token, aucun blocage CORS).`
+          : probe.detail,
+      });
+      return {
+        id: 'capacities',
+        title: '4. Capacities (Sync & Mode 0-clé)',
+        status: probe.corsBlocked ? 'ALERTE' : 'OK',
+        latencyMs: Date.now() - t0,
+        checks,
+      };
+    }
+
+    checks.push({
+      label: 'Format API Token Capacities',
+      status: tokenValidFormat ? 'OK' : 'ALERTE',
+      detail: tokenValidFormat
+        ? `Token présent (${tokenClean.length} car.)${normalizedCap.corsProxyUrl ? ' · Proxy CORS configuré' : ''}`
+        : `Format inhabituel (${tokenClean.length} car.) — vérifiez qu'il n'est pas tronqué.`,
+    });
+
+    const spStart = Date.now();
+    const spRes = await fetchCapacitiesSpaces(normalizedCap);
+    const spMs = Date.now() - spStart;
+    checks.push({
+      label: 'Test API api.capacities.io (/spaces)',
+      status: spRes.ok ? 'OK' : spRes.corsBlocked ? 'ALERTE' : 'ERREUR',
+      latencyMs: spMs,
+      httpStatus: spRes.status || (spRes.ok ? 200 : null),
+      detail: spRes.ok
+        ? `Connecté · ${spRes.spaces.length} espace(s) accessible(s).`
+        : spRes.error || 'Échec de connexion Capacities.',
+    });
+
+    return {
+      id: 'capacities',
+      title: '4. Capacities (Sync & Mode 0-clé)',
+      status: spRes.ok ? 'OK' : spRes.corsBlocked ? 'ALERTE' : 'ERREUR',
+      latencyMs: Date.now() - t0,
+      checks,
+    };
+  })();
+
+  const [geminiSection, publicApisSection, capacitiesSection] = await Promise.all([
+    geminiAuditPromise,
+    publicApisPromise,
+    capacitiesPromise,
+  ]);
+
+  const sections = [storageSection, geminiSection, publicApisSection, capacitiesSection];
+  const hasAnyError = sections.some((sec) => sec.status === 'ERREUR');
+  const hasAnyAlert = sections.some((sec) => sec.status === 'ALERTE');
+
+  return {
+    timestamp: Date.now(),
+    totalLatencyMs: Date.now() - startedAt,
+    overallStatus: hasAnyError ? 'ERREUR' : hasAnyAlert ? 'ALERTE' : 'OK',
+    sections,
+  };
+}
+

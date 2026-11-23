@@ -184,6 +184,7 @@ import {
   dictateFrenchVoiceText,
   warmExternalSourcesInBackground,
   getExternalSourcesStatus,
+  runFullAccessAudit,
 } from './external-sources.js';
 
 import {
@@ -289,6 +290,8 @@ const state = {
   profilSubTab: 'coach', // 'coach' | 'profile' | 'ai' | 'p2p' | 'backup'
   showApiKey: false,
   lastProbeResult: null,
+  auditReport: null,
+  auditBusy: false,
   coachBusy: false,
   coachPendingPhoto: null,
   lastShareResult: null,
@@ -5874,12 +5877,25 @@ function renderProfilSubTab(slot) {
                         : ''
                     }
                     ${
-                      m.fallbackReason
-                        ? `<div class="notice notice-danger" style="padding: 7px 9px; font-size: 0.76rem;">
-                            <span><strong>Repli Niveau 0 :</strong> ${esc(m.fallbackReason)}</span>
-                            <button type="button" class="btn btn-xs" data-open-ai-settings>Vérifier clé</button>
+                      Array.isArray(m.actionErrors) && m.actionErrors.length > 0
+                        ? `<div class="notice notice-danger" style="padding: 7px 9px; font-size: 0.76rem; flex-direction: column; align-items: flex-start; gap: 4px;">
+                            <span class="label-tech text-danger">ACTION NON EXÉCUTÉE</span>
+                            ${m.actionErrors.map((errTxt) => `<span class="mono" style="font-size: 0.74rem;">${esc(errTxt)}</span>`).join('')}
                           </div>`
                         : ''
+                    }
+                    ${
+                      m.apiError
+                        ? `<div class="notice notice-danger" style="padding: 7px 9px; font-size: 0.76rem;">
+                            <span><strong>Erreur API :</strong> ${esc(m.apiError)}</span>
+                            <button type="button" class="btn btn-xs" data-open-ai-settings>Vérifier clé / Audit</button>
+                          </div>`
+                        : m.fallbackReason
+                          ? `<div class="notice notice-danger" style="padding: 7px 9px; font-size: 0.76rem;">
+                              <span><strong>Repli Niveau 0 :</strong> ${esc(m.fallbackReason)}</span>
+                              <button type="button" class="btn btn-xs" data-open-ai-settings>Vérifier clé</button>
+                            </div>`
+                          : ''
                     }
                   </div>`;
                   })
@@ -6305,6 +6321,7 @@ function renderProfilSubTab(slot) {
       });
 
       let executedBadges = [];
+      let actionErrors = [];
       let undoFn = null;
       let changedModules = [];
       let photoUpdateProposal = null;
@@ -6326,94 +6343,124 @@ function renderProfilSubTab(slot) {
           expectJson: false,
         });
 
-        const rawResponse = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
-        const parsed = parseCoachActionsResponse(rawResponse);
-        let actionsToExecute = parsed.actions;
-
-        // Repli Niveau 0 déterministe pour les commandes directes sans modèle cloud/Ollama
-        if (actionsToExecute.length === 0 && res.tierUsed === 0 && !pendingPhoto) {
-          actionsToExecute = parseTier0DeterministicActions(effectiveText, {
-            profile: state.profile,
-            program: state.program,
-            telemetry,
+        // Auto-réparation HTTP 404 : mémorise le modèle Flash valide dans IndexedDB + localStorage
+        if (res.autoRepairedModel) {
+          state.aiSettings = await saveAISettings(state.profile.id, {
+            ...state.aiSettings,
+            model: res.autoRepairedModel,
+            visionModel: res.autoRepairedModel,
           });
+          showToast(`Modèle Gemini auto-réparé : ${res.autoRepairedModel}`);
         }
 
-        // Si une note mémoire terrain a été détectée et que le modèle n'a pas déjà émis SAVE_COACH_MEMORY
-        if (
-          memoryNote &&
-          !pendingPhoto &&
-          !actionsToExecute.some((a) => a.type === 'SAVE_COACH_MEMORY')
-        ) {
-          const existingMem = Array.isArray(state.profile.coachMemory) ? state.profile.coachMemory : [];
-          if (!existingMem.some((m) => m.text === memoryNote.text)) {
-            actionsToExecute = [
-              ...actionsToExecute,
-              { type: 'SAVE_COACH_MEMORY', payload: { text: memoryNote.text, category: memoryNote.category || 'preference' } },
-            ];
-          }
-        }
+        // Transparence totale : si une clé API était configurée et a échoué, on n'affiche JAMAIS un faux "Niveau 0"
+        if (res.ok === false && res.apiError) {
+          await addCoachMessage(state.profile.id, {
+            role: 'assistant',
+            content: res.apiError,
+            tierUsed: res.tierUsed,
+            provider: res.provider || null,
+            apiError: res.apiError,
+            fallbackReason: null,
+            actionProposal: null,
+            actionApplied: false,
+            executedBadges: [],
+            actionErrors: [],
+            photoUpdateProposal: null,
+          });
+        } else {
+          const rawResponse = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+          const parsed = parseCoachActionsResponse(rawResponse);
+          let actionsToExecute = parsed.actions;
 
-        if (actionsToExecute.length > 0) {
-          if (pendingPhoto) {
-            // GARDE-FOU PHOTO : zéro écrasement silencieux, aperçu & confirmation sélective
-            photoUpdateProposal = buildPhotoUpdateProposal(actionsToExecute, {
-              profile: state.profile,
-              latestBiometrics: state.biometrics.at(-1) || null,
-            });
-          } else {
-            const execResult = await executeCoachActions(actionsToExecute, {
+          // Repli Niveau 0 déterministe uniquement si le routeur a réellement tourné en Niveau 0 (sans erreur API masquée)
+          if (actionsToExecute.length === 0 && res.tierUsed === 0 && !pendingPhoto) {
+            actionsToExecute = parseTier0DeterministicActions(effectiveText, {
               profile: state.profile,
               program: state.program,
-              biometrics: state.biometrics,
-              nutritionToday: state.nutritionToday,
-              todayISO: getTodayISO(),
-              db: {
-                updateProfile,
-                saveProgram,
-                resetBiometricsBaseline,
-                restoreBiometricsForProfile,
-                saveBiometric,
-                saveNutritionLog,
-                deleteNutritionLog,
-                saveCustomFood,
-                deleteCustomFood,
-                saveFavorite,
-                deleteFavorite,
-                saveShoppingItem,
-                deleteShoppingItem,
-              },
+              telemetry,
             });
-            executedBadges = execResult.executedBadges;
-            changedModules = execResult.changedModules;
-            undoFn = execResult.undo;
+          }
 
-            if (changedModules.includes('program')) {
-              state.activeSession = null;
-              state.selectedDayIdx = 0;
+          // Si une note mémoire terrain a été détectée et que le modèle n'a pas déjà émis SAVE_COACH_MEMORY
+          if (
+            memoryNote &&
+            !pendingPhoto &&
+            !actionsToExecute.some((a) => a.type === 'SAVE_COACH_MEMORY')
+          ) {
+            const existingMem = Array.isArray(state.profile.coachMemory) ? state.profile.coachMemory : [];
+            if (!existingMem.some((m) => m.text === memoryNote.text)) {
+              actionsToExecute = [
+                ...actionsToExecute,
+                { type: 'SAVE_COACH_MEMORY', payload: { text: memoryNote.text, category: memoryNote.category || 'preference' } },
+              ];
             }
           }
+
+          if (actionsToExecute.length > 0) {
+            if (pendingPhoto) {
+              // GARDE-FOU PHOTO : zéro écrasement silencieux, aperçu & confirmation sélective
+              photoUpdateProposal = buildPhotoUpdateProposal(actionsToExecute, {
+                profile: state.profile,
+                latestBiometrics: state.biometrics.at(-1) || null,
+              });
+            } else {
+              const execResult = await executeCoachActions(actionsToExecute, {
+                profile: state.profile,
+                program: state.program,
+                biometrics: state.biometrics,
+                nutritionToday: state.nutritionToday,
+                todayISO: getTodayISO(),
+                db: {
+                  updateProfile,
+                  saveProgram,
+                  resetBiometricsBaseline,
+                  restoreBiometricsForProfile,
+                  saveBiometric,
+                  saveNutritionLog,
+                  deleteNutritionLog,
+                  saveCustomFood,
+                  deleteCustomFood,
+                  saveFavorite,
+                  deleteFavorite,
+                  saveShoppingItem,
+                  deleteShoppingItem,
+                },
+              });
+              executedBadges = execResult.executedBadges;
+              actionErrors = execResult.errors || [];
+              changedModules = execResult.changedModules;
+              undoFn = execResult.undo;
+
+              if (changedModules.includes('program')) {
+                state.activeSession = null;
+                state.selectedDayIdx = 0;
+              }
+            }
+          }
+
+          const displayContent =
+            parsed.cleanText ||
+            (photoUpdateProposal
+              ? 'Analyse terminée. Vérifie les champs détectés ci-dessous avant de les appliquer.'
+              : executedBadges.length > 0
+                ? 'Modifications enregistrées et appliquées dans votre espace Kinetix Lab.'
+                : rawResponse);
+
+          await addCoachMessage(state.profile.id, {
+            role: 'assistant',
+            content: displayContent,
+            tierUsed: res.tierUsed,
+            provider: res.provider || null,
+            apiError: null,
+            fallbackReason: res.usedFallback ? res.fallbackReason : null,
+            actionProposal: !photoUpdateProposal && executedBadges.length === 0 ? actionProposal || null : null,
+            actionApplied: false,
+            executedBadges,
+            actionErrors,
+            photoUpdateProposal,
+          });
         }
-
-        const displayContent =
-          parsed.cleanText ||
-          (photoUpdateProposal
-            ? 'Analyse terminée. Vérifie les champs détectés ci-dessous avant de les appliquer.'
-            : executedBadges.length > 0
-              ? 'Modifications enregistrées et appliquées dans votre espace Kinetix Lab.'
-              : rawResponse);
-
-        await addCoachMessage(state.profile.id, {
-          role: 'assistant',
-          content: displayContent,
-          tierUsed: res.tierUsed,
-          provider: res.provider || null,
-          fallbackReason: res.usedFallback ? res.fallbackReason : null,
-          actionProposal: !photoUpdateProposal && executedBadges.length === 0 ? actionProposal || null : null,
-          actionApplied: false,
-          executedBadges,
-          photoUpdateProposal,
-        });
       } finally {
         state.coachBusy = false;
         await refreshAllProfileDataFromDB();
@@ -6430,6 +6477,8 @@ function renderProfilSubTab(slot) {
               renderApp();
             },
           });
+        } else if (actionErrors.length > 0) {
+          showToast(actionErrors[0]);
         }
       }
     };
@@ -6677,7 +6726,7 @@ function renderProfilSubTab(slot) {
             <div>
               <h2>Clé API Gemini (Unique)</h2>
               <p class="panel-subtitle" id="ai-autosave-status">
-                Sauvegarde locale IndexedDB uniquement · En-tête HTTP <code>x-goog-api-key</code> · Failover auto <code>gemini-flash-lite-latest → gemini-2.5-flash</code>.
+                Double persistance locale (IndexedDB + localStorage) · En-tête HTTP <code>x-goog-api-key</code> · Auto-réparation 404 & failover <code>gemini-flash-lite-latest → gemini-2.5-flash</code>.
               </p>
             </div>
             <span class="state-tag ${s.apiKey && isGeminiPrimary ? 'is-ok' : 'is-accent'}">
@@ -6775,6 +6824,84 @@ function renderProfilSubTab(slot) {
                     }
                   </div>`
                 : `<div class="probe-card"><span class="panel-subtitle">Sans clé Gemini, Kinetix Lab bascule automatiquement sur <strong>Puter.js</strong> (gratuit, 0 clé) puis le moteur déterministe <strong>Niveau 0</strong> 100 % hors-ligne.</span></div>`
+            }
+          </div>
+        </section>
+
+        <!-- 1B. AUDIT COMPLET DES ACCÈS, STOCKAGE & CLÉS (1 CLIC) -->
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Audit complet des accès & clés</h2>
+              <p class="panel-subtitle">Diagnostic réel en 1 clic : stockage local, clé Gemini + liste des modèles, APIs publiques 0 clé (CORS/latence) et Capacities.</p>
+            </div>
+            <button type="button" class="btn btn-sm btn-primary" id="btn-run-full-audit" ${state.auditBusy ? 'disabled' : ''}>
+              ${state.auditBusy ? 'Audit en cours…' : 'Lancer l’audit complet'}
+            </button>
+          </div>
+
+          <div id="full-audit-result" class="stack-sm">
+            ${
+              state.auditBusy
+                ? `<div class="probe-card"><span class="mono metric-xs text-accent">Sondes réseau & stockage en cours (Stockage · Gemini · OFF · free-exercise-db · wger · Open-Meteo · Capacities)…</span></div>`
+                : state.auditReport
+                  ? (() => {
+                      const rep = state.auditReport;
+                      const badgeCls = (st) => (st === 'OK' ? 'is-ok' : st === 'ERREUR' ? 'is-danger' : 'is-accent');
+                      const txtCls = (st) => (st === 'OK' ? 'text-ok' : st === 'ERREUR' ? 'text-danger' : 'text-accent');
+                      return `
+                        <div class="row-between panel-elevated" style="padding: 8px 10px;">
+                          <span class="state-tag ${badgeCls(rep.overallStatus)}">BILAN GLOBAL : ${esc(rep.overallStatus)}</span>
+                          <span class="mono metric-xs text-secondary">${rep.totalLatencyMs} ms · ${new Date(rep.timestamp).toLocaleTimeString('fr-FR')}</span>
+                        </div>
+                        ${rep.sections
+                          .map(
+                            (sec) => `
+                          <div class="panel-elevated stack-sm" style="padding: 10px;">
+                            <div class="row-between">
+                              <strong style="font-size: 0.82rem;">${esc(sec.title)}</strong>
+                              <div class="row" style="gap: 6px;">
+                                <span class="mono metric-xs text-secondary">${sec.latencyMs ?? 0} ms</span>
+                                <span class="state-tag ${badgeCls(sec.status)}">${esc(sec.status)}</span>
+                              </div>
+                            </div>
+                            <div class="stack-sm" style="gap: 6px;">
+                              ${(sec.checks || [])
+                                .map(
+                                  (chk) => `
+                                <div style="border-top: 1px solid var(--border); padding-top: 6px;">
+                                  <div class="row-between">
+                                    <span style="font-size: 0.78rem; font-weight: 600;">${esc(chk.label)}</span>
+                                    <span class="mono metric-xs ${txtCls(chk.status)}">${esc(chk.status)}${Number.isFinite(chk.latencyMs) ? ` · ${chk.latencyMs} ms` : ''}</span>
+                                  </div>
+                                  <div class="mono metric-xs text-secondary" style="margin-top: 2px; word-break: break-word;">${esc(chk.detail || '')}</div>
+                                </div>`
+                                )
+                                .join('')}
+                            </div>
+                            ${
+                              sec.id === 'gemini' && Array.isArray(sec.accessibleModels) && sec.accessibleModels.length > 0
+                                ? `<div class="stack-sm" style="gap: 5px; border-top: 1px solid var(--border); padding-top: 6px;">
+                                    <span class="label-tech text-accent">Modèles Gemini détectés (1 clic pour activer)</span>
+                                    <div class="row-wrap" style="gap: 5px;">
+                                      ${sec.accessibleModels
+                                        .filter((m) => /flash|pro/i.test(m))
+                                        .slice(0, 6)
+                                        .map(
+                                          (mName) =>
+                                            `<button type="button" class="btn btn-xs mono" data-pick-gemini-model="${esc(mName)}">${esc(mName)}</button>`
+                                        )
+                                        .join('')}
+                                    </div>
+                                  </div>`
+                                : ''
+                            }
+                          </div>`
+                          )
+                          .join('')}
+                      `;
+                    })()
+                  : `<div class="probe-card"><span class="panel-subtitle">Clique sur <strong>Lancer l’audit complet</strong> pour vérifier en direct le stockage, ta clé Gemini, les modèles accessibles, les 4 APIs publiques (0 clé) et Capacities.</span></div>`
             }
           </div>
         </section>
@@ -7054,6 +7181,25 @@ function renderProfilSubTab(slot) {
       const res = await testAIConnection(state.aiSettings);
       state.lastProbeResult = res;
       renderProfilSubTab(slot);
+    });
+
+    document.getElementById('btn-run-full-audit')?.addEventListener('click', async () => {
+      if (state.auditBusy) return;
+      await persistCurrentAI({ silent: true });
+      state.auditBusy = true;
+      renderProfilSubTab(slot);
+      try {
+        state.auditReport = await runFullAccessAudit({
+          aiSettings: state.aiSettings,
+          capacitiesSettings: state.capacitiesSettings,
+          ciqualExtensionCount: state.ciqualExtension?.length || 0,
+        });
+      } catch (err) {
+        showToast(`Audit interrompu : ${err?.message || 'erreur inconnue'}`);
+      } finally {
+        state.auditBusy = false;
+        renderProfilSubTab(slot);
+      }
     });
 
     document.getElementById('btn-sync-external-cache')?.addEventListener('click', async () => {
