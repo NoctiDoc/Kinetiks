@@ -6726,7 +6726,7 @@ function renderProfilSubTab(slot) {
             <div>
               <h2>Clé API Gemini (Unique)</h2>
               <p class="panel-subtitle" id="ai-autosave-status">
-                Double persistance locale (IndexedDB + localStorage) · En-tête HTTP <code>x-goog-api-key</code> · Auto-réparation 404 & failover <code>gemini-flash-lite-latest → gemini-2.5-flash</code>.
+                Double persistance locale (IndexedDB + localStorage) · En-tête HTTP <code>x-goog-api-key</code> · Failover auto <code>gemini-3.8-flash → gemini-flash-lite-latest</code>.
               </p>
             </div>
             <span class="state-tag ${s.apiKey && isGeminiPrimary ? 'is-ok' : 'is-accent'}">

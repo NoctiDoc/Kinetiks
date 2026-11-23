@@ -74,13 +74,13 @@ export const TIER2_PRESETS = Object.freeze({
     label: 'Google Gemini (API Native)',
     protocol: 'gemini_native',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    model: 'gemini-flash-lite-latest',
-    visionModel: 'gemini-flash-lite-latest',
+    model: 'gemini-3.8-flash',
+    visionModel: 'gemini-3.8-flash',
     requiresApiKey: true,
     supportsVision: true,
     supportsWhisper: false,
     corsNote:
-      'Pré-câblé d’usine : en-tête x-goog-api-key uniquement, bascule auto gemini-flash-lite-latest → gemini-2.5-flash. Compatible clés AQ. et AIza…',
+      'Pré-câblé d’usine : en-tête x-goog-api-key uniquement · Failover auto gemini-3.8-flash → gemini-flash-lite-latest → gemini-flash-latest. Compatible clés AQ. et AIza…',
   },
   openai: {
     id: 'openai',
@@ -146,10 +146,25 @@ export const TIER3_MODELS = Object.freeze([
   },
 ]);
 
-export const GEMINI_FAILOVER_MODELS = Object.freeze([
+export const GEMINI_PRIMARY_FAILOVER_MODELS = Object.freeze([
+  'gemini-3.8-flash',
   'gemini-flash-lite-latest',
-  'gemini-2.5-flash',
+  'gemini-flash-latest',
 ]);
+
+export const GEMINI_FAST_FAILOVER_MODELS = Object.freeze([
+  'gemini-flash-lite-latest',
+  'gemini-3.8-flash',
+  'gemini-flash-latest',
+]);
+
+export const GEMINI_FAILOVER_MODELS = GEMINI_PRIMARY_FAILOVER_MODELS;
+
+const DEPRECATED_GEMINI_MODEL_RE = /(?:^|\/)gemini-2\.5(?:-|$)/i;
+
+export function isDeprecatedGeminiModel(modelName) {
+  return DEPRECATED_GEMINI_MODEL_RE.test(String(modelName || '').trim());
+}
 
 export const DEFAULT_AI_SETTINGS = Object.freeze({
   activeTier: AI_TIERS.TIER_2_BYO,
@@ -167,7 +182,21 @@ export const DEFAULT_AI_SETTINGS = Object.freeze({
 });
 
 export function normalizeAISettings(saved = null) {
-  return { ...DEFAULT_AI_SETTINGS, ...(saved || {}) };
+  const merged = { ...DEFAULT_AI_SETTINGS, ...(saved || {}) };
+  const isGeminiCfg =
+    merged.tier2Preset === 'gemini' ||
+    merged.protocol === 'gemini_native' ||
+    String(merged.baseUrl || '').includes('generativelanguage.googleapis.com');
+
+  if (isGeminiCfg) {
+    if (isDeprecatedGeminiModel(merged.model)) {
+      merged.model = TIER2_PRESETS.gemini.model;
+    }
+    if (isDeprecatedGeminiModel(merged.visionModel)) {
+      merged.visionModel = TIER2_PRESETS.gemini.visionModel;
+    }
+  }
+  return merged;
 }
 
 /* ==========================================================================
@@ -1011,7 +1040,7 @@ function parseDataUri(dataUri) {
   return null;
 }
 
-const EXCLUDED_GEMINI_MODEL_RE = /-tts|-image|embedding|lyria|transcribe|\baqa\b|\bimagen\b|\bveo\b/i;
+const EXCLUDED_GEMINI_MODEL_RE = /-tts|-image|embedding|lyria|transcribe|\baqa\b|\bimagen\b|\bveo\b|^gemini-2\.5(?:-|$)/i;
 
 export function isVisionCapableModel(modelName, isGeminiMode = false) {
   const m = String(modelName || '').trim().toLowerCase();
@@ -1023,8 +1052,6 @@ export function isVisionCapableModel(modelName, isGeminiMode = false) {
       /^gemini-3/i.test(m) ||
       /^gemini-flash/i.test(m) ||
       /^gemini-pro/i.test(m) ||
-      /^gemini-2/i.test(m) ||
-      /^gemini-1\.5/i.test(m) ||
       m.includes('gemini')
     );
   }
@@ -1045,24 +1072,21 @@ export function isVisionCapableModel(modelName, isGeminiMode = false) {
 
 function scoreGeminiModelPriority(modelName) {
   const m = String(modelName || '').toLowerCase();
-  if (m === 'gemini-flash-lite-latest') return 0;
-  if (m === 'gemini-3.7-flash') return 1;
-  if (m === 'gemini-3.8-flash') return 2;
-  if (m.includes('flash-lite-latest')) return 3;
-  if (m.includes('3.7-flash')) return 4;
-  if (m.includes('3.8-flash')) return 5;
+  if (m === 'gemini-3.8-flash') return 0;
+  if (m === 'gemini-flash-lite-latest') return 1;
+  if (m === 'gemini-flash-latest') return 2;
+  if (m === 'gemini-3.7-flash') return 3;
+  if (m.includes('3.8-flash')) return 4;
+  if (m.includes('flash-lite-latest')) return 5;
   if (/^gemini-3\./.test(m)) {
     const minorMatch = m.match(/^gemini-3\.(\d+)/);
     const minor = minorMatch ? Number(minorMatch[1]) : 0;
-    const tierOffset = m.includes('flash-lite') ? 0 : m.includes('flash') ? 1 : m.includes('pro') ? 2 : 3;
+    const tierOffset = m.includes('flash') ? 0 : m.includes('pro') ? 1 : 2;
     return 10 + Math.max(0, 9 - minor) + tierOffset * 0.1;
   }
-  if (m === 'gemini-flash-latest') return 25;
   if (m === 'gemini-pro-latest') return 26;
   if (m.endsWith('-latest')) return 28;
-  if (/^gemini-2\.5-flash/.test(m)) return 35;
-  if (/^gemini-2\.5-pro/.test(m)) return 38;
-  if (/^gemini-2\.0-flash/.test(m)) return 45;
+  if (m.includes('flash')) return 40;
   return 70;
 }
 
@@ -1078,6 +1102,7 @@ export function filterAndSortGeminiModels(rawModels) {
     const lower = cleanName.toLowerCase();
     if (!cleanName || seen.has(lower)) continue;
     if (!lower.includes('gemini')) continue;
+    if (isDeprecatedGeminiModel(lower)) continue;
     if (EXCLUDED_GEMINI_MODEL_RE.test(lower)) continue;
     if (methods.length > 0 && !methods.includes('generateContent')) continue;
     seen.add(lower);
@@ -1197,14 +1222,15 @@ export function normalizeGeminiBaseUrl(rawBaseUrl) {
   return base;
 }
 
-export function normalizeGeminiModelName(rawModel, fallback = 'gemini-flash-lite-latest') {
+export function normalizeGeminiModelName(rawModel, fallback = 'gemini-3.8-flash') {
   const cleaned = String(rawModel || '')
     .trim()
     .replace(/^["'`]+|["'`]+$/g, '')
     .replace(/^(?:models\/)+/i, '')
     .replace(/:(?:stream)?generateContent$/i, '')
     .trim();
-  return cleaned || fallback;
+  if (!cleaned || isDeprecatedGeminiModel(cleaned)) return fallback;
+  return cleaned;
 }
 
 export function buildGeminiGenerateUrl(rawBaseUrl, rawModel) {
@@ -1310,10 +1336,18 @@ const GEMINI_VALID_MODEL_LS_KEY = 'kinetiks_gemini_valid_model';
 let cachedDiscoveredGeminiModel = '';
 
 export function getCachedValidGeminiModel() {
-  if (cachedDiscoveredGeminiModel) return cachedDiscoveredGeminiModel;
+  if (cachedDiscoveredGeminiModel && !isDeprecatedGeminiModel(cachedDiscoveredGeminiModel)) {
+    return cachedDiscoveredGeminiModel;
+  }
+  cachedDiscoveredGeminiModel = '';
   try {
     if (typeof localStorage !== 'undefined') {
-      cachedDiscoveredGeminiModel = String(localStorage.getItem(GEMINI_VALID_MODEL_LS_KEY) || '').trim();
+      const stored = String(localStorage.getItem(GEMINI_VALID_MODEL_LS_KEY) || '').trim();
+      if (stored && !isDeprecatedGeminiModel(stored)) {
+        cachedDiscoveredGeminiModel = stored;
+      } else if (stored) {
+        localStorage.removeItem(GEMINI_VALID_MODEL_LS_KEY);
+      }
     }
   } catch {
     // ignore
@@ -1323,7 +1357,7 @@ export function getCachedValidGeminiModel() {
 
 export function setCachedValidGeminiModel(modelName) {
   const clean = normalizeGeminiModelName(modelName, '');
-  if (!clean) return '';
+  if (!clean || isDeprecatedGeminiModel(clean)) return '';
   cachedDiscoveredGeminiModel = clean;
   try {
     if (typeof localStorage !== 'undefined') {
@@ -1335,11 +1369,23 @@ export function setCachedValidGeminiModel(modelName) {
   return clean;
 }
 
-function buildGeminiCandidateModels(primaryModel) {
-  const cleanPrimary = normalizeGeminiModelName(primaryModel, GEMINI_FAILOVER_MODELS[0]);
+const FAST_GEMINI_TASKS = new Set(['healthcheck', 'quick_suggestion', 'short_suggestion', 'food_estimate']);
+
+function isFastGeminiRequest({ isHealthProbe = false, taskType = '', images = [] } = {}) {
+  const hasImages = Array.isArray(images) && images.length > 0;
+  if (hasImages) return false;
+  if (isHealthProbe) return true;
+  return FAST_GEMINI_TASKS.has(String(taskType || '').toLowerCase());
+}
+
+function buildGeminiCandidateModels(primaryModel, { fastMode = false } = {}) {
+  const failoverChain = fastMode ? GEMINI_FAST_FAILOVER_MODELS : GEMINI_PRIMARY_FAILOVER_MODELS;
+  const cleanPrimary = normalizeGeminiModelName(primaryModel, failoverChain[0]);
   const cached = getCachedValidGeminiModel();
-  const ordered = [cleanPrimary, ...GEMINI_FAILOVER_MODELS, cached];
-  return Array.from(new Set(ordered.filter(Boolean)));
+  const ordered = fastMode
+    ? [...failoverChain, cleanPrimary, cached]
+    : [cleanPrimary, ...failoverChain, cached];
+  return Array.from(new Set(ordered.filter((m) => m && !isDeprecatedGeminiModel(m))));
 }
 
 function shouldFailoverGeminiModel(err) {
@@ -1359,7 +1405,7 @@ async function runGeminiSingleModel({
   apiKey,
   expectJson = false,
   isHealthProbe = false,
-  timeoutMs = 24000,
+  timeoutMs = 25000,
   retryDelayMs = 1500,
 }) {
   const hasImages = Array.isArray(images) && images.length > 0;
@@ -1471,18 +1517,22 @@ async function runGeminiNative({
   systemPrompt,
   history = [],
   images = [],
+  taskType = 'coach_chat',
   settings,
   expectJson = false,
   isHealthProbe = false,
-  timeoutMs = 24000,
+  timeoutMs = 25000,
   retryDelayMs = 1500,
 }) {
   const apiKey = cleanApiKey(settings.apiKey);
   const hasImages = Array.isArray(images) && images.length > 0;
-  const primaryModel = hasImages
-    ? settings.visionModel || settings.model || TIER2_PRESETS.gemini.visionModel
-    : settings.model || TIER2_PRESETS.gemini.model;
-  const candidates = buildGeminiCandidateModels(primaryModel);
+  const fastMode = isFastGeminiRequest({ isHealthProbe, taskType, images });
+  const primaryModel = fastMode
+    ? GEMINI_FAST_FAILOVER_MODELS[0]
+    : hasImages
+      ? settings.visionModel || settings.model || TIER2_PRESETS.gemini.visionModel
+      : settings.model || TIER2_PRESETS.gemini.model;
+  const candidates = buildGeminiCandidateModels(primaryModel, { fastMode });
 
   if (!apiKey) {
     const { safeUrl } = buildGeminiGenerateUrl(settings.baseUrl, candidates[0]);
@@ -1535,8 +1585,9 @@ async function runGeminiNative({
     }
   }
 
-  // Auto-réparation HTTP 404 : interroge GET /v1beta/models avec x-goog-api-key,
-  // sélectionne le premier modèle flash compatible generateContent, le mémorise et relance immédiatement
+  // Auto-découverte HTTP 404 (NOT_FOUND) : interroge GET /v1beta/models avec x-goog-api-key,
+  // filtre les modèles generateContent (hors séries 2.5 et embedding), sélectionne le premier flash disponible,
+  // le mémorise et relance immédiatement l'appel
   if (saw404) {
     const listed = await listAvailableGeminiModels(
       settings.baseUrl || TIER2_PRESETS.gemini.baseUrl,
@@ -1545,9 +1596,10 @@ async function runGeminiNative({
       Math.min(800, retryDelayMs)
     );
     if (listed.ok && listed.models.length > 0) {
+      const eligible = listed.models.filter((m) => !isDeprecatedGeminiModel(m) && !attempted.includes(m));
       const preferredFlash =
-        listed.models.find((m) => /flash/i.test(m) && !attempted.includes(m)) ||
-        listed.models.find((m) => !attempted.includes(m)) ||
+        eligible.find((m) => /flash/i.test(m)) ||
+        eligible[0] ||
         null;
       if (preferredFlash) {
         attempted.push(preferredFlash);
@@ -1885,10 +1937,11 @@ export async function testAIConnection(rawSettings, { retryDelayMs = 2000 } = {}
             prompt: probePrompt,
             systemPrompt: isGeminiMode ? '' : 'Réponds très brièvement.',
             images: [],
+            taskType: 'healthcheck',
             settings,
             expectJson: false,
             isHealthProbe: isGeminiMode,
-            timeoutMs: 24000,
+            timeoutMs: 25000,
             retryDelayMs,
           });
 
@@ -1905,7 +1958,7 @@ export async function testAIConnection(rawSettings, { retryDelayMs = 2000 } = {}
     if (settings.activeTier === AI_TIERS.TIER_1_FREE_CLOUD) {
       visionSupported = true;
     } else {
-      const targetVisionModel = String(res.modelName || settings.visionModel || settings.model || '').trim();
+      const targetVisionModel = String(settings.visionModel || res.modelName || settings.model || '').trim();
       visionModelUsed = isGeminiMode
         ? normalizeGeminiModelName(targetVisionModel, TIER2_PRESETS.gemini.visionModel)
         : targetVisionModel;
@@ -1916,10 +1969,11 @@ export async function testAIConnection(rawSettings, { retryDelayMs = 2000 } = {}
             prompt: 'Réponds OK.',
             systemPrompt: '',
             images: [TINY_PROBE_PNG_URI],
+            taskType: 'vision_probe',
             settings,
             expectJson: false,
             isHealthProbe: isGeminiMode,
-            timeoutMs: 35000,
+            timeoutMs: 25000,
             retryDelayMs,
           });
           visionSupported = true;
@@ -2009,7 +2063,7 @@ export async function testAIConnection(rawSettings, { retryDelayMs = 2000 } = {}
     } else if (httpStatus === 503) {
       diagnostic = `Serveur temporairement saturé (HTTP 503 après ${err.retriesUsed || 0} tentatives de reprise) : ${rawError}`;
     } else if (err.name === 'AbortError') {
-      diagnostic = 'Délai dépassé (35 s) : le serveur ne répond pas.';
+      diagnostic = 'Délai dépassé (25 s) : le serveur ne répond pas.';
     } else if (msg.includes('Failed to fetch') || msg.includes('Load failed') || msg.includes('NetworkError') || err instanceof TypeError) {
       if (isHttpsPage && isHttpTarget) {
         diagnostic =
@@ -2132,7 +2186,16 @@ export async function routeAIRequest({
     } else if (settings.activeTier === AI_TIERS.TIER_1_FREE_CLOUD) {
       rawResult = await runTier1FreeCloud({ prompt, systemPrompt, history, images, taskType, settings });
     } else if (settings.activeTier === AI_TIERS.TIER_2_BYO) {
-      rawResult = await runTier2BYO({ prompt, systemPrompt, history, images, settings, expectJson });
+      rawResult = await runTier2BYO({
+        prompt,
+        systemPrompt,
+        history,
+        images,
+        taskType,
+        settings,
+        expectJson,
+        timeoutMs: 25000,
+      });
     } else if (settings.activeTier === AI_TIERS.TIER_3_WEBLLM) {
       rawResult = await runTier3WebLLM({ prompt, systemPrompt, history, settings, onProgress });
     } else {
